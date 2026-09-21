@@ -5,7 +5,7 @@ says **what**, **why**, and **exactly how**. Work top to bottom.
 
 > Updated 21 September 2026 for: one repository (`Bonhomie95/envelock`), an
 > IONOS VPS (4 vCores, 8 GB RAM, 240 GB NVMe), and the new setup script that
-> builds the server for you. The code is tested — 785 server tests (784 again
+> builds the server for you. The code is tested — 795 server tests (794 again
 > with database isolation enforced), 54 sensor tests, 24 web-app tests — and
 > the whole server setup was run end to end, twice, on a fresh Ubuntu 24.04
 > machine.
@@ -68,7 +68,7 @@ notes still line up.)
 ```bash
 cd ~/Documents/DEV/web/envelock
 git add -A
-git commit -m "Monorepo CI, IONOS setup script, RLS fixes for background jobs"
+git commit -m "5 mailboxes per plan + paid extra seats on Stripe; billing fixes"
 git push
 ```
 

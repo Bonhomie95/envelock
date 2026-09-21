@@ -18,7 +18,7 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy only what pip needs first, so dependency install is cached across code edits.
-COPY pyproject.toml README.md ./
+COPY pyproject.toml ./
 COPY src ./src
 RUN pip install .
 
