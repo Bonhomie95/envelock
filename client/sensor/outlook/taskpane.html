@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Envelock sensor</title>
+  <link rel="stylesheet" href="ui.css">
+  <!-- Microsoft requires add-ins to load office.js from its CDN. -->
+  <script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+  <script src="envelock-sensor.js"></script>
+</head>
+<body>
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="6" fill="#ff5c1a"/><path d="M16 7l7 3v5.6c0 4.2-2.9 8-7 9.4-4.1-1.4-7-5.2-7-9.4V10l7-3z" stroke="#fff" stroke-width="2" fill="none" stroke-linejoin="round"/><path d="M12.6 16.2l2.6 2.6 4.3-4.7" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <b>ENVELOCK</b>
+  </div>
+
+  <div id="loading" class="muted">Starting…</div>
+
+  <section id="watching" class="hidden">
+    <div class="item">
+      <span id="dot" class="dot"></span>
+      <div class="grow">
+        <div id="mailbox" class="mb"></div>
+        <div id="state" class="muted"></div>
+      </div>
+    </div>
+    <p class="muted" style="margin-top:12px">Keep this pane <b>pinned</b> (the pin at the top) so it stays open as you move between messages. Envelock then knows every read here was you.</p>
+    <details>
+      <summary>This device</summary>
+      <p class="muted" id="device"></p>
+      <button id="unpair" type="button">Remove from this device</button>
+    </details>
+  </section>
+
+  <form id="pair" class="panel hidden" autocomplete="off">
+    <p>In the Envelock dashboard, open <b id="pair-mailbox">this mailbox</b>, choose <b>Add a device</b>, and type the code here.</p>
+    <label for="code">Pairing code</label>
+    <input id="code" class="code" type="text" placeholder="ABCD-EFGH" maxlength="12" required>
+    <details>
+      <summary>Advanced</summary>
+      <label for="server">Envelock server</label>
+      <input id="server" type="url" value="https://api.envelock.org">
+    </details>
+    <div class="row" style="margin-top:14px">
+      <span></span>
+      <button id="submit" class="primary" type="submit">Pair</button>
+    </div>
+  </form>
+
+  <div id="result" class="msg hidden" role="status"></div>
+
+  <h2>What this add-in sees</h2>
+  <p class="muted">The Message-ID of each message you open while it is pinned, and the address you are signed in as. Never the message itself, never your password.</p>
+
+  <script src="taskpane.js"></script>
+</body>
+</html>

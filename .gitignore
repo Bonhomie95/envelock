@@ -1,0 +1,102 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Secrets — never commit. If one lands in history, rotate it; deleting the
+# commit is not enough once it has been pushed.
+# ─────────────────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json
+client_secret*.json
+*dkim*private*
+vapid*.json
+czds-*.json
+docs/
+.claude
+
+# ── Python / server ──────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# ── Node / client ────────────────────────────────────────────────────────────
+node_modules/
+.pnpm-store/
+.yarn/
+.vite/
+*.tsbuildinfo
+.eslintcache
+
+# ── Build output ─────────────────────────────────────────────────────────────
+dist/
+dist-ssr/
+build/
+
+# ── Local data and infrastructure ────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+pgdata/
+clickhouse_data/
+redpanda_data/
+docker-compose.override.yml
+
+# Downloaded YARA rulesets and zone files — large, regenerated on demand
+rules/yara/*.yar
+rules/yara/*.yara
+!rules/yara/.gitkeep
+zonefiles/
+*.zone
+
+# Sample mail may contain real customer data — keep it out of the repo.
+samples/
+fixtures/live/
+*.eml
+!tests/**/*.eml
+
+# ── Logs ─────────────────────────────────────────────────────────────────────
+*.log
+logs/
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# ── Editors and OS ───────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+*~
+.vscode/*
+!.vscode/settings.json
+!.vscode/extensions.json
+
+# ── Tooling ──────────────────────────────────────────────────────────────────
+.cache/
+.tmp/
+tmp/
+coverage/
+playwright-report/
+test-results/
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Local working notes — useful, but not deliverables. Kept out of the repos so
+# they never end up in a customer-visible checkout or a security review bundle.
+# ─────────────────────────────────────────────────────────────────────────────
+UI_PROMPTS.md

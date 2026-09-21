@@ -1,0 +1,316 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Envelock Admin Console
+
+   Shares the product's design language — Swiss modern, sharp corners, a single
+   signal-orange accent, Fira type — but is its own app with its own build. The
+   console is denser than the customer product on purpose: an operator reads it
+   during an incident, and tables beat cards when you are scanning for the one
+   row that is wrong.
+
+   Kept deliberately in step with `client/src/index.css`: the same token names
+   mean the same things in both apps, so a component can be moved between them
+   without a translation layer.
+   ───────────────────────────────────────────────────────────────────────── */
+
+@theme {
+  --font-sans: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, monospace;
+}
+
+:root {
+  color-scheme: dark;
+  --bg-deep: #090f15;
+  --bg: #0f141a;
+  --bg-raised: #171c23;
+  --bg-hover: #1e242c;
+  --rule: #23282f;
+  --rule-strong: #363d47;
+  --fg: #f2f4f7;
+  --fg-2: #9aa4b2;
+  --fg-3: #616b7a;
+
+  /* --accent is the ACTION colour and is kept scarce; --accent-soft is the
+     EMPHASIS colour for display numerals, where solid signal orange is a shout
+     and fails contrast at weight. */
+  --accent: #ff5c1a;
+  --accent-soft: #ffb59d;
+  --accent-ink: #ffffff;
+  --accent-wash: color-mix(in oklab, var(--accent) 16%, transparent);
+
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --danger: #f87171;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-deep: #f4f4f5;
+  --bg: #ffffff;
+  --bg-raised: #fafafa;
+  --bg-hover: #f4f4f5;
+  --rule: #e4e4e7;
+  --rule-strong: #d4d4d8;
+  --fg: #09090b;
+  --fg-2: #52525b;
+  --fg-3: #71717a;
+  --accent: #e0450f;
+  /* Inverted direction: on white, "soft" goes darker or it disappears. */
+  --accent-soft: #9a2c06;
+  --accent-ink: #ffffff;
+  --accent-wash: color-mix(in oklab, var(--accent) 9%, transparent);
+
+  --ok: #047857;
+  --warn: #a16207;
+  --danger: #b91c1c;
+}
+
+* {
+  border-color: var(--rule);
+  min-width: 0;
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Never removed — an operator who navigates by keyboard during an incident has
+   to be able to see where they are. */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+::selection {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+@layer components {
+  /* ── Console shell ─────────────────────────────────────────────────────── */
+  .rail {
+    width: 15rem;
+    flex-shrink: 0;
+    background: var(--bg-raised);
+    border-right: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .rail-link {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    height: 2.75rem;
+    padding-inline: 0.75rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--fg-2);
+    /* An inset marker rather than a border: a border appearing on selection
+       would nudge every label one pixel to the right. */
+    box-shadow: inset 2px 0 0 transparent;
+    transition:
+      background-color 160ms,
+      color 160ms,
+      box-shadow 160ms;
+  }
+  .rail-link:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .rail-link[aria-current="page"] {
+    background: var(--accent-wash);
+    color: var(--accent-soft);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+
+  /* ── Bento stat strip ──────────────────────────────────────────────────── */
+  .statstrip {
+    display: grid;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .stat-cell {
+    background: var(--bg-raised);
+    padding: 1rem 1.25rem;
+  }
+  .stat-figure {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+    line-height: 1;
+    letter-spacing: -0.03em;
+    font-weight: 600;
+  }
+  .stat-figure.is-quiet { color: var(--fg); }
+  .stat-figure.is-hot { color: var(--danger); }
+  .stat-figure.is-warn { color: var(--warn); }
+  .stat-figure.is-good { color: var(--ok); }
+  .stat-figure.is-accent { color: var(--accent-soft); }
+
+  /* ── Data table ────────────────────────────────────────────────────────── */
+  .dtable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+  }
+  .dtable th {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+    text-align: left;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  .dtable td {
+    padding: 0.875rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  .dtable tbody tr:last-child td {
+    border-bottom: 0;
+  }
+  .dtable tbody tr:hover td {
+    background: var(--bg-hover);
+  }
+
+  /* The "what do I do about it" column. Hanging off a left rule lets the eye
+     run straight down the remedies without reading the descriptions. */
+  .remedy {
+    border-left: 2px solid var(--rule-strong);
+    padding-left: 0.75rem;
+    color: var(--fg-2);
+    font-size: 0.75rem;
+    line-height: 1.6;
+  }
+  .remedy.is-actionable {
+    border-left-color: var(--accent);
+    color: var(--fg);
+  }
+
+  .ruled-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: 0.625rem;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  .meter {
+    height: 3px;
+    background: var(--rule);
+    overflow: hidden;
+  }
+  .meter > span {
+    display: block;
+    height: 100%;
+    background: var(--accent-soft);
+  }
+
+  .panel {
+    background: var(--bg-raised);
+    border: 1px solid var(--rule);
+  }
+
+  .field {
+    width: 100%;
+    height: 2.75rem;
+    padding-inline: 0.75rem;
+    background: var(--bg);
+    border: 1px solid var(--rule-strong);
+    color: var(--fg);
+    /* 16px prevents iOS from zooming the viewport on focus. */
+    font-size: 1rem;
+    outline: none;
+    transition: border-color 200ms;
+  }
+  .field::placeholder {
+    color: var(--fg-3);
+  }
+  .field:focus {
+    border-color: var(--accent);
+  }
+}
+
+@layer utilities {
+  .shell {
+    width: 100%;
+    max-width: 88rem;
+    margin-inline: auto;
+    padding-inline: 1.25rem;
+  }
+  @media (min-width: 768px) {
+    .shell {
+      padding-inline: 2rem;
+    }
+  }
+  .fg-2 {
+    color: var(--fg-2);
+  }
+  .fg-3 {
+    color: var(--fg-3);
+  }
+  .accent {
+    color: var(--accent);
+  }
+  .mono {
+    font-family: var(--font-mono);
+  }
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  .sect-label {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+  }
+  .mono-xs {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.04em;
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.rise {
+  animation: rise 0.4s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

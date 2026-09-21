@@ -1,0 +1,648 @@
+@import "tailwindcss";
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Envelock design system — Swiss Modernism 2.0 + Bento (ui-ux-pro-max)
+
+   Strict 12-column grid, mathematical spacing on an 8px base, high contrast,
+   a SINGLE accent, and no decoration for its own sake. Fira Code carries
+   labels and numerals; Fira Sans carries prose. Status colours are the only
+   other hues, and they always ship with an icon so meaning never rests on
+   colour alone.
+   ───────────────────────────────────────────────────────────────────────── */
+
+@theme {
+  --font-sans: "Fira Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Fira Code", ui-monospace, monospace;
+
+  /* Single accent. Signal orange — reads as instrumentation, not marketing. */
+  --color-signal: #ff5c1a;
+  --color-signal-dim: #d94a12;
+
+  --color-carbon-950: #08090b;
+  --color-carbon-900: #0c0e11;
+  --color-carbon-850: #111418;
+  --color-carbon-800: #171b20;
+  --color-carbon-700: #23282f;
+  --color-carbon-600: #363d47;
+
+  --spacing-gutter: 1.5rem;
+}
+
+:root {
+  color-scheme: dark;
+  /* Carbon, warmed slightly toward blue — the deep tone reads as instrument
+     housing rather than pure black, which on an OLED panel looks like a hole. */
+  --bg-deep: #090f15;
+  --bg: #0f141a;
+  --bg-raised: #171c23;
+  --bg-hover: #1e242c;
+  --rule: #23282f;
+  --rule-strong: #363d47;
+  --fg: #f2f4f7;
+  --fg-2: #9aa4b2;
+  --fg-3: #616b7a;
+
+  /* Two weights of one accent, and they are not interchangeable:
+     --accent is the ACTION colour (buttons, the active nav item). Keeping it
+     scarce is what makes a primary button read as the primary button.
+     --accent-soft is the EMPHASIS colour, for display numerals and headings.
+     Signal orange at 56px on a dark panel is a shout; this is the same hue with
+     the volume down, and it clears 4.5:1 where the solid tone does not. */
+  --accent: #ff5c1a;
+  --accent-soft: #ffb59d;
+  --accent-ink: #ffffff;
+  /* Active nav / selected row wash. Mixed rather than hardcoded so it tracks
+     the accent if the brand ever shifts. */
+  --accent-wash: color-mix(in oklab, var(--accent) 16%, transparent);
+  --accent-wash-strong: color-mix(in oklab, var(--accent) 26%, transparent);
+
+  --ok: #34d399;
+  --warn: #fbbf24;
+  --alarm: #fb923c;
+  --danger: #f87171;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg-deep: #f4f4f5;
+  --bg: #ffffff;
+  --bg-raised: #fafafa;
+  --bg-hover: #f4f4f5;
+  --rule: #e4e4e7;
+  --rule-strong: #d4d4d8;
+  --fg: #09090b;
+  --fg-2: #52525b;
+  --fg-3: #71717a;
+  --accent: #e0450f;
+  /* On white, "soft" has to go DARKER, not lighter: the dark theme's salmon is
+     invisible here. Same role, inverted direction. */
+  --accent-soft: #9a2c06;
+  --accent-ink: #ffffff;
+  --accent-wash: color-mix(in oklab, var(--accent) 9%, transparent);
+  --accent-wash-strong: color-mix(in oklab, var(--accent) 16%, transparent);
+
+  --ok: #047857;
+  --warn: #a16207;
+  --alarm: #c2410c;
+  --danger: #b91c1c;
+}
+
+@layer base {
+  * {
+    border-color: var(--rule);
+    min-width: 0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Focus rings are never removed — Quick Reference §1 */
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+}
+
+@layer components {
+  /* ── Swiss grid ──────────────────────────────────────────────────────── */
+  .shell {
+    width: 100%;
+    max-width: 88rem;
+    margin-inline: auto;
+    padding-inline: 1.25rem;
+  }
+  @media (min-width: 768px) {
+    .shell {
+      padding-inline: 2rem;
+    }
+  }
+
+  .grid12 {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 1.5rem;
+  }
+
+  /* Section index numbers — editorial structure, not decoration */
+  .sect-label {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.16em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+  }
+
+  .rule-t {
+    border-top: 1px solid var(--rule);
+  }
+
+  /* ── Type scale ──────────────────────────────────────────────────────── */
+  .display {
+    font-size: clamp(2.5rem, 7vw, 5.5rem);
+    line-height: 0.94;
+    letter-spacing: -0.035em;
+    font-weight: 700;
+  }
+
+  .headline {
+    font-size: clamp(1.75rem, 3.4vw, 2.75rem);
+    line-height: 1.05;
+    letter-spacing: -0.025em;
+    font-weight: 700;
+  }
+
+  .lede {
+    font-size: clamp(1rem, 1.4vw, 1.1875rem);
+    line-height: 1.6;
+    color: var(--fg-2);
+    max-width: 62ch;
+  }
+
+  .mono {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.mono-xs {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    letter-spacing: 0.04em;
+  }
+
+  /* ── Surfaces ────────────────────────────────────────────────────────── */
+  .panel {
+    background: var(--bg-raised);
+    border: 1px solid var(--rule);
+  }
+
+  .bento {
+    display: grid;
+    grid-template-columns: repeat(12, minmax(0, 1fr));
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .bento > * {
+    background: var(--bg-raised);
+  }
+
+  /* ── Controls ────────────────────────────────────────────────────────── */
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    font-family: var(--font-mono);
+    font-size: 0.8125rem;
+    font-weight: 500;
+    letter-spacing: 0.01em;
+    cursor: pointer;
+    border: 1px solid transparent;
+    transition:
+      background-color 200ms,
+      border-color 200ms,
+      color 200ms;
+    white-space: nowrap;
+  }
+  .btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  /* ≥44px tall — Quick Reference §2 touch-target-size */
+  .btn-md {
+    height: 2.75rem;
+    padding-inline: 1.125rem;
+  }
+  .btn-lg {
+    height: 3.25rem;
+    padding-inline: 1.5rem;
+    font-size: 0.875rem;
+  }
+  .btn-sm {
+    height: 2.25rem;
+    padding-inline: 0.75rem;
+    font-size: 0.75rem;
+  }
+
+  .btn-accent {
+    background: var(--accent);
+    color: var(--accent-ink);
+  }
+  .btn-accent:hover:not(:disabled) {
+    background: var(--color-signal-dim);
+  }
+
+  .btn-solid {
+    background: var(--fg);
+    color: var(--bg);
+  }
+  .btn-solid:hover:not(:disabled) {
+    background: var(--fg-2);
+  }
+
+  .btn-line {
+    border-color: var(--rule-strong);
+    color: var(--fg);
+  }
+  .btn-line:hover:not(:disabled) {
+    background: var(--bg-hover);
+    border-color: var(--fg-3);
+  }
+
+  .btn-quiet {
+    color: var(--fg-2);
+  }
+  .btn-quiet:hover:not(:disabled) {
+    color: var(--fg);
+    background: var(--bg-hover);
+  }
+
+  .field {
+    height: 3.25rem;
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--rule-strong);
+    color: var(--fg);
+    padding-inline: 0.875rem;
+    font-size: 1rem; /* 16px — prevents iOS auto-zoom */
+    transition: border-color 200ms;
+  }
+  .field::placeholder {
+    color: var(--fg-3);
+  }
+  .field:focus {
+    border-color: var(--accent);
+    outline: none;
+  }
+
+  /* ── Status chips ────────────────────────────────────────────────────────
+     Defined per theme: a palette tuned for dark backgrounds fails contrast on
+     light ones (Quick Reference §6). Always paired with an icon.            */
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 0.25rem 0.5rem;
+    border: 1px solid;
+  }
+
+  .chip-critical {
+    color: #fca5a5;
+    border-color: #7f1d1d;
+    background: rgb(127 29 29 / 0.22);
+  }
+  .chip-high {
+    color: #fdba74;
+    border-color: #7c2d12;
+    background: rgb(124 45 18 / 0.22);
+  }
+  .chip-medium {
+    color: #fcd34d;
+    border-color: #713f12;
+    background: rgb(113 63 18 / 0.22);
+  }
+  .chip-low {
+    color: #cbd5e1;
+    border-color: var(--rule-strong);
+    background: transparent;
+  }
+  .chip-ok {
+    color: #6ee7b7;
+    border-color: #064e3b;
+    background: rgb(6 78 59 / 0.22);
+  }
+  .chip-info {
+    color: #fdba74;
+    border-color: var(--rule-strong);
+    background: transparent;
+  }
+
+  :root[data-theme="light"] .chip-critical {
+    color: #991b1b;
+    border-color: #fca5a5;
+    background: #fef2f2;
+  }
+  :root[data-theme="light"] .chip-high {
+    color: #9a3412;
+    border-color: #fdba74;
+    background: #fff7ed;
+  }
+  :root[data-theme="light"] .chip-medium {
+    color: #854d0e;
+    border-color: #fcd34d;
+    background: #fefce8;
+  }
+  :root[data-theme="light"] .chip-low {
+    color: #3f3f46;
+    border-color: var(--rule-strong);
+  }
+  :root[data-theme="light"] .chip-ok {
+    color: #065f46;
+    border-color: #6ee7b7;
+    background: #ecfdf5;
+  }
+  :root[data-theme="light"] .chip-info {
+    color: #9a3412;
+    border-color: var(--rule-strong);
+  }
+
+  /* ── Console shell ────────────────────────────────────────────────────────
+     A persistent left rail rather than a top bar. The console has seven
+     destinations and a top bar was already overflowing into a scroll strip on a
+     laptop; a rail holds them all at full label width, keeps the active one
+     obvious, and gives back the vertical space the content actually wants.
+     Below `lg` it becomes an off-canvas drawer — see `.rail-drawer`.          */
+  .rail {
+    width: 15rem;
+    flex-shrink: 0;
+    background: var(--bg-raised);
+    border-right: 1px solid var(--rule);
+    display: flex;
+    flex-direction: column;
+  }
+
+  .rail-link {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    /* 44px tall: this is a touch target inside the mobile drawer too. */
+    height: 2.75rem;
+    padding-inline: 0.75rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    color: var(--fg-2);
+    /* The 2px inset marks the active item without shifting anything: a border
+       that appears on selection would nudge every label one pixel right. */
+    box-shadow: inset 2px 0 0 transparent;
+    transition:
+      background-color 160ms,
+      color 160ms,
+      box-shadow 160ms;
+  }
+  .rail-link:hover {
+    background: var(--bg-hover);
+    color: var(--fg);
+  }
+  .rail-link[aria-current="page"] {
+    background: var(--accent-wash);
+    color: var(--accent-soft);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
+
+  /* ── Bento stat strip ────────────────────────────────────────────────────
+     Cells separated by hairlines rather than gaps, so a row of figures reads as
+     one instrument panel instead of four floating cards.                      */
+  .statstrip {
+    display: grid;
+    gap: 1px;
+    background: var(--rule);
+    border: 1px solid var(--rule);
+  }
+  .stat-cell {
+    background: var(--bg-raised);
+    padding: 1rem 1.25rem;
+  }
+  .stat-figure {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-size: clamp(1.75rem, 3.5vw, 2.5rem);
+    line-height: 1;
+    letter-spacing: -0.03em;
+    font-weight: 600;
+  }
+  /* State colours for a figure. Colour alone never carries the meaning — the
+     label above it always names what is being counted. */
+  .stat-figure.is-quiet { color: var(--fg); }
+  .stat-figure.is-hot { color: var(--danger); }
+  .stat-figure.is-warn { color: var(--warn); }
+  .stat-figure.is-good { color: var(--ok); }
+  .stat-figure.is-accent { color: var(--accent-soft); }
+
+  /* ── Alert card ──────────────────────────────────────────────────────────
+     The most important object in the product. The left bar carries the tier at
+     a glance from across a room, and thickens for Critical.                   */
+  .alertcard {
+    background: var(--bg-raised);
+    border: 1px solid var(--rule);
+    border-left: 3px solid var(--rule-strong);
+    transition: border-color 160ms;
+  }
+  .alertcard:hover {
+    border-color: var(--rule-strong);
+  }
+  .alertcard.tier-critical {
+    border-left-color: var(--danger);
+    border-left-width: 4px;
+  }
+  .alertcard.tier-high { border-left-color: var(--alarm); }
+  .alertcard.tier-medium { border-left-color: var(--warn); }
+  .alertcard.tier-low { border-left-color: var(--rule-strong); }
+
+  /* The quoted proof inside an alert. Monospaced and inset so the customer can
+     see the actual changed IBAN rather than our paraphrase of it. */
+  .evidence {
+    background: var(--bg-deep);
+    border: 1px solid var(--rule);
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+    line-height: 1.7;
+    padding: 0.75rem 0.875rem;
+    overflow-x: auto;
+  }
+
+  /* ── Data table ──────────────────────────────────────────────────────────
+     Operator surfaces are tabular. Header in mono small-caps, rows separated by
+     hairlines, and a remediation column that hangs off a left rule so the eye
+     can run down "what do I do" without reading the descriptions.             */
+  .dtable {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.8125rem;
+  }
+  .dtable th {
+    font-family: var(--font-mono);
+    font-size: 0.6875rem;
+    font-weight: 500;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--fg-3);
+    text-align: left;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    white-space: nowrap;
+  }
+  .dtable td {
+    padding: 0.875rem 1rem;
+    border-bottom: 1px solid var(--rule);
+    vertical-align: top;
+  }
+  .dtable tbody tr:last-child td {
+    border-bottom: 0;
+  }
+  .dtable tbody tr:hover td {
+    background: var(--bg-hover);
+  }
+
+  .remedy {
+    border-left: 2px solid var(--rule-strong);
+    padding-left: 0.75rem;
+    color: var(--fg-2);
+    font-size: 0.75rem;
+    line-height: 1.6;
+  }
+  .remedy.is-actionable {
+    border-left-color: var(--accent);
+    color: var(--fg);
+  }
+
+  /* ── Section label with a hairline, as on the landing page ───────────────── */
+  .ruled-label {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding-bottom: 0.625rem;
+    border-bottom: 1px solid var(--rule-strong);
+  }
+
+  /* A thin measure of progress. Not a "score" — it is always labelled with what
+     it counts, because a bare percentage invites arguing with the percentage. */
+  .meter {
+    height: 3px;
+    background: var(--rule);
+    overflow: hidden;
+  }
+  .meter > span {
+    display: block;
+    height: 100%;
+    background: var(--accent-soft);
+  }
+
+  /* Callback prompt — the step that stops the loss, legible in both themes */
+  .callout {
+    border: 1px solid;
+    color: #fcd34d;
+    border-color: #713f12;
+    background: rgb(113 63 18 / 0.16);
+  }
+  :root[data-theme="light"] .callout {
+    color: #854d0e;
+    border-color: #fcd34d;
+    background: #fefce8;
+  }
+}
+
+@layer utilities {
+  .fg-2 {
+    color: var(--fg-2);
+  }
+  .fg-3 {
+    color: var(--fg-3);
+  }
+  .bg-raised {
+    background: var(--bg-raised);
+  }
+  .bg-base {
+    background: var(--bg);
+  }
+  .accent {
+    color: var(--accent);
+  }
+  /* Prevents layout shift in data columns */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .hatch {
+    background-image: repeating-linear-gradient(
+      45deg,
+      var(--rule) 0,
+      var(--rule) 1px,
+      transparent 1px,
+      transparent 7px
+    );
+  }
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+@keyframes scanline {
+  from {
+    transform: translateY(-100%);
+  }
+  to {
+    transform: translateY(400%);
+  }
+}
+
+.rise {
+  animation: rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.blink {
+  animation: blink 1.6s steps(2, start) infinite;
+}
+.scan {
+  position: relative;
+  overflow: hidden;
+}
+.scan::after {
+  content: "";
+  position: absolute;
+  inset-inline: 0;
+  height: 25%;
+  background: linear-gradient(
+    180deg,
+    transparent,
+    color-mix(in oklab, var(--accent) 14%, transparent),
+    transparent
+  );
+  animation: scanline 1.8s linear infinite;
+}
+
+/* Quick Reference §7 — respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

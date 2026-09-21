@@ -1,0 +1,25 @@
+# /etc/systemd/system/envelock-backup.service
+#
+# Installed alongside the timer below. Type=oneshot: this runs, finishes, and the
+# timer schedules the next one — it is not a daemon.
+[Unit]
+Description=Envelock database backup
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/apps/server
+ExecStart=/home/ubuntu/apps/server/deploy/backup.sh
+# The backup reads .env for the DSN and writes to /var/backups/envelock, so it
+# needs write access there while the rest of the filesystem stays read-only.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/var/backups/envelock /home/ubuntu/apps/server
+# A failed backup must be loud. Without this the unit fails silently and the
+# first anyone hears of it is the day a restore is needed.
+StandardOutput=journal
+StandardError=journal

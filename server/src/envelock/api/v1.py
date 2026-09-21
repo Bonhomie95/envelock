@@ -1,0 +1,533 @@
+"""Public API v1.
+
+Enough surface to exercise the product end to end: quote pricing, check trial
+eligibility, scan a domain for lookalikes (no integration required), and submit a
+raw message for analysis.
+"""
+
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime
+from typing import Annotated, Any
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from envelock.auth.deps import ActiveUser, OptionalUser
+from envelock.billing import pricing, trial
+from envelock.channels.external.lookalike import permutations, score_candidate
+from envelock.channels.mail.parser import parse_message_async
+from envelock.connect.advisor import PROVIDERS
+from envelock.connect.lookup import build_plan, plan_payload
+from envelock.core.capabilities import (
+    Capability,
+    capabilities_for,
+    protection_level,
+)
+from envelock.core.enums import MailboxClass, SourceMechanism
+from envelock.db import get_session
+from envelock.detections import identity as _identity  # noqa: F401  (registers)
+from envelock.detections import impersonation as _impersonation  # noqa: F401  (registers)
+from envelock.detections.base import (
+    CounterpartyState,
+    DetectionContext,
+    inactive_for,
+    registry,
+    run_all,
+)
+from envelock.risk.engine import assess
+from envelock.security.limits import (
+    MAX_OBSERVED_DOMAINS,
+    MAX_RAW_MESSAGE_BYTES,
+    clamp_text,
+    valid_domain,
+)
+from envelock.util.domains import registrable_domain
+from envelock.workers.watchers import RdapClient
+
+router = APIRouter(prefix="/api/v1")
+Session = Annotated[AsyncSession, Depends(get_session)]
+
+
+# ── Taxonomy protection (PRD §16) ────────────────────────────────────────────
+# We publish *what* we protect against, never *how*. Anonymous callers get the
+# plain-English outcome and severity; the internal detection code, its required
+# capabilities and the per-signal evidence are shown only to a signed-in session.
+# Without this, the `/analyse`, `/coverage` and `/catalogue` responses are a
+# scrapable map of our entire detection taxonomy — a build manual for a competitor
+# and a tuning guide for an attacker.
+_PUBLIC_CATEGORY = {
+    "A": "Counterparty fraud & impersonation",
+    "B": "Content safety",
+    "C": "Mailbox & identity integrity",
+    "D": "Brand & domain protection",
+    "E": "Response & governance",
+}
+
+
+def _public_category(service: str) -> str:
+    return _PUBLIC_CATEGORY.get(service[:1], "Other")
+
+
+# ── Pricing ──────────────────────────────────────────────────────────────────
+class QuoteRequest(BaseModel):
+    plan: pricing.Plan = pricing.Plan.COMPLETE
+    term: pricing.BillingTerm = pricing.BillingTerm.MONTHLY
+    mail_domains: int = Field(default=1, ge=0, le=1000)
+    protected: int = Field(default=0, ge=0)
+    monitored: int = Field(default=0, ge=0)
+    solo_mailboxes: int = Field(default=0, ge=0)
+
+
+@router.post("/pricing/quote")
+async def pricing_quote(req: QuoteRequest) -> dict:
+    q = pricing.quote(
+        plan=req.plan,
+        term=req.term,
+        mail_domains=req.mail_domains,
+        protected=req.protected,
+        monitored=req.monitored,
+        solo_mailboxes=req.solo_mailboxes,
+    )
+    return {
+        "plan": q.plan,
+        "term": q.term,
+        "platform_cents": q.platform_cents,
+        "protected_cents": q.protected_cents,
+        "monitored_cents": q.monitored_cents,
+        "subtotal_cents": q.subtotal_cents,
+        "discount_cents": q.discount_cents,
+        "total_cents": q.total_cents,
+        "total_usd": q.total_usd,
+        "breakdown": q.breakdown,
+    }
+
+
+# ── Trial ────────────────────────────────────────────────────────────────────
+class TrialCheckRequest(BaseModel):
+    identifier: str
+    payment_fingerprint: str | None = None
+
+
+@router.post("/trial/check")
+async def trial_check(req: TrialCheckRequest, session: Session) -> dict:
+    """Pre-signup eligibility check, against the REAL ledger.
+
+    This used to call `trial.evaluate(existing=None)` — hardcoded — so every
+    input, including a domain whose one permanent trial was burned years ago,
+    was told "eligible, first trial". A pre-signup check that always says yes
+    is marketing copy wearing an API.
+    """
+    from envelock.config import get_settings
+    from envelock.models import DomainTrialLedger
+    from envelock.util.domains import is_free_mail, registrable_domain
+
+    reg = registrable_domain(req.identifier)
+    existing = None
+    related: list[trial.LedgerEntry] = []
+    if reg and not is_free_mail(reg):
+        row = await session.get(DomainTrialLedger, reg)
+        if row is not None:
+            existing = trial.LedgerEntry(
+                registrable_domain=row.registrable_domain,
+                first_trial_at=row.first_trial_at,
+                outcome=row.outcome,
+                payment_fingerprint=row.payment_fingerprint,
+                override_by=str(row.override_by) if row.override_by else None,
+            )
+    if req.payment_fingerprint:
+        from sqlalchemy import select
+
+        fp_rows = (
+            (
+                await session.execute(
+                    select(DomainTrialLedger).where(
+                        DomainTrialLedger.payment_fingerprint == req.payment_fingerprint
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        related = [
+            trial.LedgerEntry(
+                registrable_domain=r.registrable_domain,
+                first_trial_at=r.first_trial_at,
+                outcome=r.outcome,
+                payment_fingerprint=r.payment_fingerprint,
+                override_by=str(r.override_by) if r.override_by else None,
+            )
+            for r in fp_rows
+            if r.registrable_domain != reg
+        ]
+    decision = trial.evaluate(
+        identifier=req.identifier,
+        existing=existing,
+        related_entries=related,
+        payment_fingerprint=req.payment_fingerprint,
+        trial_days=get_settings().trial_days,
+    )
+    return {
+        "eligibility": decision.eligibility,
+        "allowed": decision.allowed,
+        "trial_key": decision.trial_key,
+        "reason": decision.reason,
+        "ends_at": decision.ends_at.isoformat() if decision.ends_at else None,
+    }
+
+
+# ── Channel 3 — works with zero integration ──────────────────────────────────
+class DomainScanRequest(BaseModel):
+    domain: str = Field(max_length=253)
+    #: Domains observed in CT logs / zone files. In production the worker feeds
+    #: these continuously; supplying them here makes the endpoint demoable.
+    observed: list[str] = Field(default_factory=list, max_length=MAX_OBSERVED_DOMAINS)
+
+
+#: Most cost-effective place to spend RDAP lookups: the highest-similarity
+#: candidates are the ones a human would actually be fooled by. Bounded so a
+#: single public scan can never fan out into hundreds of outbound requests.
+_MAX_RDAP_LOOKUPS = 15
+_RDAP_TIMEOUT_S = 3.0
+_rdap = RdapClient()
+
+
+async def _registration_dates(domains: list[str]) -> dict[str, str | None]:
+    """Look up registration dates for a bounded set of candidates concurrently.
+
+    A domain that isn't registered (or whose registry is slow) simply comes back
+    as `None` — the scan still returns, it just can't date that one.
+    """
+    async def _one(d: str) -> tuple[str, str | None]:
+        try:
+            record = await asyncio.wait_for(_rdap.lookup(d), timeout=_RDAP_TIMEOUT_S)
+        except Exception:  # noqa: BLE001 — enrichment is best-effort, incl. timeout
+            return d, None
+        return d, (record or {}).get("registered_at")
+
+    results = await asyncio.gather(*(_one(d) for d in domains))
+    return dict(results)
+
+
+@router.post("/domains/scan")
+async def domain_scan(req: DomainScanRequest) -> dict:
+    if not valid_domain(req.domain):
+        raise HTTPException(422, "invalid domain")
+    protected = registrable_domain(req.domain)
+    if not protected:
+        raise HTTPException(422, "invalid domain")
+
+    # Caller-supplied `observed` entries are as untrusted as `domain` itself —
+    # they reach the scorer and (top candidates) outbound RDAP lookups, so each
+    # must be a syntactically valid domain, not an arbitrary string.
+    observed = [d for d in req.observed if valid_domain(d)]
+    candidates = observed or sorted(permutations(protected))[:200]
+    hits: list[dict[str, Any]] = []
+    for candidate in candidates:
+        # `has_mx` is resolved by the worker via DNS; defaulted here.
+        hit = score_candidate(candidate, protected)
+        if hit is not None:
+            hits.append(
+                {
+                    "candidate": hit.candidate,
+                    "technique": hit.technique,
+                    "similarity": hit.similarity,
+                    "tier": hit.tier,
+                    "armed": hit.is_armed,
+                    "registered_at": None,
+                }
+            )
+
+    # Enrich the strongest candidates with their registration date. A freshly
+    # registered lookalike is the live threat — attackers register just before
+    # they strike — so we surface the date and sort newest-first.
+    hits.sort(key=lambda h: h["similarity"], reverse=True)
+    from envelock.config import get_settings
+
+    # Resolve MX for the strongest candidates and RE-SCORE them: `tier` and
+    # `armed` used to be computed with `has_mx` left at its default, so every
+    # result said "low / not armed" no matter what — the weaponisation scoring
+    # the endpoint advertises never ran on real inputs. Bounded like RDAP.
+    if get_settings().scan_registration_dates:
+        from envelock.channels.external.brand import probe_domain
+
+        async def _armed(candidate: str) -> tuple[str, bool]:
+            try:
+                probe = await asyncio.wait_for(
+                    probe_domain(candidate), timeout=_RDAP_TIMEOUT_S
+                )
+                return candidate, probe.has_mx
+            except Exception:  # noqa: BLE001 — enrichment is best-effort
+                return candidate, False
+
+        mx_results = dict(
+            await asyncio.gather(
+                *(_armed(h["candidate"]) for h in hits[:_MAX_RDAP_LOOKUPS])
+            )
+        )
+        for h in hits:
+            has_mx = mx_results.get(h["candidate"])
+            if has_mx is None:
+                continue
+            rescored = score_candidate(h["candidate"], protected, has_mx=has_mx)
+            if rescored is not None:
+                h["tier"] = rescored.tier
+                h["armed"] = rescored.is_armed
+
+        dates = await _registration_dates(
+            [h["candidate"] for h in hits[:_MAX_RDAP_LOOKUPS]]
+        )
+        for h in hits:
+            h["registered_at"] = dates.get(h["candidate"])
+
+    # Newest registration first; undated (unregistered or not looked up) fall to
+    # the bottom, ordered by similarity so the list still reads sensibly.
+    def _key(h: dict) -> tuple:
+        reg = h["registered_at"]
+        return (1 if reg else 0, reg or "", h["similarity"])
+
+    hits.sort(key=_key, reverse=True)
+    return {
+        "protected_domain": protected,
+        "candidates_checked": len(candidates),
+        "hits": hits[:100],
+        "note": "Channel 3 requires no mailbox access — this is the Guard tier.",
+    }
+
+
+# ── Connection advisor ───────────────────────────────────────────────────────
+@router.get("/domains/{domain}/connect")
+async def domain_connect(domain: str) -> dict:
+    """Tell an IT team exactly how to connect this domain's mail.
+
+    MX lookup identifies the provider, then we return the specific setup path.
+    Every provider has one — an unrecognised MX record changes the *method*, not
+    whether we can protect the mailbox (PRD §5).
+    """
+    # Validate structurally before this reaches a resolver.
+    if not valid_domain(domain):
+        raise HTTPException(422, "invalid domain")
+    reg = registrable_domain(domain)
+    if not reg:
+        raise HTTPException(422, "invalid domain")
+    return plan_payload(await build_plan(reg))
+
+
+@router.get("/network")
+async def network() -> dict:
+    """The shared defence network, in numbers an anonymous visitor may see.
+
+    This is E8 — one customer confirming a fraud protects every other customer
+    instantly — and it is the part of the product a competitor cannot reproduce
+    on their first day, because it is made of other people's confirmations. It
+    was invisible outside the codebase: nothing on the site, nothing in the docs,
+    nothing in the sales conversation.
+
+    Counts only. A domain name here would be a ready-made target list, and a
+    false positive published under our name is a defamation problem — so the
+    names stay inside the product, where the customer who is about to pay one of
+    them is the only person who needs to see them.
+    """
+    from envelock.platform.graph import GRAPH
+
+    return GRAPH.public_stats()
+
+
+@router.get("/providers")
+async def providers() -> dict:
+    """Every mail provider we recognise by name. The list is not the limit of
+    what we support — it is what we can pre-configure automatically."""
+    return {
+        "count": len(PROVIDERS),
+        "providers": [
+            {
+                "id": p.id,
+                "name": p.name,
+                "aliases": list(p.aliases),
+                "imap_host": p.imap_host,
+                "notes": p.notes,
+                "best_method": p.methods[0].name if p.methods else None,
+            }
+            for p in PROVIDERS
+        ],
+    }
+
+
+@router.get("/domains/{domain}/permutations")
+async def domain_permutations(domain: str, limit: int = 200) -> dict:
+    if not valid_domain(domain):
+        raise HTTPException(422, "invalid domain")
+    limit = max(1, min(limit, 1000))
+    perms = sorted(permutations(domain))
+    return {"domain": registrable_domain(domain), "count": len(perms), "sample": perms[:limit]}
+
+
+# ── Coverage ─────────────────────────────────────────────────────────────────
+@router.get("/coverage")
+async def coverage(sources: str, principal: OptionalUser) -> dict:
+    """Derived protection level and the *named* inactive detections (PRD E7).
+
+    E7 names inactive detections to the *customer* (a signed-in session). To an
+    anonymous caller we return the protection level and category counts only —
+    never the detection codes, which are the taxonomy §16 protects.
+    """
+    try:
+        parsed = frozenset(SourceMechanism(s.strip()) for s in sources.split(",") if s.strip())
+    except ValueError as exc:
+        raise HTTPException(422, f"unknown source mechanism: {exc}") from exc
+
+    caps = capabilities_for(parsed)
+    active = sorted(d.service for d in registry().values() if d.requires <= caps)
+    inactive = inactive_for(caps)
+
+    base: dict[str, Any] = {
+        "sources": sorted(parsed),
+        "protection_level": protection_level(caps),
+    }
+    if principal is None:
+        base["active_count"] = len(active)
+        base["inactive_count"] = len(inactive)
+        base["note"] = "Sign in to see per-detection coverage."
+        return base
+
+    base["capabilities"] = sorted(caps)
+    base["active_detections"] = active
+    base["inactive_detections"] = inactive
+    return base
+
+
+# ── Analysis ─────────────────────────────────────────────────────────────────
+class AnalyseRequest(BaseModel):
+    raw_message: str = Field(max_length=MAX_RAW_MESSAGE_BYTES)
+    owned_domains: list[str] = Field(default_factory=list, max_length=200)
+    known_counterparties: list[str] = Field(default_factory=list, max_length=2000)
+    counterparty_known_bank_ids: list[str] = Field(default_factory=list, max_length=100)
+    counterparty_message_count: int = 0
+    counterparty_phone: str | None = None
+    source: SourceMechanism = SourceMechanism.FORWARD_INGEST
+    mailbox_class: MailboxClass = MailboxClass.PROTECTED
+
+
+@router.post("/analyse")
+async def analyse(req: AnalyseRequest, principal: OptionalUser) -> dict:
+    """Run the detection suite over a raw RFC822 message.
+
+    The public sandbox shows the plain-English finding and severity; the internal
+    detection code and per-signal evidence are returned only to a signed-in
+    session (PRD §16).
+    """
+    tenant_id, mailbox_id = uuid4(), uuid4()
+    owned = frozenset(registrable_domain(d) for d in req.owned_domains)
+    known = frozenset(registrable_domain(d) for d in req.known_counterparties)
+
+    # Remediability is a property of the source, not a request parameter: the
+    # parser still refuses it for post-delivery sources (PRD §4 fn.3).
+    caps = capabilities_for(frozenset({req.source}))
+
+    event = await parse_message_async(
+        clamp_text(req.raw_message, MAX_RAW_MESSAGE_BYTES).encode(),
+        tenant_id=tenant_id,
+        mailbox_id=mailbox_id,
+        source=req.source,
+        owned_domains=owned,
+        remediable=Capability.MODIFY_MESSAGE in caps,
+    )
+
+    sender_domain = registrable_domain(event.sender.domain)
+    counterparty = None
+    if req.counterparty_message_count or req.counterparty_known_bank_ids:
+        counterparty = CounterpartyState(
+            registrable_domain=sender_domain,
+            message_count=req.counterparty_message_count,
+            known_bank_ids=frozenset(req.counterparty_known_bank_ids),
+            verified_phone=req.counterparty_phone,
+        )
+
+    ctx = DetectionContext(
+        event=event,
+        tenant_id=str(tenant_id),
+        capabilities=caps,
+        owned_domains=owned,
+        known_counterparties=known,
+        counterparty=counterparty,
+        now=datetime.now(UTC),
+    )
+
+    findings = run_all(ctx)
+    assessment = assess(findings)
+    authed = principal is not None
+
+    if authed:
+        findings_out = [
+            {
+                "service": f.service,
+                "category": _public_category(f.service),
+                "tier": f.tier,
+                "score": f.score,
+                "summary": f.summary,
+                "evidence": f.evidence,
+            }
+            for f in findings
+        ]
+    else:
+        # Redacted: outcome language only. No code, no score, no evidence — the
+        # score and evidence would leak thresholds and the signals we weigh.
+        findings_out = [
+            {
+                "service": None,
+                "category": _public_category(f.service),
+                "tier": f.tier,
+                "summary": f.summary,
+            }
+            for f in findings
+        ]
+
+    assessment_out = None
+    if assessment is not None:
+        assessment_out = {
+            "tier": assessment.tier,
+            "score": assessment.score,
+            "title": assessment.title,
+            "body": assessment.body,
+            "requires_callback": assessment.requires_callback,
+            "callback_phone": assessment.callback_phone,
+            "rationale": list(assessment.rationale),
+            "alertable": assessment.is_alertable,
+            # The service list is the taxonomy; expose it only to a session.
+            "services": list(assessment.services) if authed else None,
+        }
+
+    return {
+        "message": {
+            "from": event.sender.address,
+            "display_name": event.sender.display,
+            "reply_to": event.reply_to.address if event.reply_to else None,
+            "subject": event.subject,
+            "attachments": [a.filename for a in event.attachments],
+            "urls": list(event.urls),
+            "remediable": event.remediable,
+        },
+        "findings": findings_out,
+        "assessment": assessment_out,
+    }
+
+
+@router.get("/catalogue")
+async def catalogue(principal: ActiveUser) -> dict:
+    """Every registered detection and what it needs to run.
+
+    This is the raw taxonomy, so it sits behind a session (PRD §16) — anonymous
+    callers would otherwise scrape the full detection map.
+    """
+    return {
+        "services": sorted(
+            (
+                {"service": d.service, "requires": sorted(d.requires)}
+                for d in registry().values()
+            ),
+            key=lambda d: str(d["service"]),
+        )
+    }

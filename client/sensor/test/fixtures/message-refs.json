@@ -1,0 +1,13 @@
+{
+  "_comment": "Message-ID normalisation vectors shared by the sensor (client/sensor/test/core.test.mjs) and the server (server/tests/test_client_sensor.py). If the two sides ever spell a message differently, a read the owner attested looks like an intruder's. Add a case here and both suites check it.",
+  "cases": [
+    ["<ABC.123@Mail.Example>", "abc.123@mail.example"],
+    ["abc.123@mail.example", "abc.123@mail.example"],
+    ["  <abc.123@mail.example>  ", "abc.123@mail.example"],
+    ["< spaced@mail.example >", "spaced@mail.example"],
+    ["CAF=hGx+q_Z3@mail.gmail.com", "caf=hgx+q_z3@mail.gmail.com"],
+    ["<AM6PR02MB4371.eurprd02.prod.outlook.com>", "am6pr02mb4371.eurprd02.prod.outlook.com"],
+    ["*", "*"],
+    ["", ""]
+  ]
+}

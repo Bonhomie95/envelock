@@ -1,0 +1,17 @@
+# Never bake secrets or local state into an image — the Dockerfile currently
+# copies an explicit list, but a future `COPY . .` must not change what ships.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+dist/
+docs/
+deploy/
+tests/

@@ -1,0 +1,17 @@
+# /etc/systemd/system/envelock-backup.timer
+#
+#   sudo systemctl enable --now envelock-backup.timer
+#   systemctl list-timers envelock-backup.timer
+[Unit]
+Description=Nightly Envelock database backup
+
+[Timer]
+# 03:20 UTC — after the nightly retention purge, before anyone is working.
+OnCalendar=*-*-* 03:20:00 UTC
+# Run on the next boot if the machine was off at the scheduled time. A backup
+# skipped because the box was rebooting is the backup you needed.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

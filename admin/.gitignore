@@ -1,0 +1,10 @@
+node_modules
+dist
+*.local
+.DS_Store
+node_modules/.tmp
+
+# Never commit real settings — this repo is public.
+.env
+.env.*
+!.env.example

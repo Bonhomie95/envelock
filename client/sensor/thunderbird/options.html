@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Envelock sensor</title>
+  <link rel="stylesheet" href="ui.css">
+</head>
+<body>
+<div class="wrap">
+  <div class="brand">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="6" fill="#ff5c1a"/><path d="M16 7l7 3v5.6c0 4.2-2.9 8-7 9.4-4.1-1.4-7-5.2-7-9.4V10l7-3z" stroke="#fff" stroke-width="2" fill="none" stroke-linejoin="round"/><path d="M12.6 16.2l2.6 2.6 4.3-4.7" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+    <b>ENVELOCK</b>
+  </div>
+
+  <h1>Envelock sensor for Thunderbird</h1>
+  <p>Tells Envelock which messages you open here, so it can tell you when a message was read somewhere else.</p>
+
+  <h2>Add a mailbox</h2>
+  <form id="enroll" class="panel" autocomplete="off">
+    <p>In the Envelock dashboard, open the mailbox and choose <b>Add a device</b>. Type the code it shows you here. The mailbox must be one of the accounts set up in this Thunderbird.</p>
+    <label for="code">Pairing code</label>
+    <input id="code" class="code" type="text" placeholder="ABCD-EFGH" maxlength="12" required>
+    <details>
+      <summary>Advanced</summary>
+      <label for="server">Envelock server</label>
+      <input id="server" type="url" value="https://api.envelock.org">
+    </details>
+    <div class="row" style="margin-top:16px">
+      <span class="muted" id="accounts"></span>
+      <button class="primary" id="submit" type="submit">Add mailbox</button>
+    </div>
+    <div id="result" class="msg hidden" role="status"></div>
+  </form>
+
+  <h2>Mailboxes on this computer</h2>
+  <div id="list" class="list"><p class="muted">None yet.</p></div>
+
+  <h2>What this add-on sees</h2>
+  <p>The Message-ID of each message you open, and that Thunderbird is running. Never the message itself, never your password.</p>
+</div>
+<script src="options.js"></script>
+</body>
+</html>
