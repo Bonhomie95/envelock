@@ -553,3 +553,27 @@ def test_tenant_reports_trial_state(client: TestClient) -> None:
     assert body["plan"] == "complete"
     assert body["trial"]["active"] is True
     assert body["trial"]["days_left"] is not None and body["trial"]["days_left"] > 0
+
+
+def test_an_email_address_is_never_used_as_the_company_name(client: TestClient) -> None:
+    """Older clients sent the registrant's address as `tenant_name` when the
+    domain field was blank, and "nobody@acmefreight.com" then showed as the
+    organisation on the dashboard, profile and operator console."""
+    email = "owner@namefix-uniq.com"
+    pw = "a-long-enough-passphrase"
+    r = client.post(
+        "/api/v1/auth/register",
+        json={"email": email, "password": pw, "tenant_name": email},
+    )
+    assert r.status_code == 201, r.text
+    login = client.post("/api/v1/auth/login", json={"email": email, "password": pw}).json()
+    setup = client.post("/api/v1/auth/mfa/setup", json={"token": login["mfa_token"]}).json()
+    tokens = client.post(
+        "/api/v1/auth/mfa/verify",
+        json={
+            "mfa_token": login["mfa_token"],
+            "code": _totp_at(setup["secret"], int(time.time()) // 30),
+        },
+    ).json()
+    h = {"Authorization": f"Bearer {tokens['access_token']}"}
+    assert client.get("/api/v1/tenant", headers=h).json()["name"] == "namefix-uniq.com"

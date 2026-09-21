@@ -147,38 +147,42 @@ export default function Analyse() {
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
         <div className="panel flex flex-col overflow-hidden">
-          <div className="flex items-center justify-between border-b px-5 py-3">
-            <label htmlFor="raw" className="text-sm font-semibold">
-              Raw message
-            </label>
-            <span className="fg-3 text-xs">Mailbox: pay@acme.com</span>
+          {/* The run button lives in the header: at the foot of a 26rem
+              textarea it sat below the fold on a laptop, while the results
+              appear at the top of the other column. */}
+          <div className="flex items-center justify-between gap-3 border-b px-5 py-2.5">
+            <div className="min-w-0">
+              <label htmlFor="raw" className="text-sm font-semibold">
+                Raw message
+              </label>
+              <span className="fg-3 ml-2 text-xs">to pay@acme.com</span>
+            </div>
+            <Button onClick={run} disabled={loading} variant="accent" size="sm">
+              {loading ? (
+                <>
+                  <Loader2 size={14} className="animate-spin" aria-hidden /> ANALYSING
+                </>
+              ) : (
+                <>
+                  <Play size={14} aria-hidden /> ANALYSE
+                </>
+              )}
+            </Button>
           </div>
           <textarea
             id="raw"
             value={raw}
             onChange={(e) => setRaw(e.target.value)}
             spellCheck={false}
-            className="font-mono bg-base min-h-[26rem] flex-1 resize-y p-5 text-xs leading-relaxed outline-none"
+            className="font-mono bg-base min-h-[20rem] flex-1 resize-y p-5 text-xs leading-relaxed outline-none"
           />
-          <div className="flex items-center gap-3 border-t px-5 py-4">
-            <Button onClick={run} disabled={loading} variant="accent">
-              {loading ? (
-                <>
-                  <Loader2 size={15} className="animate-spin" aria-hidden />{" "}
-                  Analysing
-                </>
-              ) : (
-                <>
-                  <Play size={15} aria-hidden /> Analyse
-                </>
-              )}
-            </Button>
-            {ctx.counterparty_known_bank_ids && (
+          {ctx.counterparty_known_bank_ids && (
+            <div className="border-t px-5 py-3">
               <span className="fg-3 text-xs">
                 Known account on file: {ctx.counterparty_known_bank_ids[0]}
               </span>
-            )}
-          </div>
+            </div>
+          )}
         </div>
 
         <div className="space-y-4">
@@ -193,8 +197,9 @@ export default function Analyse() {
           {!result && !error && (
             <div className="panel p-8">
               <p className="fg-3 text-sm">
-                Results appear here. Findings are individual detections; the
-                assessment is what the customer actually sees.
+                Press Analyse to see the verdict. The box at the top is the alert
+                your team would get; below it are the individual checks that
+                led to it.
               </p>
             </div>
           )}

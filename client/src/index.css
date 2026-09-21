@@ -50,7 +50,9 @@
      the volume down, and it clears 4.5:1 where the solid tone does not. */
   --accent: #ff5c1a;
   --accent-soft: #ffb59d;
-  --accent-ink: #ffffff;
+  /* Text ON the accent. White on #ff5c1a is 3.1:1 — below the 4.5:1 that small
+     button labels need. Near-black is 6.3:1 and keeps the orange bright. */
+  --accent-ink: #0b0d10;
   /* Active nav / selected row wash. Mixed rather than hardcoded so it tracks
      the accent if the brand ever shifts. */
   --accent-wash: color-mix(in oklab, var(--accent) 16%, transparent);
@@ -73,7 +75,9 @@
   --fg: #09090b;
   --fg-2: #52525b;
   --fg-3: #71717a;
-  --accent: #e0450f;
+  /* #e0450f was 4.2:1 on white (and white-on-it for buttons) — just under
+     the 4.5:1 needed for small text. #c2410c is 5.2:1 both ways. */
+  --accent: #c2410c;
   /* On white, "soft" has to go DARKER, not lighter: the dark theme's salmon is
      invisible here. Same role, inverted direction. */
   --accent-soft: #9a2c06;

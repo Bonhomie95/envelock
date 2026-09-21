@@ -31,8 +31,14 @@ export default function Overview() {
         <Stat label="Tenants" value={data.tenants} />
         <Stat label="Users" value={data.users} />
         <Stat label="Mailboxes" value={data.mailboxes} />
-        <Stat label="Paying tenants" value={data.paying_tenants} tone="good" />
-        <Stat label="Active trials" value={data.active_trials} tone="accent" />
+        {/* Colour means something: green only when there is good news to see,
+            and a trial is not an alarm (orange read as one). */}
+        <Stat
+          label="Paying tenants"
+          value={data.paying_tenants}
+          tone={data.paying_tenants > 0 ? "good" : "quiet"}
+        />
+        <Stat label="Active trials" value={data.active_trials} tone="quiet" />
         <Stat
           label="Pending users"
           value={data.pending_users}

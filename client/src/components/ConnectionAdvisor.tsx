@@ -45,7 +45,10 @@ export default function ConnectionAdvisor({
         </p>
       </div>
 
-      <form onSubmit={run} className="flex flex-col gap-px border-b p-5 sm:flex-row">
+      {/* Stacked, always: this lives in the dashboard's narrow side column, and
+          switching to a row at the *viewport* breakpoint squeezed the domain
+          down to "acmefreight.c" beside a large button. */}
+      <form onSubmit={run} className="flex flex-col gap-2 border-b p-5">
         <div className="relative flex-1">
           <Server
             size={15}
@@ -61,13 +64,13 @@ export default function ConnectionAdvisor({
             onChange={(e) => setDomain(e.target.value)}
             placeholder="yourcompany.com"
             autoComplete="url"
-            className="field pl-10"
+            className="field pl-10 text-sm"
           />
         </div>
         <Button
           type="submit"
           variant="accent"
-          size="lg"
+          className="w-full"
           disabled={loading || !domain.trim()}
         >
           {loading ? (

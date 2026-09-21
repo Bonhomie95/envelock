@@ -418,7 +418,13 @@ async def register(req: RegisterRequest, session: Session) -> dict:
     else:
         # First from this domain (or a free-mail signup) → new owner tenant. This
         # is the single admin for the company; everyone else joins pending.
-        tenant = Tenant(id=uuid4(), name=req.tenant_name)
+        # An email address is never a company name. Older clients sent the
+        # registrant's address when the domain field was blank, and it then
+        # showed as the organisation everywhere; use its domain instead.
+        name = req.tenant_name.strip()
+        if "@" in name:
+            name = name.rsplit("@", 1)[-1]
+        tenant = Tenant(id=uuid4(), name=name or email.rsplit("@", 1)[-1])
         session.add(tenant)
         # With email verification on, the trial (and the permanent one-per-domain
         # ledger entry) starts at VERIFICATION, not registration — otherwise a

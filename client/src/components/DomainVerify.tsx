@@ -14,6 +14,24 @@ import { Button } from "./primitives";
  * click Verify. `onBack` (when provided) renders an escape hatch, used by the
  * onboarding gate to let a user step back out to sign-in.
  */
+function CopyValue({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        void navigator.clipboard.writeText(value);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1500);
+      }}
+      aria-label={`Copy ${label}`}
+      className="cursor-pointer rounded border border-current/20 px-1.5 py-0.5 text-[10px] tracking-wide uppercase opacity-80 hover:opacity-100"
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
 export function DomainVerify({
   domain,
   onVerified,
@@ -155,13 +173,21 @@ export function DomainVerify({
         </button>
       </div>
 
-      <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-xs">
+      {/* Copy buttons: a 30-character token retyped into a registrar's form is
+          the most likely reason verification "doesn't work". */}
+      <dl className="mt-2 grid grid-cols-[auto_1fr_auto] items-center gap-x-3 gap-y-1.5 font-mono text-xs">
         <dt className="opacity-60">Type</dt>
-        <dd>{chosen.type}</dd>
+        <dd className="col-span-2">{chosen.type}</dd>
         <dt className="opacity-60">Host</dt>
         <dd className="break-all">{chosen.host}</dd>
+        <dd>
+          <CopyValue value={chosen.host} label="host" />
+        </dd>
         <dt className="opacity-60">Value</dt>
         <dd className="break-all">{chosen.value}</dd>
+        <dd>
+          <CopyValue value={chosen.value} label="value" />
+        </dd>
       </dl>
 
       {error && <p className="mt-2 text-red-500">{error}</p>}

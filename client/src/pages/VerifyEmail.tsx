@@ -62,7 +62,7 @@ export default function VerifyEmail() {
   }
 
   return (
-    <div className="mx-auto max-w-md px-4 py-16">
+    <main className="mx-auto max-w-md px-4 py-16">
       <h1 className="text-xl font-semibold">Confirm your email</h1>
 
       {phase === "verifying" && (
@@ -78,8 +78,8 @@ export default function VerifyEmail() {
             <CheckCircle2 size={16} aria-hidden />
             Your email is confirmed — your workspace is active.
           </p>
-          <Link to="/signin" className="mt-4 inline-block">
-            <Button>Sign in</Button>
+          <Link to="/signin" className="mt-5 inline-block">
+            <Button variant="accent">SIGN IN</Button>
           </Link>
         </div>
       )}
@@ -123,9 +123,11 @@ export default function VerifyEmail() {
         </form>
       )}
 
-      <p className="fg-3 mt-8 text-xs">
-        Already confirmed? <Link to="/signin" className="underline">Sign in</Link>.
-      </p>
-    </div>
+      {phase !== "done" && (
+        <p className="fg-3 mt-8 text-xs">
+          Already confirmed? <Link to="/signin" className="underline">Sign in</Link>.
+        </p>
+      )}
+    </main>
   );
 }

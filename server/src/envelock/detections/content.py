@@ -452,7 +452,11 @@ class _B1PhishingUrls:
                 service="B1",
                 tier=AlertTier.HIGH if feed_hit else AlertTier.MEDIUM,
                 score=80 if feed_hit else 45,
-                summary=f"{len(suspicious)} suspicious link(s) in this message.",
+                summary=(
+                    "1 suspicious link in this message."
+                    if len(suspicious) == 1
+                    else f"{len(suspicious)} suspicious links in this message."
+                ),
                 evidence={"urls": suspicious[:10]},
             )
         ]
@@ -486,8 +490,8 @@ class _B2TimeOfClick:
                 tier=AlertTier.LOW,
                 score=5,
                 summary=(
-                    f"{len(mail.urls)} link(s) routed through click-time "
-                    "re-checking on delivery."
+                    f"{len(mail.urls)} {'link' if len(mail.urls) == 1 else 'links'} "
+                    "routed through click-time re-checking on delivery."
                 ),
                 evidence={"rewritable": len(mail.urls)},
             )

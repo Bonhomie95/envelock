@@ -39,6 +39,10 @@ export default function Login({
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Good news gets its own channel: "Password set" used to go through the
+  // error state and render in red.
+  const [info, setInfo] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
 
   async function submitCredentials(e: FormEvent) {
     e.preventDefault();
@@ -47,6 +51,10 @@ export default function Login({
     try {
       const r = await api.login(email.trim(), password);
       setMfaToken(r.mfa_token);
+      // A code is single-use; one left in the box from an earlier step only
+      // fails. Always start the code step empty.
+      setCode("");
+      setInfo(null);
       if (r.mfa_setup_required) {
         const s = await api.mfaSetup(r.mfa_token);
         setOtpauth(s.otpauth_uri);
@@ -105,7 +113,7 @@ export default function Login({
       setPassword("");
       setNewPassword("");
       setConfirmPassword("");
-      setError("Password set. Sign in with it now.");
+      setInfo("Password set. Sign in with it now.");
     } catch (e) {
       setError(e instanceof ApiError ? e.message : "Could not set the password.");
     } finally {
@@ -256,6 +264,43 @@ export default function Login({
                 </li>
               ))}
             </ul>
+            <div className="flex gap-2">
+              <Button
+                variant="line"
+                className="flex-1"
+                onClick={() => {
+                  void navigator.clipboard.writeText(recoveryCodes.join("\n"));
+                  setCopied(true);
+                  setTimeout(() => setCopied(false), 2000);
+                }}
+              >
+                {copied ? "COPIED" : "COPY ALL"}
+              </Button>
+              <Button
+                variant="line"
+                className="flex-1"
+                onClick={() => {
+                  const url = URL.createObjectURL(
+                    new Blob(
+                      [
+                        `Envelock operator recovery codes for ${email}\n` +
+                          "Each code works once.\n\n" +
+                          recoveryCodes.join("\n") +
+                          "\n",
+                      ],
+                      { type: "text/plain" },
+                    ),
+                  );
+                  const a = document.createElement("a");
+                  a.href = url;
+                  a.download = "envelock-operator-recovery-codes.txt";
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                DOWNLOAD
+              </Button>
+            </div>
             <Button
               variant="accent"
               className="w-full"
@@ -304,6 +349,11 @@ export default function Login({
           </form>
         )}
 
+        {info && !error && (
+          <p role="status" className="mt-4 text-sm text-[var(--ok)]">
+            {info}
+          </p>
+        )}
         {error && (
           <p role="alert" className="mt-4 text-sm text-[var(--danger)]">
             {error}

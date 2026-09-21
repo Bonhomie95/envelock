@@ -29,7 +29,8 @@ export const PLAN_TIERS: PlanTier[] = [
     id: "complete",
     name: "Complete",
     price: "$47.50",
-    per: "/mo · 5 mailboxes",
+    // Matches server/billing/pricing.py PLAN_MAILBOX_SEATS (Complete = 7).
+    per: "/mo · 7 mailboxes",
     blurb: "Adds account-takeover protection.",
     features: [
       "Everything in Essential",

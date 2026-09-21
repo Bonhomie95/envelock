@@ -78,10 +78,12 @@ function CreateMember({
   isOwner,
   seats,
   onCreated,
+  domain,
 }: {
   isOwner: boolean;
   seats: Seats | null;
   onCreated: () => Promise<void>;
+  domain?: string;
 }) {
   const [email, setEmail] = useState("");
   const [role, setRole] = useState<"member" | "admin">("member");
@@ -133,7 +135,7 @@ function CreateMember({
         <input
           value={email}
           onChange={(e) => setEmail(e.target.value)}
-          placeholder="teammate@yourcompany.com"
+          placeholder={`teammate@${domain || "yourcompany.com"}`}
           autoComplete="off"
           disabled={full}
           className="field flex-1 text-sm"
@@ -310,7 +312,12 @@ export default function Team() {
         <h2 className="text-sm font-semibold">Add a teammate</h2>
       </div>
       <section className="panel mt-3 p-5">
-        <CreateMember isOwner={isOwner} seats={seats} onCreated={load} />
+        <CreateMember
+          isOwner={isOwner}
+          seats={seats}
+          onCreated={load}
+          domain={members.find((m) => m.email.includes("@"))?.email.split("@")[1]}
+        />
       </section>
 
       {/* Pending approvals — the colleague-join loop the dashboard's

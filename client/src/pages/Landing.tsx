@@ -104,26 +104,51 @@ function Scanner() {
 
       {result && (
         <div className="rise border-t p-6">
-          <p className="text-sm font-semibold">
-            <span className="font-mono tnum accent text-xl">{result.hits.length}</span>{" "}
-            lookalike domains found for {result.protected_domain}
-          </p>
+          {/* Honest counts: the engine returns every plausible misspelling, and
+              most are unregistered. "73 lookalike domains found" read as 73
+              live impersonators when perhaps two exist. */}
+          {(() => {
+            const registered = result.hits.filter((h) => h.registered_at).length;
+            const possible = result.hits.length - registered;
+            return (
+              <>
+                <p className="text-sm font-semibold">
+                  <span className="font-mono tnum accent text-xl">{registered}</span>{" "}
+                  {registered === 1 ? "lookalike of" : "lookalikes of"}{" "}
+                  {result.protected_domain} already registered
+                </p>
+                {possible > 0 && (
+                  <p className="fg-3 mt-1 text-xs">
+                    Plus {possible} close misspellings with no registration found —
+                    we watch those too.
+                  </p>
+                )}
+              </>
+            );
+          })()}
           {result.hits.length > 0 && (
             <ul className="mt-4 divide-y" role="list">
               {result.hits.slice(0, 4).map((hit) => (
                 <li key={hit.candidate} className="flex items-center gap-3 py-2.5">
-                  <TierChip tier={hit.tier} />
+                  {hit.registered_at ? (
+                    <TierChip tier={hit.tier} />
+                  ) : (
+                    // Unregistered can't be sending anything yet — a risk tier
+                    // (HIGH for "5tripe.com") overstated it.
+                    <span className="fg-3 mono-xs w-[4.5rem] shrink-0">WATCH</span>
+                  )}
                   <code className="flex-1 truncate font-mono text-xs">{hit.candidate}</code>
                   <span className="fg-3 mono-xs shrink-0 tnum">
-                    {hit.registered_at ? registeredLabel(hit.registered_at) : "unregistered"}
+                    {hit.registered_at ? registeredLabel(hit.registered_at) : "no registration found"}
                   </span>
                 </li>
               ))}
             </ul>
           )}
           <p className="fg-3 mt-4 text-xs">
-            Sorted newest first — a domain registered days ago is the live threat.
-            We keep watching these for free, and tell you if one starts sending mail.
+            Newest registrations first — a domain registered days ago is the live
+            threat. Some matches may be your own (a country version, say). We keep
+            watching for free, and tell you if one starts sending mail.
           </p>
         </div>
       )}
@@ -331,7 +356,7 @@ const PLANS = [
   {
     name: "Complete",
     price: "$47.50",
-    unit: "per month, 5 mailboxes",
+    unit: "per month, 7 mailboxes",
     line: "Adds protection if a mailbox is broken into.",
     features: [
       "Everything in Essential",

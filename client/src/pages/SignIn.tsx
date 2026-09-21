@@ -1,9 +1,10 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowRight,
   Check,
   Copy,
+  Download,
   KeyRound,
   Loader2,
   Lock,
@@ -68,7 +69,9 @@ export default function SignIn() {
     setNeedsVerification(e instanceof ApiError && e.status === 403);
     setError(
       e instanceof ApiError
-        ? e.message
+        ? e.status === 401 && /invalid credentials/i.test(e.message)
+          ? "That email and password don't match. Check both, or reset your password below."
+          : e.message
         : "We couldn't reach Envelock — it may be waking up. Try again in a moment.",
     );
   }
@@ -98,7 +101,9 @@ export default function SignIn() {
         const reg = await api.register({
           email,
           password,
-          tenant_name: domain || email,
+          // Never the address itself: it became the company's name everywhere
+          // (dashboard, profile, operator console) when the domain was left blank.
+          tenant_name: domain || email.split("@")[1] || email,
         });
         if (reg.verification_required) {
           // Signing in now would just 403 — tell them what to do instead.
@@ -238,6 +243,36 @@ export default function SignIn() {
     }
   }
 
+  const messagesRef = useRef<HTMLDivElement>(null);
+  // Bring a new message into view — on a phone the form is often scrolled.
+  useEffect(() => {
+    if (error || flowNotice) {
+      messagesRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    }
+  }, [error, flowNotice]);
+
+  const [copiedCodes, setCopiedCodes] = useState(false);
+  function recoveryText() {
+    return (
+      "Envelock recovery codes for " + email + "\n" +
+      "Each code works once. Keep them somewhere safe, away from this device.\n\n" +
+      recovery.join("\n") + "\n"
+    );
+  }
+  function copyRecovery() {
+    void navigator.clipboard.writeText(recoveryText());
+    setCopiedCodes(true);
+    setTimeout(() => setCopiedCodes(false), 2000);
+  }
+  function downloadRecovery() {
+    const url = URL.createObjectURL(new Blob([recoveryText()], { type: "text/plain" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "envelock-recovery-codes.txt";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
   function copySecret() {
     void navigator.clipboard.writeText(secret);
     setCopied(true);
@@ -260,6 +295,32 @@ export default function SignIn() {
                   ? "Set your password"
                   : "Two-factor"}
           </span>
+        </div>
+
+        {/* Messages sit at the top of the column. They used to render below
+            the whole form, under "No account yet?", so on a laptop a failed
+            sign-in or a "check your inbox" looked like nothing had happened. */}
+        <div ref={messagesRef} className="scroll-mt-24">
+          {flowNotice && (
+            <p role="status" className="callout mt-5 px-4 py-3 text-xs leading-relaxed">
+              {flowNotice}
+            </p>
+          )}
+          {error && (
+            <div role="alert" className="callout mt-5 px-4 py-3 text-xs leading-relaxed">
+              {error}
+              {needsVerification && (
+                <div className="mt-2">
+                  <Link
+                    to="/verify-email"
+                    className="accent underline underline-offset-4"
+                  >
+                    Send me the link again
+                  </Link>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* ── Credentials ────────────────────────────────────────────────── */}
@@ -434,6 +495,8 @@ export default function SignIn() {
                 onClick={() => {
                   setMode(mode === "signin" ? "signup" : "signin");
                   setError(null);
+                  setFlowNotice(null);
+                  window.scrollTo({ top: 0, behavior: "smooth" });
                 }}
                 className="accent cursor-pointer font-semibold underline underline-offset-4"
               >
@@ -635,6 +698,14 @@ export default function SignIn() {
                 </code>
               ))}
             </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button size="sm" variant="line" onClick={copyRecovery}>
+                <Copy size={13} aria-hidden /> {copiedCodes ? "COPIED" : "COPY ALL"}
+              </Button>
+              <Button size="sm" variant="line" onClick={downloadRecovery}>
+                <Download size={13} aria-hidden /> DOWNLOAD .TXT
+              </Button>
+            </div>
             <Button
               variant="accent"
               size="lg"
@@ -701,27 +772,6 @@ export default function SignIn() {
               </Button>
             </form>
           </>
-        )}
-
-        {flowNotice && (
-          <p role="status" className="callout mt-6 px-4 py-3 text-xs leading-relaxed">
-            {flowNotice}
-          </p>
-        )}
-        {error && (
-          <div role="alert" className="callout mt-6 px-4 py-3 text-xs leading-relaxed">
-            {error}
-            {needsVerification && (
-              <div className="mt-2">
-                <Link
-                  to="/verify-email"
-                  className="accent underline underline-offset-4"
-                >
-                  Send me the link again
-                </Link>
-              </div>
-            )}
-          </div>
         )}
 
         <p className="fg-3 mt-6 flex items-start gap-2 text-xs leading-relaxed">

@@ -36,7 +36,7 @@
      and fails contrast at weight. */
   --accent: #ff5c1a;
   --accent-soft: #ffb59d;
-  --accent-ink: #ffffff;
+  --accent-ink: #0b0d10; /* white on #ff5c1a is 3.1:1; this is 6.3:1 */
   --accent-wash: color-mix(in oklab, var(--accent) 16%, transparent);
 
   --ok: #34d399;
@@ -55,7 +55,7 @@
   --fg: #09090b;
   --fg-2: #52525b;
   --fg-3: #71717a;
-  --accent: #e0450f;
+  --accent: #c2410c; /* 5.2:1 on white; #e0450f was 4.2:1 */
   /* Inverted direction: on white, "soft" goes darker or it disappears. */
   --accent-soft: #9a2c06;
   --accent-ink: #ffffff;

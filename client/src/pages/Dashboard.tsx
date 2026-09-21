@@ -119,6 +119,8 @@ function timeOf(iso: string): string {
  * Admin-only server-side. A 403 means "not for this role" and renders nothing
  * rather than an error the member can do nothing about.
  */
+const TIER_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+
 function AiVerdictPanel({ alertId }: { alertId: string }) {
   const [open, setOpen] = useState(false);
   const [state, setState] = useState<
@@ -378,8 +380,13 @@ function AlertRow({
               <span className="text-xs font-semibold">
                 {alert.callback_phone
                   ? `Call ${alert.callback_phone} to verify — the number on file with us, not the one in the email`
-                  : "Verify by phone before paying. No number on file — add one so it appears here."}
+                  : "Verify by phone before paying. No number on file for this supplier yet."}
               </span>
+              {!alert.callback_phone && (
+                <Link to="/suppliers" className="accent text-xs font-semibold underline underline-offset-4">
+                  Add their number →
+                </Link>
+              )}
             </div>
           )}
 
@@ -1054,10 +1061,18 @@ function MailboxRow({
         </details>
       )}
 
-      {m.inactive_detections.length > 0 && (
-        <p className="fg-3 mono-xs mt-2">
-          INACTIVE: {m.inactive_detections.slice(0, 6).join(" ")}
-          {m.inactive_detections.length > 6 && " …"}
+      {/* Plain words, not "INACTIVE: A1 A10 A11…": the service codes mean
+          nothing to the person reading this. They stay in the tooltip for IT,
+          and an unconnected mailbox — where nothing is active yet — says so
+          already, so it doesn't get the line at all. */}
+      {connected && m.inactive_detections.length > 0 && (
+        <p
+          className="fg-3 mt-2 text-xs"
+          title={`Not available on this connection: ${m.inactive_detections.join(" ")}`}
+        >
+          {m.inactive_detections.length}{" "}
+          {m.inactive_detections.length === 1 ? "check isn't" : "checks aren't"}{" "}
+          possible over this kind of connection.
         </p>
       )}
 
@@ -1200,6 +1215,12 @@ function MailboxConnect({
   const [advanced, setAdvanced] = useState(false);
   const [detected, setDetected] = useState<string | null>(null);
   const [probe, setProbe] = useState<ImapProbeResult | null>(null);
+  // The result renders below the server settings — well under the button that
+  // produced it. Bring it into view so a click never looks like it did nothing.
+  const probeRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (probe) probeRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }, [probe]);
   // A certificate the server presented that we refused. Held here, not acted
   // on: the customer decides, after seeing what it actually says.
   const [certificate, setCertificate] = useState<ImapCertificate | null>(null);
@@ -1707,9 +1728,17 @@ function MailboxConnect({
             </div>
           )}
 
-          {probe && <ImapProbeReport result={probe} onUseOauth={() => oauth(
-            plan?.provider.id === "google" ? "google" : "microsoft",
-          )} oauthAvailable={isMs || isGoogle} />}
+          {probe && (
+            <div ref={probeRef} className="scroll-mt-24">
+              <ImapProbeReport
+                result={probe}
+                onUseOauth={() =>
+                  oauth(plan?.provider.id === "google" ? "google" : "microsoft")
+                }
+                oauthAvailable={isMs || isGoogle}
+              />
+            </div>
+          )}
         </div>
       )}
 
@@ -2123,10 +2152,14 @@ function BulkImapConnect({
 function AddMailbox({
   onAdded,
   mailboxes,
+  domain,
 }: {
   onAdded: () => Promise<void>;
   mailboxes?: TenantInfo["mailboxes"];
+  domain?: string | null;
 }) {
+  // Examples on the customer's own domain read as instructions, not as a form.
+  const d = domain || "yourcompany.com";
   const full = mailboxes ? !mailboxes.can_add : false;
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"many" | "one">("many");
@@ -2291,7 +2324,7 @@ function AddMailbox({
             onChange={(e) => setBlob(e.target.value)}
             rows={5}
             placeholder={
-              "finance@yourcompany.com\nexecs@yourcompany.com\naccounts@yourcompany.com"
+              `finance@${d}\nceo@${d}\naccounts@${d}`
             }
             spellCheck={false}
             className="field mt-1.5 h-auto resize-y py-2 text-sm leading-relaxed"
@@ -2320,7 +2353,7 @@ function AddMailbox({
             id="new-mailbox"
             value={address}
             onChange={(e) => setAddress(e.target.value)}
-            placeholder="accounts@yourcompany.com"
+            placeholder={`accounts@${d}`}
             autoComplete="off"
             className="field mt-1.5 text-sm"
           />
@@ -2376,6 +2409,12 @@ function AddMailbox({
    Critical false positives climb, the interrupt gets muted; if detonation
    fall-through climbs, so does COGS. Shown from live data, honestly blank until
    there is any. */
+const CUSTOMER_METRIC_NAMES: Record<string, string> = {
+  critical_fp_rate: "Critical alerts that were false alarms",
+  high_fp_rate: "High alerts that were false alarms",
+  criticals_per_tenant_quarter: "Critical alerts this quarter",
+};
+
 function GoverningMetrics() {
   const [metrics, setMetrics] = useState<QualityMetric[] | null>(null);
 
@@ -2387,6 +2426,11 @@ function GoverningMetrics() {
   }, []);
 
   if (!metrics) return null;
+  // Customer words for engineering metrics. "Attachment detonation
+  // fall-through" is our cost metric, not the customer's concern — it stays on
+  // the operator console and is left out here.
+  const shownMetrics = metrics.filter((m) => m.id in CUSTOMER_METRIC_NAMES);
+  if (shownMetrics.length === 0) return null;
 
   const fmt = (m: QualityMetric): string => {
     if (m.observed === null) return "—";
@@ -2397,17 +2441,18 @@ function GoverningMetrics() {
 
   return (
     <div className="panel p-5">
-      <h2 className="sect-label">Detection quality</h2>
+      <h2 className="sect-label">Alert accuracy</h2>
       <p className="fg-3 mt-1 text-xs leading-relaxed">
-        The two numbers that govern the product, measured live
+        How often the most serious alerts turned out to be right — measured on
+        your own alerts.
       </p>
       <ul className="mt-4 space-y-2.5" role="list">
-        {metrics.map((m) => (
+        {shownMetrics.map((m) => (
           <li
             key={m.id}
             className="flex items-baseline justify-between gap-3 text-sm"
           >
-            <span className="fg-2">{m.name}</span>
+            <span className="fg-2">{CUSTOMER_METRIC_NAMES[m.id] ?? m.name}</span>
             <span className="flex items-baseline gap-2">
               <span
                 className={cn(
@@ -2964,11 +3009,9 @@ function OnboardingGate({
             mail.
           </p>
         </div>
-        <DomainVerify
-          domain={domain}
-          onVerified={onVerified}
-          onBack={() => setStep("mfa")}
-        />
+        {/* No "Back" here: it returned to the two-factor step, which read as
+            "back to what?" — and signing out is right below. */}
+        <DomainVerify domain={domain} onVerified={onVerified} />
         <p className="mt-6 text-center">
           <button
             type="button"
@@ -3130,16 +3173,25 @@ export default function Dashboard() {
     };
   }, [load]);
 
-  const shown = useMemo(
-    () =>
-      // "Open" means "still needs someone": acknowledged-but-unresolved alerts
-      // stay in the queue — acknowledging used to make a live Critical vanish.
+  const shown = useMemo(() => {
+    // "Open" means "still needs someone": acknowledged-but-unresolved alerts
+    // stay in the queue — acknowledging used to make a live Critical vanish.
+    const list =
       filter === "open"
         ? alerts.filter((a) => a.state === "open" || a.state === "acked")
-        : alerts,
-    [alerts, filter],
-  );
-  const open = alerts.filter((a) => a.state === "open");
+        : alerts;
+    // Worst first. The queue was newest-first only, so a $48,000 Critical sat
+    // below whatever Medium arrived after it. Then untouched before
+    // acknowledged, then newest.
+    return [...list].sort(
+      (a, b) =>
+        (TIER_RANK[a.tier] ?? 9) - (TIER_RANK[b.tier] ?? 9) ||
+        Number(a.state !== "open") - Number(b.state !== "open") ||
+        Date.parse(b.created_at) - Date.parse(a.created_at),
+    );
+  }, [alerts, filter]);
+  // Counted the same way as the queue, so the header and the list agree.
+  const open = alerts.filter((a) => a.state === "open" || a.state === "acked");
   const critical = open.filter((a) => a.tier === "critical").length;
 
   async function acknowledge(id: string) {
@@ -3281,8 +3333,14 @@ export default function Dashboard() {
   const resolvedDomain =
     tenant?.primary_domain ?? mailboxes[0]?.address.split("@")[1] ?? null;
   const hasDomain = resolvedDomain !== null;
-  const domain = resolvedDomain ?? "no domain yet";
+  // Until the workspace has loaded we know nothing — so show nothing. During
+  // an outage this row used to read "no domain yet · 0 · 0 · 0 · 0", which is
+  // a confident, wrong statement sitting right under the error message.
+  const known = tenant !== null;
+  const isWorkspaceAdmin = auth.role === "owner" || auth.role === "admin";
+  const domain = known ? (resolvedDomain ?? "no domain yet") : "—";
   const domainCount = tenant?.domains.length ?? stats?.domains ?? 0;
+  const figure = (n: number) => (known ? String(n) : "—");
 
   return (
     <main>
@@ -3293,7 +3351,7 @@ export default function Dashboard() {
         <div className="statstrip grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
           <div className="stat-cell col-span-2 flex flex-col justify-center sm:col-span-3 lg:col-span-1">
             <span className="sect-label truncate">
-              {tenant?.name && tenant.name !== domain ? tenant.name : "Tenant"}
+              {tenant?.name && tenant.name !== domain ? tenant.name : "Workspace"}
             </span>
             <div className="mt-1.5 flex flex-wrap items-center gap-2">
               <p className="truncate text-sm font-semibold">{domain}</p>
@@ -3302,10 +3360,10 @@ export default function Dashboard() {
           </div>
           {(
             [
-              ["OPEN", String(open.length), open.length > 0 ? "is-warn" : "is-quiet"],
-              ["CRITICAL", String(critical), critical > 0 ? "is-hot" : "is-quiet"],
-              ["MAILBOXES", String(mailboxes.length), "is-quiet"],
-              ["DOMAINS", String(domainCount), "is-quiet"],
+              ["OPEN", figure(open.length), open.length > 0 ? "is-warn" : "is-quiet"],
+              ["CRITICAL", figure(critical), critical > 0 ? "is-hot" : "is-quiet"],
+              ["MAILBOXES", figure(mailboxes.length), "is-quiet"],
+              ["DOMAINS", figure(domainCount), "is-quiet"],
             ] as const
           ).map(([label, value, tone]) => (
             <div key={label} className="stat-cell">
@@ -3428,7 +3486,10 @@ export default function Dashboard() {
           Guard, and this was the only thing in the product that said so while
           there was still time to act. A customer discovering the drop by losing
           protection is a churn event we caused. */}
-      {tenant?.trial.active &&
+      {/* Admins only: a member has no Billing page, so "Set up billing" was a
+          button to somewhere they cannot go. */}
+      {isWorkspaceAdmin &&
+        tenant?.trial.active &&
         tenant.trial.days_left !== null &&
         !tenant.trial.payment_method_ok && (
           <div className="shell pt-4">
@@ -3524,12 +3585,112 @@ export default function Dashboard() {
               ))
             )}
           </div>
+
+          {/* Mailboxes are the first thing a new customer acts on. They sat at
+              the bottom of the narrow side column, under four other panels,
+              with addresses truncated — while this wide column held only the
+              alert queue and empty space. */}
+          <div className="mt-8 space-y-6">
+            <div className="panel" id="coverage">
+              <div className="border-b px-5 py-3.5">
+                <div className="flex items-baseline justify-between gap-3">
+                  <h2 className="sect-label">Mailbox coverage</h2>
+                  {mailboxes.length > 0 && (
+                    <span className="mono-xs fg-3 tnum">
+                      {
+                        mailboxes.filter((m) =>
+                          m.sources.some((s) => MAIL_SOURCES.has(s)),
+                        ).length
+                      }
+                      /{mailboxes.length} connected
+                    </span>
+                  )}
+                </div>
+                <p className="fg-3 mt-1 text-xs">
+                  Derived from what each connection can do
+                </p>
+                {mailboxes.length > 6 && (
+                  <input
+                    value={mailboxQuery}
+                    onChange={(e) => setMailboxQuery(e.target.value)}
+                    placeholder="Filter mailboxes…"
+                    aria-label="Filter mailboxes"
+                    className="field mt-3 h-9 text-sm"
+                  />
+                )}
+              </div>
+              {mailboxes.length === 0 ? (
+                <p className="fg-3 px-5 pt-5 text-xs leading-relaxed">
+                  No mailboxes connected yet. Add the ones that touch money first
+                  — finance, executives, accounts payable — then connect them
+                  below.
+                </p>
+              ) : (
+                <ul
+                  className={cn(
+                    "divide-y",
+                    mailboxes.length > 8 && "max-h-[32rem] overflow-y-auto",
+                  )}
+                  role="list"
+                >
+                  {mailboxes
+                    .filter((m) =>
+                      mailboxQuery
+                        ? m.address
+                            .toLowerCase()
+                            .includes(mailboxQuery.toLowerCase())
+                        : true,
+                    )
+                    .map((m) => (
+                      <MailboxRow
+                        key={m.id}
+                        mailbox={m}
+                        onChanged={load}
+                        onRemove={removeMailbox}
+                      />
+                    ))}
+                </ul>
+              )}
+              <BulkImapConnect
+                mailboxes={mailboxes.filter(
+                  (m) => !m.sources.some((s) => MAIL_SOURCES.has(s)),
+                )}
+                domain={tenant?.primary_domain ?? null}
+                onDone={load}
+              />
+              <AddMailbox
+                onAdded={load}
+                mailboxes={tenant?.mailboxes}
+                domain={tenant?.primary_domain}
+              />
+            </div>
+            {/* The client sensor: without a device reporting, the sign-in and
+                silent-access alerts on the Complete plan have nothing to go on. */}
+            {mailboxes.length > 0 && (
+              <SensorPanel
+                mailboxes={mailboxes}
+                isAdmin={auth.role === "owner" || auth.role === "admin"}
+                onChanged={load}
+              />
+            )}
+
+            {/* Unparked: the CT watcher runs (FOCUS_CORE=false), and this is the
+                only place a Guard customer sees what it found for them. */}
+            <LookalikeWatch />
+
+            {/* /api/v1/audit is live, it is E5's whole point ("IT can see who
+                acted and who ignored it"), and the privacy notice promises the
+                customer an audit trail they can read. */}
+            <AuditTrail />
+          </div>
         </section>
 
         <aside className="col-span-12 mt-6 space-y-6 lg:col-span-4 lg:mt-0">
           {mailboxes.length > 0 && <CoverageSummary mailboxes={mailboxes} />}
 
-          {tenant && me && (
+          {/* The checklist is setup work (add mailboxes, billing) that only an
+              admin can do; a member saw tasks they had no way to complete. */}
+          {tenant && me && isWorkspaceAdmin && (
             <OnboardingChecklist
               connectedCount={
                 mailboxes.filter((m) => m.sources.some((s) => MAIL_SOURCES.has(s)))
@@ -3554,98 +3715,9 @@ export default function Dashboard() {
 
           <AppPasswordNotice />
 
-          {/* LookalikeWatch stays parked deliberately: the CT watcher that
-              fills it is parked by ENVELOCK_FOCUS_CORE, so the panel would sit
-              there empty and imply we are watching when we are not.
-              AuditTrail is unparked — /api/v1/audit is live, it is E5's whole
-              point ("IT can see who acted and who ignored it"), and the privacy
-              notice now promises the customer an audit trail they can read. */}
-          <AuditTrail />
 
-          <div className="panel" id="coverage">
-            <div className="border-b px-5 py-3.5">
-              <div className="flex items-baseline justify-between gap-3">
-                <h2 className="sect-label">Mailbox coverage</h2>
-                {mailboxes.length > 0 && (
-                  <span className="mono-xs fg-3 tnum">
-                    {
-                      mailboxes.filter((m) =>
-                        m.sources.some((s) => MAIL_SOURCES.has(s)),
-                      ).length
-                    }
-                    /{mailboxes.length} connected
-                  </span>
-                )}
-              </div>
-              <p className="fg-3 mt-1 text-xs">
-                Derived from what each connection can do
-              </p>
-              {mailboxes.length > 6 && (
-                <input
-                  value={mailboxQuery}
-                  onChange={(e) => setMailboxQuery(e.target.value)}
-                  placeholder="Filter mailboxes…"
-                  aria-label="Filter mailboxes"
-                  className="field mt-3 h-9 text-sm"
-                />
-              )}
-            </div>
-            {mailboxes.length === 0 ? (
-              <p className="fg-3 px-5 pt-5 text-xs leading-relaxed">
-                No mailboxes connected yet. Add the ones that touch money first
-                — finance, executives, accounts payable — then connect them
-                below.
-              </p>
-            ) : (
-              <ul
-                className={cn(
-                  "divide-y",
-                  mailboxes.length > 8 && "max-h-[32rem] overflow-y-auto",
-                )}
-                role="list"
-              >
-                {mailboxes
-                  .filter((m) =>
-                    mailboxQuery
-                      ? m.address
-                          .toLowerCase()
-                          .includes(mailboxQuery.toLowerCase())
-                      : true,
-                  )
-                  .map((m) => (
-                    <MailboxRow
-                      key={m.id}
-                      mailbox={m}
-                      onChanged={load}
-                      onRemove={removeMailbox}
-                    />
-                  ))}
-              </ul>
-            )}
-            <BulkImapConnect
-              mailboxes={mailboxes.filter(
-                (m) => !m.sources.some((s) => MAIL_SOURCES.has(s)),
-              )}
-              domain={tenant?.primary_domain ?? null}
-              onDone={load}
-            />
-            <AddMailbox onAdded={load} mailboxes={tenant?.mailboxes} />
-          </div>
 
-          {/* The client sensor: without a device reporting, the sign-in and
-              silent-access alerts on the Complete plan have nothing to go on. */}
-          {mailboxes.length > 0 && (
-            <SensorPanel
-              mailboxes={mailboxes}
-              isAdmin={auth.role === "owner" || auth.role === "admin"}
-              onChanged={load}
-            />
-          )}
 
-          {/* Unparked: main.py mounts the governance router unconditionally
-              *because* this panel reads /api/v1/metrics/quality — with the
-              panel parked, that reasoning bought nothing. */}
-          <GoverningMetrics />
 
           {stats && (
             <div className="panel p-5">
@@ -3677,6 +3749,8 @@ export default function Dashboard() {
               </p>
             </div>
           )}
+
+          <GoverningMetrics />
         </aside>
       </div>
 
@@ -3701,8 +3775,6 @@ export default function Dashboard() {
 
 export type { Tier };
 
-/* Still parked, and kept for later — referencing them keeps noUnusedLocals
-   quiet. LookalikeWatch waits on the CT watcher (ENVELOCK_FOCUS_CORE);
-   UpgradePlans is redundant while /billing carries the same flow. */
-void LookalikeWatch;
+/* Still parked, and kept for later — referencing it keeps noUnusedLocals
+   quiet. UpgradePlans is redundant while /billing carries the same flow. */
 void UpgradePlans;

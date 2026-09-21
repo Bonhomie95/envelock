@@ -322,7 +322,9 @@ function SupplierDetailPanel({
   onChanged: () => Promise<void>;
 }) {
   const [detail, setDetail] = useState<SupplierDetail | null>(null);
-  const [scheme, setScheme] = useState<BankRecord["scheme"]>("iban");
+  // Neutral default: IBAN first read as UK/EU-only to a US customer; every
+  // scheme is still one click away.
+  const [scheme, setScheme] = useState<BankRecord["scheme"]>("account");
   const [identifier, setIdentifier] = useState("");
   const [bankName, setBankName] = useState("");
   const [phone, setPhone] = useState("");
@@ -518,7 +520,7 @@ function SupplierDetailPanel({
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && void saveNumber()}
-            placeholder="+44 20 7946 0000"
+            placeholder="+1 212 555 0100"
             autoComplete="off"
             inputMode="tel"
             aria-label="Verified callback number"

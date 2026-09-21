@@ -112,9 +112,28 @@ const NAV = [
   { to: "/analyse", label: "Sandbox", end: false },
 ];
 
+/** Whether a main-nav item is the page you are on. NavLink compares only the
+ *  path, so "/#pricing" lit up alongside "/" and "/docs#ai" alongside "/docs":
+ *  two items marked current at once. A hash item is current only when its hash
+ *  is; a plain item is current unless a sibling hash item has claimed it. */
+function navIsActive(
+  item: (typeof NAV)[number],
+  pathname: string,
+  hash: string,
+): boolean {
+  const [path, itemHash = ""] = item.to.split("#");
+  const onPath = item.end ? pathname === path : pathname.startsWith(path);
+  if (!onPath) return false;
+  if (itemHash) return hash === `#${itemHash}`;
+  return !NAV.some((other) => {
+    const [otherPath, otherHash] = other.to.split("#");
+    return otherHash && otherPath === path && hash === `#${otherHash}`;
+  });
+}
+
 function Header() {
   const [open, setOpen] = useState(false);
-  const { pathname } = useLocation();
+  const { pathname, hash } = useLocation();
   const navigate = useNavigate();
   // Close the mobile menu when the route changes — a deliberate sync to the
   // router, not the derived-state anti-pattern the rule guards against.
@@ -124,6 +143,19 @@ function Header() {
   // Re-read on every navigation (useLocation re-renders the header), so signing
   // in or out flips the controls immediately.
   const signedIn = auth.signedIn;
+
+  // A stored session can be long dead (expired, revoked, or from another
+  // environment), and the header showed SIGN OUT / DASHBOARD for it until the
+  // visitor clicked through. Check it once; the API client drops tokens it
+  // cannot refresh, and the re-render then shows SIGN IN.
+  const [, recheck] = useState(0);
+  useEffect(() => {
+    if (!auth.signedIn) return;
+    api
+      .me()
+      .catch(() => {})
+      .finally(() => recheck((n) => n + 1));
+  }, []);
 
   async function signOut() {
     try {
@@ -150,21 +182,22 @@ function Header() {
         <Logo />
 
         <nav className="hidden items-center gap-1 md:flex" aria-label="Main">
-          {NAV.map((i) => (
-            <NavLink
-              key={i.to}
-              to={i.to}
-              end={i.end}
-              className={({ isActive }) =>
-                cn(
+          {NAV.map((i) => {
+            const active = navIsActive(i, pathname, hash);
+            return (
+              <Link
+                key={i.to}
+                to={i.to}
+                aria-current={active ? "page" : undefined}
+                className={cn(
                   "font-mono px-3 py-2 text-xs font-medium tracking-wide uppercase transition-colors",
-                  isActive ? "accent" : "fg-2 hover:text-[var(--fg)]",
-                )
-              }
-            >
-              {i.label}
-            </NavLink>
-          ))}
+                  active ? "accent" : "fg-2 hover:text-[var(--fg)]",
+                )}
+              >
+                {i.label}
+              </Link>
+            );
+          })}
           {signedIn && (
             <NavLink
               to="/dashboard"
@@ -223,21 +256,22 @@ function Header() {
       {open && (
         <nav className="border-t md:hidden" aria-label="Mobile">
           <div className="shell flex flex-col divide-y">
-            {NAV.map((i) => (
-              <NavLink
-                key={i.to}
-                to={i.to}
-                end={i.end}
-                className={({ isActive }) =>
-                  cn(
+            {NAV.map((i) => {
+              const active = navIsActive(i, pathname, hash);
+              return (
+                <Link
+                  key={i.to}
+                  to={i.to}
+                  aria-current={active ? "page" : undefined}
+                  className={cn(
                     "font-mono py-4 text-sm font-medium tracking-wide uppercase",
-                    isActive ? "accent" : "fg-2",
-                  )
-                }
-              >
-                {i.label}
-              </NavLink>
-            ))}
+                    active ? "accent" : "fg-2",
+                  )}
+                >
+                  {i.label}
+                </Link>
+              );
+            })}
             {signedIn ? (
               <>
                 <NavLink
@@ -424,7 +458,11 @@ function MarketingLayout() {
     <>
       <Header />
       <div id="main" className="flex-1">
-        <Outlet />
+        {/* Per-layout boundary: the header and footer stay put while a lazy
+            page downloads, instead of the whole screen going blank. */}
+        <Suspense fallback={<RouteFallback />}>
+          <Outlet />
+        </Suspense>
       </div>
       <Footer />
     </>
@@ -509,7 +547,9 @@ function AppLayout() {
       actions={<ThemeToggle />}
       onSignOut={() => void signOut()}
     >
-      <Outlet />
+      <Suspense fallback={<RouteFallback />}>
+        <Outlet />
+      </Suspense>
     </ConsoleShell>
   );
 }
