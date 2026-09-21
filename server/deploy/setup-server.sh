@@ -16,7 +16,7 @@
 #   --tls-only        only request the certificate (after DNS points here)
 #
 # What it does, in order: a login user `ubuntu`, system packages, a firewall,
-# Postgres + Redis, GitHub access, the three repositories, the Python
+# Postgres + Redis, GitHub access, the repository, the Python
 # environment, the two production settings files, the database schema,
 # row-level security, the systemd services, nginx, HTTPS, and a first deploy.
 # Generated passwords are kept in /root/envelock-secrets (root only).
@@ -26,7 +26,8 @@ set -euo pipefail
 APP_USER="${ENVELOCK_APP_USER:-ubuntu}"
 APP_HOME="/home/$APP_USER"
 APPS="$APP_HOME/apps"
-REPO_BASE="${ENVELOCK_REPO_BASE:-git@github.com:Bonhomie95}"
+REPO_URL="${ENVELOCK_REPO_URL:-git@github.com:Bonhomie95/envelock.git}"
+DEPLOY_DIR="$APP_HOME/deploy"
 SOURCE_ENV="${ENVELOCK_SOURCE_ENV:-/root/.env}"
 SECRETS="/root/envelock-secrets"
 HOSTS=(envelock.org www.envelock.org app.envelock.org api.envelock.org admin.envelock.org)
@@ -174,14 +175,14 @@ ok "database 'envelock' owned by role 'envelock'"
 
 # ---- 5. GitHub access --------------------------------------------------------
 log "5/13  GitHub access"
-if [[ "$REPO_BASE" == git@github.com:* ]]; then
+if [[ "$REPO_URL" == git@github.com:* ]]; then
   if [ ! -f "$APP_HOME/.ssh/id_ed25519" ]; then
     as_app "mkdir -p ~/.ssh && chmod 700 ~/.ssh && ssh-keygen -q -t ed25519 -C envelock-server -N '' -f ~/.ssh/id_ed25519"
   fi
   as_app "ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null; sort -u -o ~/.ssh/known_hosts ~/.ssh/known_hosts"
   until as_app "ssh -o BatchMode=yes -T git@github.com 2>&1 | grep -q 'successfully authenticated'"; do
     echo
-    echo "    This server needs read access to your GitHub repositories."
+    echo "    This server needs read access to your GitHub repository."
     echo "    Copy the line below, then on github.com: Settings → SSH and GPG keys → New SSH key."
     echo
     cat "$APP_HOME/.ssh/id_ed25519.pub"
@@ -190,22 +191,24 @@ if [[ "$REPO_BASE" == git@github.com:* ]]; then
   done
   ok "GitHub accepts this server's key"
 else
-  ok "using $REPO_BASE"
+  ok "using $REPO_URL"
 fi
 
 # ---- 6. code -----------------------------------------------------------------
 log "6/13  code"
-as_app "mkdir -p $APPS/deploy"
-for pair in server:envelockserver client:envelockclient admin:envelockadmin; do
-  dir="${pair%%:*}"; repo="${pair##*:}"
-  if [ ! -d "$APPS/$dir/.git" ]; then
-    as_app "git clone -q '$REPO_BASE/$repo.git' '$APPS/$dir'"
-    ok "cloned $dir"
-  else
-    ok "$dir already present"
-  fi
+# One repository, cloned straight into ~/apps, so server/, client/ and admin/
+# sit where the services, nginx and backups expect them.
+if [ ! -d "$APPS/.git" ]; then
+  [ -z "$(ls -A "$APPS" 2>/dev/null)" ] || fail "$APPS exists and is not a clone of the repository — move it aside first"
+  as_app "git clone -q '$REPO_URL' '$APPS'"
+  ok "cloned the repository into $APPS"
+else
+  ok "repository already present"
+fi
+for app in server client admin; do
+  [ -d "$APPS/$app" ] || fail "$APPS/$app is missing — is $REPO_URL the right repository?"
 done
-as_app "cp $APPS/server/deploy/deploy.sh $APPS/deploy/deploy.sh && chmod +x $APPS/deploy/deploy.sh"
+as_app "mkdir -p $DEPLOY_DIR && cp $APPS/server/deploy/deploy.sh $DEPLOY_DIR/deploy.sh && chmod +x $DEPLOY_DIR/deploy.sh"
 as_app "cd $APPS/server && [ -x .venv/bin/python ] || python3 -m venv .venv"
 as_app "cd $APPS/server && ./.venv/bin/pip install -q --upgrade pip && ./.venv/bin/pip install -q -e ."
 ok "python environment ready"
@@ -277,10 +280,21 @@ for i in $(seq 1 30); do
 done
 ok "API ready: $(curl -fsS localhost:8010/ready)"
 sleep 3
-journalctl -u envelock-api -n 200 --no-pager | grep -q "row-level security is enforced" \
-  && ok "API: row-level security enforced" || warn "API log does not confirm RLS — check: journalctl -u envelock-api | grep -i rls"
-journalctl -u envelock-api -n 200 --no-pager | grep -q "seal-only" \
-  && ok "API: seal-only (cannot decrypt mailbox passwords)" || warn "API log does not confirm seal-only custody"
+# Read the log once, then search it. Piping journalctl straight into `grep -q`
+# under `pipefail` reports failure whenever grep finds its match before the
+# journal has finished writing — a false alarm that appears only once the log
+# is long, i.e. on every run after the first.
+api_log="$(journalctl -u envelock-api -n 300 --no-pager -o cat)"
+if grep -q "row-level security is enforced" <<<"$api_log"; then
+  ok "API: row-level security enforced"
+else
+  warn "API log does not confirm RLS — check: journalctl -u envelock-api | grep -i rls"
+fi
+if grep -q "seal-only" <<<"$api_log"; then
+  ok "API: seal-only (cannot decrypt mailbox passwords)"
+else
+  warn "API log does not confirm seal-only custody"
+fi
 systemctl is-active --quiet envelock-worker && ok "worker running" \
   || { journalctl -u envelock-worker -n 40 --no-pager; fail "the worker is not running — its log is above"; }
 
@@ -311,7 +325,7 @@ fi
 
 # ---- 13. first deploy --------------------------------------------------------
 log "13/13 first deploy (builds the web app and admin console)"
-as_app "$APPS/deploy/deploy.sh" || fail "deploy.sh stopped — its message above says why"
+as_app "$DEPLOY_DIR/deploy.sh" || fail "deploy.sh stopped — its message above says why"
 
 cat <<EOF
 
@@ -327,6 +341,6 @@ cat <<EOF
    sudo -u $APP_USER -H bash -c 'cd $APPS/server && ./.venv/bin/python -m \\
      envelock.security.bootstrap_staff --email you@envelock.org --name "Your Name" --department leadership'
 
- From now on, log in as $APP_USER, and deploy with:  ~/apps/deploy/deploy.sh
+ From now on, log in as $APP_USER, and deploy with:  ~/deploy/deploy.sh
 ────────────────────────────────────────────────────────────────────────────
 EOF

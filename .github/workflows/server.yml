@@ -1,0 +1,118 @@
+name: Server
+
+# One repository now holds server/, client/ and admin/. GitHub only reads
+# workflows from the repository root, so each app has its own file here and
+# runs only when its own folder (or this file) changes.
+on:
+  push:
+    branches: [main, master]
+    paths: ["server/**", ".github/workflows/server.yml"]
+  pull_request:
+    paths: ["server/**", ".github/workflows/server.yml"]
+
+concurrency:
+  group: server-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: server
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: envelock
+          POSTGRES_PASSWORD: envelock
+          POSTGRES_DB: envelock_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U envelock"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: server/pyproject.toml
+
+      # tesseract and zbar are runtime dependencies of the attachment pipeline
+      # (pytesseract OCRs image invoices, pyzbar decodes QR codes). Without them
+      # those imports fail and the failure looks like a code bug.
+      - name: System packages
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends tesseract-ocr libzbar0
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check src tests
+
+      # A ratchet, not a hard gate: `strict = true` was configured for the life
+      # of the project, never run here, and produced 532 errors — a standard the
+      # code did not meet and no change was measured against. This fails only on
+      # NEW errors, so the count can only go down. See scripts/typecheck.py.
+      - name: Types (no new errors)
+        run: python scripts/typecheck.py
+
+      - name: Test
+        # conftest points the suite at envelock_test on localhost:5432.
+        run: pytest -q
+
+      # The same suite again, with Postgres row-level security actually enforced.
+      # It is a different question from "does the code work": it asks whether the
+      # code works when the database refuses anything the caller did not scope to
+      # a tenant. The failure mode it catches is a query quietly returning
+      # nothing, which no amount of review finds and no unit test notices.
+      #
+      # This only proves anything because the CI Postgres role owns the tables
+      # and is neither a superuser nor BYPASSRLS — Postgres ignores every policy
+      # for those, FORCE included. conftest asserts that and fails the run
+      # rather than passing vacuously.
+      - name: Test with row-level security enforced
+        env:
+          ENVELOCK_TEST_RLS: "1"
+        run: pytest -q
+
+  # Proves the production image builds AND that it carries every module the
+  # runtime actually imports. `pip install .` omits the dev extra, which is how
+  # httpx — imported at twelve runtime call sites — shipped missing from every
+  # production image while the test suite stayed green.
+  #
+  # The run sets ENVELOCK_ENV=development, overriding the Dockerfile's production
+  # default for this check only. The question being asked is "does every module
+  # import"; in production the settings validators quite rightly refuse to
+  # construct without real key material and row-level security, so the job failed
+  # on configuration rather than on the missing import it exists to catch. Those
+  # refusals have their own coverage in tests/test_production_boot_gates.py.
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: docker build -t envelock-server:ci .
+      - name: Imports resolve without the dev extra
+        run: |
+          docker run --rm \
+            -e ENVELOCK_ENV=development \
+            -e ENVELOCK_SECRET_KEY=ci-only-not-a-real-secret \
+            envelock-server:ci python -c "
+          import importlib, pkgutil, sys
+          import envelock
+          failed = []
+          for m in pkgutil.walk_packages(envelock.__path__, 'envelock.'):
+              try:
+                  importlib.import_module(m.name)
+              except Exception as exc:
+                  failed.append(f'{m.name}: {type(exc).__name__}: {exc}')
+          if failed:
+              print('\n'.join(failed)); sys.exit(1)
+          print('all modules import cleanly')
+          "

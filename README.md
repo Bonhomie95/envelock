@@ -51,7 +51,12 @@ Open <http://localhost:5173>.
 For managed migrations and row-level security in production, run
 `alembic upgrade head` in `server/` instead of relying on auto-create.
 
-Tests: `cd server && pytest` — 772 tests · Lint: `ruff check src tests` ·
+**Production:** one repository, one server. `server/deploy/setup-server.sh`
+builds a fresh Ubuntu 24.04 VPS end to end; `~/deploy/deploy.sh` ships every
+change after that. Step by step: [`server/docs/LAUNCH-GUIDE.md`](server/docs/LAUNCH-GUIDE.md).
+CI runs per app from `.github/workflows/` (server, client, admin).
+
+Tests: `cd server && pytest` — 785 tests · Lint: `ruff check src tests` ·
 Build: `cd client && npm run build` (also builds the sensor packages) ·
 Sensor tests: `cd client && npm run test:sensor` — 54 tests
 
@@ -101,7 +106,7 @@ Three rules keep it coherent, all enforced in code:
 
 ## Status
 
-**772 tests passing**, lint clean, frontend builds. Persistence, auth, the full
+**785 tests passing** (784 with database isolation enforced), lint clean, frontend builds. Persistence, auth, the full
 57-service catalogue, the analysis pipeline, governance and the API are working
 end to end.
 

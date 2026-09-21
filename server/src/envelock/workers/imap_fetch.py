@@ -949,9 +949,15 @@ async def imap_poll_loop(stop: asyncio.Event, *, interval_seconds: int) -> None:
     logger.info("imap poll loop started (interval=%ss)", interval_seconds)
     while not stop.is_set():
         try:
+            started = asyncio.get_running_loop().time()
             totals = await run_imap_poll_cycle()
             if totals["mailboxes"]:
-                logger.info("imap poll cycle: %s", totals)
+                # The duration is the capacity signal: once a cycle takes most of
+                # the interval, new mail starts arriving late (LAUNCH-GUIDE, Part F).
+                took = asyncio.get_running_loop().time() - started
+                logger.info(
+                    "imap poll cycle took %.1fs of %ss: %s", took, interval_seconds, totals
+                )
         except Exception:  # noqa: BLE001
             logger.exception("imap: poll cycle crashed; continuing")
             observe_poll_cycle(outcome="crashed")

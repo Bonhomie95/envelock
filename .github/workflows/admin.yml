@@ -1,0 +1,35 @@
+name: Admin console
+
+# See server.yml: one workflow per app, each scoped to its own folder.
+on:
+  push:
+    branches: [main, master]
+    paths: ["admin/**", ".github/workflows/admin.yml"]
+  pull_request:
+    paths: ["admin/**", ".github/workflows/admin.yml"]
+
+concurrency:
+  group: admin-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: admin
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: admin/package-lock.json
+      - run: npm ci
+      - name: Type-check
+        run: npx tsc -b
+      - run: npm run lint
+      # The operator console reaches every tenant's metadata, so it gets the
+      # same lint gate as the customer app rather than less.
+      - run: npm run build

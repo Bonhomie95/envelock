@@ -1,19 +1,21 @@
 #!/usr/bin/env bash
-# Envelock deploy: pull all three repos from GitHub, rebuild, restart, verify.
+# Envelock deploy: pull the repository from GitHub, rebuild, restart, verify.
 #
-# Designed to live in its OWN folder, independent of the three repositories:
+# One repository (Bonhomie95/envelock) holds all three apps, cloned straight
+# into ~/apps so every path the services, nginx and backups use stays put:
 #
-#     /home/ubuntu/apps/
-#     ├── deploy/     <- this script (not a git repo, nothing pulls it)
-#     ├── server/     <- Bonhomie95/envelockserver
-#     ├── client/     <- Bonhomie95/envelockclient
-#     └── admin/      <- Bonhomie95/envelockadmin
+#     /home/ubuntu/
+#     ├── apps/            <- the repository
+#     │   ├── server/
+#     │   ├── client/
+#     │   └── admin/
+#     └── deploy/          <- this script, and client.env (outside the repo)
 #
-# Being outside the repos means a bad deploy cannot leave the deploy tool itself
-# in a half-updated state, and the script keeps working even if a clone is wiped
-# and re-made. The cost is that `git pull` no longer updates this file, so the
-# tail end compares it against the copy in the server repo and tells you when
-# yours has fallen behind.
+# Being outside the repo means a bad deploy cannot leave the deploy tool itself
+# in a half-updated state, and it keeps working even if the clone is wiped and
+# re-made. The cost is that `git pull` does not update this file, so the tail
+# end compares it against the copy in the repo and tells you when yours has
+# fallen behind.
 #
 # The important part is the PREFLIGHT: the new server code is imported and its
 # settings constructed *before* the running API is touched. A config error — the
@@ -28,19 +30,17 @@ API_UNIT="envelock-api"
 WORKER_UNIT="envelock-worker"         # only exists once key custody is split
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+DEPLOY_DIR="$(dirname "$SELF")"
 
 log()  { printf '\n\033[1;36m==> %s\033[0m\n' "$*"; }
 warn() { printf '\033[1;33m!!  %s\033[0m\n' "$*" >&2; }
 fail() { printf '\n\033[1;31m!!  %s\033[0m\n' "$*" >&2; exit 1; }
 
-# ---- 0. Sanity: are the three clones actually where we think? ----
-for repo in server client admin; do
-  [ -d "$APPS/$repo/.git" ] \
-    || fail "$APPS/$repo is not a git clone. Expected layout:
-    $APPS/server  (envelockserver)
-    $APPS/client  (envelockclient)
-    $APPS/admin   (envelockadmin)
-  Set ENVELOCK_APPS=/path/to/apps if yours lives elsewhere."
+# ---- 0. Sanity: is the clone where we think, with all three apps in it? ----
+[ -d "$APPS/.git" ] || fail "$APPS is not a git clone of the Envelock repository.
+  Set ENVELOCK_APPS=/path/to/the/clone if yours lives elsewhere."
+for app in server client admin; do
+  [ -d "$APPS/$app" ] || fail "$APPS/$app is missing — is $APPS the right repository?"
 done
 
 pull() {                              # $1 = repo dir
@@ -83,8 +83,8 @@ pull() {                              # $1 = repo dir
   [ "$before" = "$after" ] && echo "   (already up to date)" || echo "   ${before:0:7} → ${after:0:7}"
 }
 
-# ---- 1. Server (API) ----
-pull "$APPS/server"
+# ---- 1. Pull, then the server (API) ----
+pull "$APPS"
 log "server: installing deps"
 # Not -q: a dependency floor raised for a security fix (e.g. pypdf, cryptography)
 # upgrades here, and you want to see that happen rather than wonder later.
@@ -128,22 +128,21 @@ if not custody["ok"]:
 print(f"    env={settings.env}  routes={routes}  key custody={custody['key_id']}")
 if custody["mode"] == "local" and settings.env == "production":
     print("    WARNING: mailbox passwords are wrapped with a key in an environment")
-    print("             variable, readable by this web process. See docs/LAUNCH-GUIDE.md, step 9.")
+    print("             variable, readable by this web process. See server/docs/LAUNCH-GUIDE.md, Part B.")
 PY
 ) || fail "server preflight failed — NOT restarting; the old build is still serving"
 
 # ---- 2. Client ----
-pull "$APPS/client"
 # The client has no hardcoded API host: an absent env file means same-origin,
 # which would 404 against the static host. Write it before every build.
 #
 # Anything else the build needs (the sensor's store links, VITE_SENSOR_*_URL)
-# lives in $APPS/deploy/client.env, outside the repo, and is appended here.
+# lives in client.env next to this script, outside the repo, and is appended.
 # Writing only the API line used to erase those links on every deploy.
 {
   printf 'VITE_API_BASE_URL=%s\n' "$API_BASE"
-  if [ -f "$APPS/deploy/client.env" ]; then
-    grep -v '^VITE_API_BASE_URL=' "$APPS/deploy/client.env" || true
+  if [ -f "$DEPLOY_DIR/client.env" ]; then
+    grep -v '^VITE_API_BASE_URL=' "$DEPLOY_DIR/client.env" || true
   fi
 } > "$APPS/client/.env.production"
 log "client: building"
@@ -153,7 +152,6 @@ grep -q "$API_BASE" "$APPS/client"/dist/assets/*.js \
   || fail "client bundle does not reference $API_BASE — the env file was not picked up"
 
 # ---- 3. Admin ----
-pull "$APPS/admin"
 log "admin: building"
 ( cd "$APPS/admin" && { npm ci || npm install; } && npm run build )
 [ -f "$APPS/admin/dist/index.html" ] || fail "admin build produced no index.html"
@@ -194,7 +192,10 @@ chmod o+x "$HOME" "$APPS" "$APPS/client" "$APPS/admin"
 chmod -R a+rX "$APPS/client/dist" "$APPS/admin/dist"
 sudo systemctl restart "$API_UNIT"
 # The worker only exists on a split-custody deployment; restart it if it is there.
-if systemctl list-unit-files | grep -q "^${WORKER_UNIT}.service"; then
+# A file test, not `systemctl list-unit-files | grep -q`: under pipefail that
+# pipeline fails whenever grep exits before the (long) listing is written, and
+# the worker would then silently keep running the previous release.
+if [ -f "/etc/systemd/system/${WORKER_UNIT}.service" ]; then
   sudo systemctl restart "$WORKER_UNIT"
 fi
 

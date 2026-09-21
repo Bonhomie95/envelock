@@ -1,0 +1,41 @@
+name: Web app
+
+# See server.yml: one workflow per app, each scoped to its own folder.
+on:
+  push:
+    branches: [main, master]
+    paths: ["client/**", ".github/workflows/client.yml"]
+  pull_request:
+    paths: ["client/**", ".github/workflows/client.yml"]
+
+concurrency:
+  group: client-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    working-directory: client
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - run: npm ci
+      - name: Type-check
+        run: npx tsc -b
+      - run: npm run lint
+      # The web app's own tests, then the sensor's: the browser extension,
+      # Thunderbird and Outlook add-ins share one core, tested on its own.
+      - name: Test
+        run: npm run test
+      - name: Sensor tests
+        run: npm run test:sensor
+      # build also packages the sensor (zips, xpi, Outlook manifest) and
+      # validates every file those manifests reference.
+      - run: npm run build

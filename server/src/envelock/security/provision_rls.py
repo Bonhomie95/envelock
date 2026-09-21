@@ -60,10 +60,12 @@ async def provision(
             "SELECT 1 FROM pg_roles WHERE rolname = $1", role
         )
         if exists:
-            await conn.execute(
-                f'ALTER ROLE "{role}" LOGIN PASSWORD $${password}$$ '
-                "NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE"
-            )
+            # Only the password. Naming NOSUPERUSER / NOBYPASSRLS in an ALTER is
+            # itself refused unless you ARE a superuser — even to switch them
+            # off — so on a normal deployment (owner with CREATEROLE) every
+            # re-run failed, which is the opposite of "safe to re-run". The
+            # attributes are checked below instead of re-asserted.
+            await conn.execute(f'ALTER ROLE "{role}" LOGIN PASSWORD $${password}$$')
             print(f"· role {role!r} updated")
         else:
             await conn.execute(
@@ -72,8 +74,8 @@ async def provision(
             )
             print(f"· role {role!r} created")
 
-        # Belt and braces: if the role pre-existed with either attribute, the
-        # ALTER above has cleared it — verify rather than assume.
+        # A role that pre-existed could carry superuser or BYPASSRLS, which would
+        # make every policy inert. Verify rather than assume.
         row = await conn.fetchrow(
             "SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = $1", role
         )

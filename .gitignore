@@ -15,7 +15,7 @@ client_secret*.json
 *dkim*private*
 vapid*.json
 czds-*.json
-docs/
+/docs/
 .claude
 
 # ── Python / server ──────────────────────────────────────────────────────────
