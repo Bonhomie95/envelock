@@ -340,7 +340,7 @@ const PLANS = [
   {
     name: "Essential",
     price: "$25",
-    unit: "per month, 5 mailboxes",
+    unit: "per month, 5 mailboxes · $2/mo each extra",
     line: "Protects your mail from invoice fraud.",
     features: [
       "Everything in Guard",
@@ -356,7 +356,7 @@ const PLANS = [
   {
     name: "Complete",
     price: "$47.50",
-    unit: "per month, 7 mailboxes",
+    unit: "per month, 5 mailboxes · $3.50/mo each extra",
     line: "Adds protection if a mailbox is broken into.",
     features: [
       "Everything in Essential",
@@ -642,8 +642,8 @@ export default function Landing() {
           </div>
 
           <p className="fg-3 mt-8 text-sm">
-            15 days free. Pay monthly with no penalty, or save up to 20% by paying
-            yearly. Working on your own? $6 a month.
+            15 days free, then billed monthly — cancel anytime. Each plan includes
+            5 mailboxes; add more whenever you need them.
           </p>
         </div>
       </section>

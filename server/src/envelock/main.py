@@ -61,6 +61,35 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     set_build_info(version=__version__, env=settings.env)
     logger.info("envelock starting (env=%s)", settings.env)
 
+    # Card billing half-configured fails quietly in front of a paying customer:
+    # no webhook secret → they pay and the plan never activates; a missing
+    # price → checkout or extra mailboxes answer "not available". Not a boot
+    # refusal (that would take protection down for everyone) — a loud line.
+    if settings.stripe_secret_key:
+        missing_billing = [
+            name
+            for name, value in (
+                ("ENVELOCK_STRIPE_WEBHOOK_SECRET", settings.stripe_webhook_secret),
+                ("ENVELOCK_STRIPE_PRICE_ESSENTIAL", settings.stripe_price_essential),
+                ("ENVELOCK_STRIPE_PRICE_COMPLETE", settings.stripe_price_complete),
+                (
+                    "ENVELOCK_STRIPE_PRICE_EXTRA_MAILBOX_ESSENTIAL",
+                    settings.stripe_price_extra_mailbox_essential,
+                ),
+                (
+                    "ENVELOCK_STRIPE_PRICE_EXTRA_MAILBOX_COMPLETE",
+                    settings.stripe_price_extra_mailbox_complete,
+                ),
+            )
+            if not value
+        ]
+        if missing_billing:
+            logger.error(
+                "Stripe is on but billing is incomplete — missing %s "
+                "(see LAUNCH-GUIDE step 11)",
+                ", ".join(missing_billing),
+            )
+
     # Say out loud what custody this process actually has over stored mailbox
     # credentials (PRD §5.2). "We use a KMS" has to be checkable in a log line,
     # not just claimed in a doc — and a seal-only process needs to know it is one

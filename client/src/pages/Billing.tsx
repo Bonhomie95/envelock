@@ -28,6 +28,12 @@ export default function Billing() {
   const [provider, setProvider] = useState<string>("");
   const [reference, setReference] = useState("");
   const [seatCount, setSeatCount] = useState(1);
+  // Mailboxes beyond the plan's five: bought at checkout, or set on the live
+  // subscription afterwards. null = not touched yet (defaults from usage).
+  const [extraAtCheckout, setExtraAtCheckout] = useState<number | null>(null);
+  const [seatTarget, setSeatTarget] = useState<number | null>(null);
+  const [planMsg, setPlanMsg] = useState<string | null>(null);
+  const [openedAt] = useState(() => Date.now());
   const [seatBusy, setSeatBusy] = useState(false);
   const [seatMsg, setSeatMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -57,6 +63,21 @@ export default function Billing() {
   }, [load]);
 
   const identifier = useMemo(() => tenant?.primary_domain ?? "", [tenant]);
+  const hasSub = Boolean(tenant?.billing?.subscription);
+  const subscribedPlan = tenant?.subscribed_plan ?? tenant?.plan ?? "";
+  const used = tenant?.mailboxes?.used ?? 0;
+  const included = 5;
+  const neededExtra = Math.max(0, used - included);
+  const checkoutExtra = extraAtCheckout ?? neededExtra;
+  const currentExtra = tenant?.mailboxes?.extra_seats ?? 0;
+  const targetExtra = seatTarget ?? currentExtra;
+  // Stripe only defers the first charge when the trial has 48h+ left (the
+  // server uses 49h); inside that window checkout charges today.
+  const trialEndsAt = tenant?.trial.ends_at ? new Date(tenant.trial.ends_at) : null;
+  const chargeDeferred =
+    Boolean(tenant?.trial.active) &&
+    trialEndsAt !== null &&
+    trialEndsAt.getTime() - openedAt > 49 * 3600 * 1000;
   const isSandbox = provider === "sandbox";
   const isStripe = provider === "stripe";
   const status = params.get("status"); // "success" | "cancel" after Stripe redirect
@@ -109,6 +130,46 @@ export default function Billing() {
     }
   }
 
+  async function updateSeats() {
+    setSeatBusy(true);
+    setSeatMsg(null);
+    try {
+      const r = await api.setSeats(targetExtra);
+      setSeatMsg(
+        targetExtra > currentExtra
+          ? `Done — you can now protect ${r.capacity} mailboxes. The extra seats were charged, prorated to your billing date.`
+          : `Done — you can now protect ${r.capacity} mailboxes. The difference is credited on your next invoice.`,
+      );
+      setSeatTarget(null);
+      await load();
+    } catch (e) {
+      setSeatMsg(e instanceof ApiError ? e.message : "Could not change seats.");
+    } finally {
+      setSeatBusy(false);
+    }
+  }
+
+  async function switchPlan() {
+    setBusy(true);
+    setError(null);
+    setPlanMsg(null);
+    const upgrading = selected === "complete";
+    try {
+      await api.changePlan(selected);
+      setPlanMsg(
+        `You're now on ${planTier(selected)?.name ?? selected}. ` +
+          (upgrading
+            ? "The difference was charged, prorated to your billing date."
+            : "The difference is credited on your next invoice."),
+      );
+      await load();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Could not change plan. Try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function openPortal() {
     setBusy(true);
     setError(null);
@@ -127,7 +188,7 @@ export default function Billing() {
     setBusy(true);
     setError(null);
     try {
-      const { url } = await api.startCheckout(selected);
+      const { url } = await api.startCheckout(selected, checkoutExtra);
       window.location.assign(url); // hand off to Stripe's hosted page
     } catch (e) {
       setBusy(false);
@@ -220,8 +281,9 @@ export default function Billing() {
           {tenant?.trial.payment_method_ok ? "Billing" : "Set up billing"}
         </h1>
         <p className="lede mt-4 text-base">
-          Add a payment method to keep full protection when your trial ends. You
-          can change or cancel anytime — monthly, no penalty.
+          {hasSub
+            ? "Change your plan or mailbox seats below. Changes apply to your existing subscription, prorated, so you're never billed twice."
+            : "Add a payment method to keep full protection when your trial ends. You can change or cancel anytime — monthly, no penalty."}
         </p>
 
         {/* Already have a card → self-service portal (update card, invoices, cancel). */}
@@ -288,13 +350,43 @@ export default function Billing() {
                   <span className="fg-3 text-[11px]">{p.per}</span>
                 </span>
               </div>
-              <p className="fg-3 mt-1 pl-6 text-xs">{p.blurb}</p>
+              <p className="fg-3 mt-1 pl-6 text-xs">
+                {p.blurb} Extra mailboxes {p.extra}/mo each.
+              </p>
+              {hasSub && subscribedPlan === p.id && (
+                <p className="accent mono-xs mt-1 pl-6">CURRENT PLAN</p>
+              )}
             </button>
           ))}
         </div>
 
+        {hasSub && (
+          <div className="mt-6">
+            <Button
+              variant="accent"
+              disabled={busy || selected === subscribedPlan}
+              onClick={switchPlan}
+            >
+              {busy && <Loader2 size={13} className="animate-spin" aria-hidden />}
+              {selected === subscribedPlan
+                ? `YOU'RE ON ${(tier?.name ?? selected).toUpperCase()}`
+                : `SWITCH TO ${(tier?.name ?? selected).toUpperCase()}`}
+            </Button>
+            {planMsg && (
+              <p className="mt-3 text-sm text-[var(--ok)]" role="status">
+                {planMsg}
+              </p>
+            )}
+            {error && error !== "signed-out" && (
+              <p className="mt-3 text-sm text-[var(--danger)]" role="alert">
+                {error}
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Payment method */}
-        <div className="mt-8">
+        <div className={cn("mt-8", hasSub && "hidden")}>
           <h2 className="sect-label">Payment method</h2>
           {providers === null ? (
             <p className="fg-3 mt-3 text-sm">Loading…</p>
@@ -337,6 +429,28 @@ export default function Billing() {
                 /* Real Stripe: hand off to the hosted card page. No card data
                    touches us; the webhook activates the plan on completion. */
                 <>
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <label className="fg-2 text-sm" htmlFor="extra-mb">
+                      Extra mailboxes
+                    </label>
+                    <input
+                      id="extra-mb"
+                      type="number"
+                      min={0}
+                      max={500}
+                      value={checkoutExtra}
+                      onChange={(e) =>
+                        setExtraAtCheckout(
+                          Math.max(0, Math.min(500, Math.floor(Number(e.target.value) || 0))),
+                        )
+                      }
+                      className="field w-20 text-sm"
+                    />
+                    <span className="fg-3 text-xs">
+                      beyond the 5 included · {tier?.extra ?? "$3.50"}/mo each
+                      {neededExtra > 0 && ` · you have ${used} mailboxes`}
+                    </span>
+                  </div>
                   <Button
                     variant="accent"
                     disabled={busy}
@@ -394,7 +508,7 @@ export default function Billing() {
               )}
             </div>
           )}
-          {error && error !== "signed-out" && (
+          {!hasSub && error && error !== "signed-out" && (
             <p className="mt-3 text-sm text-[var(--danger)]" role="alert">
               {error}
             </p>
@@ -408,13 +522,37 @@ export default function Billing() {
           <h2 className="sect-label">Summary</h2>
           {tier && (
             <>
-              <div className="mt-4 flex items-baseline justify-between gap-2">
+              {/* Stacked: the aside is narrow, and name + price + "/mo · 5
+                  mailboxes" on one row ran together ("Complete$47.50"). */}
+              <div className="mt-4">
                 <span className="text-sm font-semibold">{tier.name}</span>
-                <span className="tnum font-mono text-lg font-semibold">
+                <div className="tnum mt-0.5 font-mono text-lg font-semibold">
                   {tier.price}
-                  <span className="fg-3 text-[11px]">{tier.per}</span>
-                </span>
+                  <span className="fg-3 ml-1 text-[11px] font-normal">{tier.per}</span>
+                </div>
               </div>
+              {(() => {
+                const extra = hasSub ? currentExtra : isStripe ? checkoutExtra : 0;
+                if (!extra) return null;
+                const base = Number(tier.price.replace("$", ""));
+                const total = base + (extra * tier.extraCents) / 100;
+                return (
+                  <div className="fg-2 mt-2 space-y-1 text-xs">
+                    <div className="flex justify-between gap-2">
+                      <span>
+                        {extra} extra mailbox{extra === 1 ? "" : "es"} × {tier.extra}
+                      </span>
+                      <span className="tnum font-mono">
+                        ${((extra * tier.extraCents) / 100).toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-2 border-t pt-1 font-semibold text-[var(--fg)]">
+                      <span>Total per month</span>
+                      <span className="tnum font-mono">${total.toFixed(2)}</span>
+                    </div>
+                  </div>
+                );
+              })()}
               <ul className="fg-2 mt-4 space-y-1.5" role="list">
                 {tier.features.map((f) => (
                   <li key={f} className="flex items-start gap-1.5 text-xs">
@@ -439,9 +577,11 @@ export default function Billing() {
             </div>
           )}
           <p className="fg-3 mt-3 text-[11px] leading-relaxed">
-            {tenant?.trial.active
-              ? "You won't be charged until your trial ends — adding a card now just keeps protection on when it does."
-              : "Billed monthly. Cancel anytime; you drop to Guard (free), never locked out."}
+            {hasSub || !tenant?.trial.active
+              ? "Billed monthly. Cancel anytime; you drop to Guard (free), never locked out."
+              : chargeDeferred && trialEndsAt
+                ? `No charge today — your first payment is on ${trialEndsAt.toLocaleDateString(undefined, { month: "long", day: "numeric" })}, when your trial ends.`
+                : "Your trial ends within two days, so checkout charges your first month today."}
           </p>
         </div>
 
@@ -462,36 +602,85 @@ export default function Billing() {
               </span>
             </div>
             <p className="fg-3 mt-2 text-[11px] leading-relaxed">
-              Your {(tenant.subscribed_plan ?? tenant.plan)} plan includes{" "}
-              {tenant.mailboxes.included}. Buy more to protect additional mailboxes.
+              Your plan includes {tenant.mailboxes.included}. Each extra mailbox is{" "}
+              {planTier(subscribedPlan)?.extra ?? "$3.50"}/mo.
             </p>
-            <div className="mt-3 flex items-center gap-2">
-              <input
-                type="number"
-                min={1}
-                max={500}
-                value={seatCount}
-                onChange={(e) =>
-                  setSeatCount(Math.max(1, Math.min(500, Number(e.target.value) || 1)))
-                }
-                aria-label="Seats to buy"
-                className="field w-20 text-sm"
-              />
-              <Button
-                size="sm"
-                variant="line"
-                disabled={seatBusy || !provider}
-                onClick={buySeats}
-              >
-                {seatBusy ? (
-                  <Loader2 size={12} className="animate-spin" aria-hidden />
-                ) : (
-                  <Plus size={12} aria-hidden />
+            {hasSub ? (
+              /* Live subscription: set the total number of extra seats. */
+              <>
+                <div className="mt-3 flex items-center gap-2">
+                  <label className="fg-2 text-xs" htmlFor="seat-target">
+                    Extra seats
+                  </label>
+                  <input
+                    id="seat-target"
+                    type="number"
+                    min={neededExtra}
+                    max={500}
+                    value={targetExtra}
+                    onChange={(e) =>
+                      setSeatTarget(
+                        Math.max(0, Math.min(500, Math.floor(Number(e.target.value) || 0))),
+                      )
+                    }
+                    className="field w-20 text-sm"
+                  />
+                  <Button
+                    size="sm"
+                    variant="line"
+                    disabled={seatBusy || targetExtra === currentExtra}
+                    onClick={updateSeats}
+                  >
+                    {seatBusy && <Loader2 size={12} className="animate-spin" aria-hidden />}
+                    UPDATE
+                  </Button>
+                </div>
+                {targetExtra !== currentExtra && (
+                  <p className="fg-3 mt-2 text-[11px] leading-relaxed">
+                    {targetExtra > currentExtra
+                      ? `Adds ${targetExtra - currentExtra} × ${planTier(subscribedPlan)?.extra ?? "$3.50"}/mo, charged now for the rest of this billing period.`
+                      : "Fewer seats — the unused time is credited on your next invoice."}
+                  </p>
                 )}
-                BUY SEAT{seatCount === 1 ? "" : "S"}
-              </Button>
-            </div>
-            {seatMsg && <p className="fg-3 mt-2 text-[11px]">{seatMsg}</p>}
+              </>
+            ) : isStripe ? (
+              <p className="fg-2 mt-3 text-xs leading-relaxed">
+                Add extra mailboxes at checkout. Once your plan is active you can
+                change the number here anytime.
+              </p>
+            ) : (
+              <div className="mt-3 flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  max={500}
+                  value={seatCount}
+                  onChange={(e) =>
+                    setSeatCount(Math.max(1, Math.min(500, Number(e.target.value) || 1)))
+                  }
+                  aria-label="Seats to buy"
+                  className="field w-20 text-sm"
+                />
+                <Button
+                  size="sm"
+                  variant="line"
+                  disabled={seatBusy || !provider}
+                  onClick={buySeats}
+                >
+                  {seatBusy ? (
+                    <Loader2 size={12} className="animate-spin" aria-hidden />
+                  ) : (
+                    <Plus size={12} aria-hidden />
+                  )}
+                  BUY SEAT{seatCount === 1 ? "" : "S"}
+                </Button>
+              </div>
+            )}
+            {seatMsg && (
+              <p className="fg-2 mt-2 text-[11px] leading-relaxed" role="status">
+                {seatMsg}
+              </p>
+            )}
           </div>
         )}
       </aside>

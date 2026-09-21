@@ -145,7 +145,8 @@ function Terms() {
       <UL
         items={[
           "A trial starts when you register and runs on the top plan. When it ends the workspace drops to the free Guard tier rather than switching off — your data and your alert history stay.",
-          "Paid plans bill monthly or yearly in advance through our payment processor. Prices are shown before you pay.",
+          "Paid plans bill monthly in advance through our payment processor. Each plan includes five mailboxes; additional mailboxes are billed per mailbox per month. Prices are shown before you pay.",
+          "Changing your plan or number of mailboxes mid-period is pro-rated: an increase is charged for the rest of the period right away, and a reduction is credited to your next invoice.",
           "You can cancel at any time from the billing portal. Cancellation takes effect at the end of the paid period; we do not pro-rate a partial month.",
           "We will give at least 30 days' notice before a price change affects you.",
         ]}

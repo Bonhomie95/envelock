@@ -390,6 +390,12 @@ export interface TenantInfo {
   plan: string;
   subscribed_plan?: string;
   trial_ended?: boolean;
+  billing?: {
+    /** A live Stripe subscription — plan and seat changes update it in place. */
+    subscription: boolean;
+    /** Monthly price of one mailbox beyond the plan's included five. */
+    extra_mailbox_cents: number;
+  };
   trial: {
     started_at: string | null;
     ends_at: string | null;
@@ -1256,10 +1262,18 @@ export const api = {
 
   // Start a hosted Stripe Checkout for a paid plan; returns the URL to redirect
   // the browser to. Activation happens server-side via the Stripe webhook.
-  startCheckout: (plan: string) =>
+  startCheckout: (plan: string, extra_mailboxes = 0) =>
     request<{ url: string; id: string }>("/api/v1/billing/checkout", {
       method: "POST",
-      body: JSON.stringify({ plan }),
+      body: JSON.stringify({ plan, extra_mailboxes }),
+    }),
+
+  // Set the number of paid mailboxes beyond the plan's five, on the live Stripe
+  // subscription. Increases are charged (prorated) before they're granted.
+  setSeats: (extra_mailboxes: number) =>
+    request<{ extra_mailbox_seats: number; capacity: number }>("/api/v1/billing/seats", {
+      method: "PUT",
+      body: JSON.stringify({ extra_mailboxes }),
     }),
 
   // Buy additional mailbox seats (verify-instrument model; sandbox works in dev).

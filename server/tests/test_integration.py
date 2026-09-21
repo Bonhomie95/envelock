@@ -219,15 +219,13 @@ async def test_quarantine_refuses_on_forwarding_connected_mailbox(
         json={"name": "Acme", "domain": "acme.com"},
         headers=h,
     )
-    client.post(
+    mb = client.post(
         "/api/v1/mailboxes",
-        json={
-            "address": "warehouse@acme.com",
-            "mailbox_class": "monitored",
-            "sources": ["forward_ingest"],
-        },
+        json={"address": "warehouse@acme.com", "mailbox_class": "monitored"},
         headers=h,
-    )
+    ).json()
+    # Sources are earned by connecting, never declared at creation.
+    client.post(f"/api/v1/mailboxes/{mb['id']}/connect/forward", headers=h)
     for i in range(3):
         client.post(
             "/api/v1/ingest",
@@ -321,3 +319,34 @@ async def test_status_reports_unconfigured_providers_honestly(client: TestClient
     for provider in status["mail_providers"]:
         if not provider["configured"]:
             assert provider["reason"]
+
+
+async def test_quarantine_on_an_unconnected_mailbox_says_so(client: TestClient) -> None:
+    """A mailbox with no live connection used to get the forwarding refusal
+    ("connected by forwarding… post-delivery") — false, and it sent the customer
+    looking for a forwarding rule that doesn't exist."""
+    h = auth(sign_in(client))
+    client.post(
+        "/api/v1/tenants/bootstrap",
+        json={"name": "Acme", "domain": "acme.com"},
+        headers=h,
+    )
+    client.post(
+        "/api/v1/mailboxes",
+        json={"address": "warehouse@acme.com", "mailbox_class": "monitored"},
+        headers=h,
+    )
+    client.post(
+        "/api/v1/ingest",
+        json={
+            "raw_message": FRAUD.replace("pay@", "warehouse@"),
+            "mailbox_address": "warehouse@acme.com",
+        },
+        headers=h,
+    )
+    alerts = client.get("/api/v1/alerts", headers=h).json()["alerts"]
+    assert alerts
+    result = client.post(f"/api/v1/alerts/{alerts[0]['id']}/quarantine", headers=h).json()
+    assert not result["succeeded"]
+    assert "isn't connected" in result["reason"]
+    assert "forwarding" not in result["reason"]

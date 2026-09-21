@@ -29,6 +29,16 @@ type Step =
   | "recovery"
   | "set-password";
 
+const LAST_EMAIL_KEY = "envelock.last_email";
+
+function rememberEmail(email: string) {
+  try {
+    localStorage.setItem(LAST_EMAIL_KEY, email.trim());
+  } catch {
+    /* storage blocked (private mode) — pre-fill is a convenience only */
+  }
+}
+
 export default function SignIn() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -46,7 +56,16 @@ export default function SignIn() {
   const [needsVerification, setNeedsVerification] = useState(false);
   const [step, setStep] = useState<Step>("credentials");
 
-  const [email, setEmail] = useState("");
+  // Pre-filled from the last address used on this device, so someone arriving
+  // from the confirmation email doesn't retype it. Kept in local storage, never
+  // in a URL (links end up in logs, history and referrers).
+  const [email, setEmail] = useState(() => {
+    try {
+      return localStorage.getItem(LAST_EMAIL_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
   const [password, setPassword] = useState("");
   const [domain, setDomain] = useState("");
   const [code, setCode] = useState("");
@@ -105,6 +124,7 @@ export default function SignIn() {
           // (dashboard, profile, operator console) when the domain was left blank.
           tenant_name: domain || email.split("@")[1] || email,
         });
+        rememberEmail(email);
         if (reg.verification_required) {
           // Signing in now would just 403 — tell them what to do instead.
           setMode("signin");
@@ -117,6 +137,7 @@ export default function SignIn() {
         }
       }
       const login = await api.login({ email, password });
+      rememberEmail(email);
       setMfaToken(login.mfa_token);
 
       if (login.mfa_setup_required) {

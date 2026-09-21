@@ -165,8 +165,24 @@ class HostedCheckoutProvider(PaymentProvider, Protocol):
         cancel_url: str,
         client_reference_id: str,
         metadata: dict[str, str] | None = ...,
+        extra_items: list[tuple[str, int]] | None = ...,
+        trial_end: int | None = ...,
+        customer_id: str | None = ...,
         transport: Transport | None = ...,
     ) -> CheckoutSession: ...
+
+    async def get_subscription(
+        self, subscription_id: str, *, transport: Transport | None = ...
+    ) -> dict: ...
+
+    async def update_subscription(
+        self,
+        subscription_id: str,
+        *,
+        items: list[dict[str, str]],
+        charge_now: bool,
+        transport: Transport | None = ...,
+    ) -> dict: ...
 
     async def create_billing_portal_session(
         self,
@@ -258,6 +274,9 @@ class _Stripe:
         cancel_url: str,
         client_reference_id: str,
         metadata: dict[str, str] | None = None,
+        extra_items: list[tuple[str, int]] | None = None,
+        trial_end: int | None = None,
+        customer_id: str | None = None,
         transport: Transport | None = None,
     ) -> CheckoutSession:
         """Create a hosted Stripe Checkout Session in subscription mode.
@@ -276,9 +295,24 @@ class _Stripe:
             "line_items[0][quantity]": "1",
             "success_url": success_url,
             "cancel_url": cancel_url,
-            "customer_email": customer_email,
             "client_reference_id": client_reference_id,
         }
+        # A returning customer (cancelled, now back) keeps their Stripe customer
+        # — card, invoices, portal history — instead of getting a duplicate.
+        # Stripe rejects `customer` and `customer_email` together.
+        if customer_id:
+            form["customer"] = customer_id
+        else:
+            form["customer_email"] = customer_email
+        # Further per-seat lines (extra mailboxes) on the same subscription.
+        for i, (price, qty) in enumerate(extra_items or [], start=1):
+            if qty > 0:
+                form[f"line_items[{i}][price]"] = price
+                form[f"line_items[{i}][quantity]"] = str(qty)
+        if trial_end:
+            # First charge when Envelock's own trial ends, not today — the
+            # billing page promises exactly that.
+            form["subscription_data[trial_end]"] = str(trial_end)
         for k, v in (metadata or {}).items():
             form[f"metadata[{k}]"] = v
             # Mirror onto the subscription so it's visible after the session expires.
@@ -291,6 +325,49 @@ class _Stripe:
         )
         return CheckoutSession(
             provider=self.id, id=body.get("id", ""), url=body.get("url", "")
+        )
+
+    async def get_subscription(
+        self, subscription_id: str, *, transport: Transport | None = None
+    ) -> dict:
+        if not self.is_configured():
+            raise PaymentError("Stripe is not configured on this deployment")
+        return await _transport(transport).request(
+            "GET",
+            f"https://api.stripe.com/v1/subscriptions/{subscription_id}",
+            headers=self._headers(),
+        )
+
+    async def update_subscription(
+        self,
+        subscription_id: str,
+        *,
+        items: list[dict[str, str]],
+        charge_now: bool,
+        transport: Transport | None = None,
+    ) -> dict:
+        """Change a live subscription's items (plan price, seat quantity).
+
+        `charge_now` invoices the prorated difference immediately and fails the
+        whole update if that payment doesn't go through — so nothing is granted
+        on a declined card. Otherwise the proration (typically a credit, on a
+        reduction) lands on the next invoice."""
+        if not self.is_configured():
+            raise PaymentError("Stripe is not configured on this deployment")
+        form: dict[str, str] = {}
+        for i, item in enumerate(items):
+            for k, v in item.items():
+                form[f"items[{i}][{k}]"] = v
+        if charge_now:
+            form["proration_behavior"] = "always_invoice"
+            form["payment_behavior"] = "error_if_incomplete"
+        else:
+            form["proration_behavior"] = "create_prorations"
+        return await _transport(transport).request(
+            "POST",
+            f"https://api.stripe.com/v1/subscriptions/{subscription_id}",
+            headers=self._headers(),
+            data=form,
         )
 
     async def create_billing_portal_session(

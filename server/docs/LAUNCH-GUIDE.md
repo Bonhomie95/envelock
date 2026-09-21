@@ -252,16 +252,43 @@ journalctl -u envelock-worker -n 80 --no-pager
 1. **Activate:** Stripe dashboard → **Activate payments** — business details,
    payout bank account, identity check. Can take a day.
 2. **Products** (switch to **Live**, top right) → **Product catalogue → Add
-   product**: "Envelock Essential" and "Envelock Complete", each with its
-   recurring price from your pricing page. Copy each **price ID** (`price_…`).
+   product**. Create four, each **Recurring · Monthly · USD**, and copy each
+   **price ID** (`price_…`):
+
+   | Product | Price | Pricing model |
+   |---|---|---|
+   | Envelock Essential | $25.00 | Flat rate |
+   | Envelock Complete | $47.50 | Flat rate |
+   | Envelock Essential — extra mailbox | $2.00 | Per unit |
+   | Envelock Complete — extra mailbox | $3.50 | Per unit |
+
+   Both plans include 5 mailboxes; the "extra mailbox" prices are what each
+   one beyond that costs. The amounts must match the app
+   (`server/src/envelock/billing/pricing.py`), or the page shows one price and
+   Stripe charges another.
 3. **API key:** **Developers → API keys** → **Secret key** (`sk_live_…`).
 4. **Webhook:** **Developers → Webhooks → Add endpoint**
    - URL: `https://api.envelock.org/api/v1/billing/stripe/webhook`
-   - Events: `checkout.session.completed`,
-     `checkout.session.async_payment_succeeded`, `customer.subscription.deleted`
+   - Events (all six):
+     `checkout.session.completed`,
+     `checkout.session.async_payment_succeeded`,
+     `checkout.session.async_payment_failed`,
+     `customer.subscription.created`,
+     `customer.subscription.updated`,
+     `customer.subscription.deleted`
    - Copy the **Signing secret** (`whsec_…`).
-5. **Customer portal:** **Settings → Billing → Customer portal** → turn on.
-6. On the server, in **both** `~/apps/server/.env` and
+5. **Customer portal:** **Settings → Billing → Customer portal** → turn on, and set:
+   - **Cancellations:** allowed, **at end of billing period** (the terms promise
+     this).
+   - **Subscription updates / switch plans:** **off**. Plan and seat changes
+     happen inside Envelock, which charges before granting; leaving them on in
+     the portal is harmless (the webhook syncs them) but gives customers two
+     places to do the same thing.
+   - Payment methods and invoice history: on.
+6. **Subscriptions → Settings (Manage failed payments):** retry per Stripe's
+   default schedule, then **cancel the subscription**. The cancel fires
+   `customer.subscription.deleted`, which moves the customer to Guard (free).
+7. On the server, in **both** `~/apps/server/.env` and
    `~/apps/server/.env.worker` (`nano` to edit):
 
    ```
@@ -269,11 +296,19 @@ journalctl -u envelock-worker -n 80 --no-pager
    ENVELOCK_STRIPE_WEBHOOK_SECRET=whsec_...
    ENVELOCK_STRIPE_PRICE_ESSENTIAL=price_...
    ENVELOCK_STRIPE_PRICE_COMPLETE=price_...
+   ENVELOCK_STRIPE_PRICE_EXTRA_MAILBOX_ESSENTIAL=price_...
+   ENVELOCK_STRIPE_PRICE_EXTRA_MAILBOX_COMPLETE=price_...
    ```
 
    then `sudo systemctl restart envelock-api envelock-worker`
-7. **Real-card test:** upgrade your own test workspace, confirm the plan
-   changes, refund yourself in Stripe.
+8. **Real-card test** on your own test workspace, then refund yourself in Stripe:
+   - Billing → set 1 extra mailbox → checkout. With 3+ trial days left, Stripe
+     shows **$0.00 due today** and a first charge on the trial end date.
+   - Back in the app: Billing shows "CURRENT PLAN" and 6 mailboxes.
+   - Set extra seats to 2 → **UPDATE**. Stripe → the customer → an invoice for
+     the prorated seat appears.
+   - Switch to Essential → the next invoice shows a credit.
+   - Manage billing → cancel → at period end the workspace drops to Guard.
 
 ## 12. 👤 Google and Microsoft app approval
 

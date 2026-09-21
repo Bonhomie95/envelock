@@ -1,7 +1,7 @@
 """Plan-based mailbox seat caps and the anti-abuse rules around them.
 
 Rules under test:
-  * Trial sits on the top plan → 7 mailboxes; a lapsed/unpaid tenant (Guard) → 0.
+  * Trial sits on the top plan → 5 mailboxes; a lapsed/unpaid tenant (Guard) → 0.
   * Adding beyond the cap is refused until seats are bought (or the plan upgraded).
   * A domain's trial can't be reused by deleting the account and re-registering.
 """
@@ -68,20 +68,20 @@ def _lapse_trial(client: TestClient, h: dict) -> None:
 
 
 def test_trial_caps_mailboxes_at_the_top_plan_allowance(client: TestClient) -> None:
-    """On the Complete trial a tenant may protect 7 mailboxes; the 8th is refused."""
+    """On the Complete trial a tenant may protect 5 mailboxes; the 6th is refused."""
     h = _owner(client, "capco.example")
     t = client.get("/api/v1/tenant", headers=h).json()
-    assert t["mailboxes"]["capacity"] == 7
+    assert t["mailboxes"]["capacity"] == 5
 
-    for i in range(7):
+    for i in range(5):
         assert _add(client, h, f"box{i}@capco.example") == 201
     assert _add(client, h, "overflow@capco.example") == 402
 
     t = client.get("/api/v1/tenant", headers=h).json()
     assert t["mailboxes"] == {
-        "used": 7,
-        "capacity": 7,
-        "included": 7,
+        "used": 5,
+        "capacity": 5,
+        "included": 5,
         "extra_seats": 0,
         "can_add": False,
     }
@@ -97,24 +97,24 @@ def test_guard_cannot_add_any_mailbox(client: TestClient) -> None:
 
 def test_bulk_add_respects_the_seat_cap(client: TestClient) -> None:
     """A big paste is filled up to the cap; the rest are reported for purchase."""
-    h = _owner(client, "bulkco.example")  # Complete trial → cap 7
+    h = _owner(client, "bulkco.example")  # Complete trial → cap 5
     addrs = [f"user{i}@bulkco.example" for i in range(10)]
     r = client.post(
         "/api/v1/mailboxes/bulk",
         json={"addresses": addrs, "mailbox_class": "protected"},
         headers=h,
     ).json()
-    assert r["created_count"] == 7
-    assert r["over_limit_count"] == 3
-    assert r["capacity"] == 7
+    assert r["created_count"] == 5
+    assert r["over_limit_count"] == 5
+    assert r["capacity"] == 5
 
 
 def test_buying_seats_raises_capacity(client: TestClient) -> None:
     """Extra seats (bought via the dev sandbox rail) lift the cap immediately."""
-    h = _owner(client, "seatbuy.example")  # cap 7
-    for i in range(7):
+    h = _owner(client, "seatbuy.example")  # cap 5
+    for i in range(5):
         assert _add(client, h, f"box{i}@seatbuy.example") == 201
-    assert _add(client, h, "eighth@seatbuy.example") == 402  # full
+    assert _add(client, h, "sixth@seatbuy.example") == 402  # full
 
     bought = client.post(
         "/api/v1/billing/seats",
@@ -124,8 +124,8 @@ def test_buying_seats_raises_capacity(client: TestClient) -> None:
     assert bought.status_code == 200 and bought.json()["extra_mailbox_seats"] == 3
 
     t = client.get("/api/v1/tenant", headers=h).json()
-    assert t["mailboxes"]["capacity"] == 10
-    assert _add(client, h, "eighth@seatbuy.example") == 201  # now fits
+    assert t["mailboxes"]["capacity"] == 8
+    assert _add(client, h, "sixth@seatbuy.example") == 201  # now fits
 
 
 def test_trial_cannot_be_reused_after_deleting_the_account(client: TestClient) -> None:

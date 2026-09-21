@@ -54,7 +54,17 @@ PLAN_MAILBOX_SEATS: dict[Plan, int] = {
     Plan.GUARD: 0,
     Plan.SOLO: 1,
     Plan.ESSENTIAL: 5,
-    Plan.COMPLETE: 7,
+    Plan.COMPLETE: 5,
+}
+
+#: Monthly price of each mailbox beyond the plan's included allowance, in cents.
+#: The first-band protected rate below, so an extra seat costs exactly what that
+#: mailbox adds to the plan's own price (Complete: $30 platform + 5 × $3.50).
+#: Charged through a per-seat Stripe Price (ENVELOCK_STRIPE_PRICE_EXTRA_MAILBOX_*)
+#: whose amount must match this.
+EXTRA_MAILBOX_CENTS: dict[Plan, int] = {
+    Plan.ESSENTIAL: 200,
+    Plan.COMPLETE: 350,
 }
 
 
@@ -63,6 +73,13 @@ def included_mailbox_seats(plan: str) -> int:
         return PLAN_MAILBOX_SEATS[Plan(plan)]
     except (ValueError, KeyError):
         return 0
+
+
+def extra_mailbox_cents(plan: str) -> int | None:
+    try:
+        return EXTRA_MAILBOX_CENTS.get(Plan(plan))
+    except ValueError:
+        return None
 
 #: Additional mail-carrying domains cost half. Defensive/parked domains are free
 #: and unlimited — monitoring one costs a daily DNS lookup.

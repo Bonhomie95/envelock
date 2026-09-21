@@ -406,6 +406,11 @@ function DeleteAccount({ me }: { me: Me }) {
         /* best effort */
       }
       auth.clear();
+      try {
+        localStorage.removeItem("envelock.last_email"); // don't pre-fill a deleted account
+      } catch {
+        /* storage blocked */
+      }
       // /signin is the only page that reads location.state.notice — landing on
       // "/" showed nothing, so account deletion ended with zero confirmation.
       navigate("/signin", {

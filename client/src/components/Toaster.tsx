@@ -19,7 +19,10 @@ export default function Toaster() {
   if (toasts.length === 0) return null;
   return (
     <div
-      className="pointer-events-none fixed inset-x-3 bottom-3 z-[100] flex flex-col items-center gap-2 sm:inset-x-auto sm:right-4 sm:bottom-4 sm:items-end"
+      /* Top, under the 64px header — not bottom-right. Forms end in their
+         submit button, so a bottom toast landed on top of the very button (or
+         the next form's) the user had just pressed. */
+      className="pointer-events-none fixed inset-x-3 top-[4.5rem] z-[100] flex flex-col items-center gap-2 sm:inset-x-auto sm:right-4 sm:items-end"
       role="status"
       aria-live="polite"
     >
@@ -29,7 +32,7 @@ export default function Toaster() {
           <div
             key={t.id}
             className={cn(
-              "pointer-events-auto flex w-full max-w-md items-start gap-2.5 border bg-[var(--bg-raised)] px-3.5 py-3 shadow-lg",
+              "pointer-events-auto flex w-full max-w-sm items-start gap-2.5 border bg-[var(--bg-raised)] px-3.5 py-3 shadow-lg",
               TONE[t.kind],
             )}
           >

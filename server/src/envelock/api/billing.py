@@ -13,6 +13,7 @@ payment method attached — cost is incurred only after the gate is passed.
 from __future__ import annotations
 
 import logging
+from collections.abc import Awaitable
 from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import UUID
@@ -24,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from envelock.auth.deps import CurrentUser, OwnerUser, SystemScoped
 from envelock.billing import payments, trial
+from envelock.billing.pricing import included_mailbox_seats
 from envelock.config import get_settings
 from envelock.db import get_session
 from envelock.models import Domain, DomainTrialLedger, Tenant, User
@@ -237,13 +239,12 @@ async def buy_mailbox_seats(
     if not provider.grants_entitlement:
         # Instrument verification is not a payment (see /confirm). Seats are
         # capacity — granting them for a client-mintable card object handed out
-        # unlimited free mailboxes. Until seat quantities ride the Stripe
-        # subscription, real purchases go through support/checkout.
+        # unlimited free mailboxes. Card seats ride the Stripe subscription
+        # instead: at checkout, then PUT /billing/seats.
         raise HTTPException(
             409,
-            "Seat purchases aren't self-serve on this payment rail yet — "
-            "complete checkout for your plan first, then contact support to add "
-            "seats. Nothing was charged.",
+            "Add extra mailboxes at checkout, or from Billing once your plan is "
+            "active. Nothing was charged.",
         )
     try:
         await provider.verify_instrument(req.reference)
@@ -272,6 +273,104 @@ def _price_for(plan: str) -> str | None:
     return {"essential": s.stripe_price_essential, "complete": s.stripe_price_complete}.get(plan)
 
 
+def _extra_price_for(plan: str) -> str | None:
+    """The per-seat Stripe Price for mailboxes beyond the plan's included five."""
+    s = get_settings()
+    return {
+        "essential": s.stripe_price_extra_mailbox_essential,
+        "complete": s.stripe_price_extra_mailbox_complete,
+    }.get(plan)
+
+
+def _plan_for_price(price_id: str | None) -> str | None:
+    if not price_id:
+        return None
+    for plan in _PAID_PLANS:
+        if _price_for(plan) == price_id:
+            return plan
+    return None
+
+
+def _is_extra_price(price_id: str | None) -> bool:
+    return bool(price_id) and price_id in {_extra_price_for(p) for p in _PAID_PLANS}
+
+
+def _item_price(item: dict) -> str | None:
+    price = item.get("price")
+    return price.get("id") if isinstance(price, dict) else price
+
+
+def _subscription_items(sub: dict) -> list[dict]:
+    return list(((sub.get("items") or {}).get("data")) or [])
+
+
+def _apply_subscription(tenant: Tenant, sub: dict) -> None:
+    """Mirror a Stripe subscription onto the tenant — Stripe is the source of
+    truth for what is paid for. The plan comes from the plan-priced item, the
+    extra seats from the per-seat items. Unknown prices are left alone rather
+    than guessed at."""
+    if sub.get("id"):
+        tenant.stripe_subscription_id = sub["id"]
+    items = _subscription_items(sub)
+    if not items:
+        return
+    plan: str | None = None
+    extra = 0
+    for item in items:
+        pid = _item_price(item)
+        if (matched := _plan_for_price(pid)) is not None:
+            plan = matched
+        elif _is_extra_price(pid):
+            extra += int(item.get("quantity") or 0)
+    if plan:
+        tenant.plan = plan
+    tenant.extra_mailbox_seats = extra
+
+
+async def _stripe_call[T](call: Awaitable[T], what: str) -> T:
+    """A Stripe request that isn't a charge. Stripe being down or rejecting the
+    request is reported as such, never as an unhandled 500."""
+    try:
+        return await call
+    except payments.PaymentError as exc:
+        logger.warning("stripe %s failed: %s", what, exc)
+        raise HTTPException(
+            502,
+            f"Our payment provider couldn't {what} just now. Nothing was charged — "
+            "please try again in a minute.",
+        ) from exc
+
+
+def _stripe_or_503() -> payments.HostedCheckoutProvider:
+    stripe = payments.hosted_checkout_provider("stripe")
+    if stripe is None or not stripe.is_configured():
+        raise HTTPException(503, "Card billing isn't available right now.")
+    return stripe
+
+
+async def _mailboxes_in_use(session: AsyncSession, tenant_id: UUID) -> int:
+    from envelock.api.tenants import _mailbox_count
+
+    return await _mailbox_count(session, tenant_id)
+
+
+#: Stripe Checkout only accepts a trial end at least 48 hours out.
+_MIN_CHECKOUT_TRIAL = timedelta(hours=49)
+
+
+def _checkout_trial_end(tenant: Tenant) -> int | None:
+    """Envelock's own trial end as a Stripe trial, so the first charge lands
+    when the trial ends (what the billing page promises), not at checkout."""
+    ends = tenant.trial_ends_at
+    if ends is None:
+        return None
+    if ends.tzinfo is None:
+        ends = ends.replace(tzinfo=UTC)
+    if ends - datetime.now(UTC) < _MIN_CHECKOUT_TRIAL:
+        return None
+    return int(ends.timestamp())
+
+
 async def _primary_domain(session: AsyncSession, tenant_id: UUID) -> str | None:
     return (
         await session.execute(
@@ -285,6 +384,9 @@ async def _primary_domain(session: AsyncSession, tenant_id: UUID) -> str | None:
 
 class CheckoutRequest(BaseModel):
     plan: str = Field(description="essential | complete")
+    extra_mailboxes: int = Field(
+        default=0, ge=0, le=500, description="mailboxes beyond the plan's included five"
+    )
 
 
 @router.post("/checkout")
@@ -304,6 +406,26 @@ async def create_checkout(
     stripe = payments.hosted_checkout_provider("stripe")
     if stripe is None or not stripe.is_configured():
         raise HTTPException(503, "Card checkout isn't available right now.")
+    tenant = await session.get(Tenant, principal.tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "tenant not found")
+    if tenant.stripe_subscription_id:
+        # A second Checkout opens a second subscription — billed twice.
+        raise HTTPException(
+            409,
+            "You already have a subscription. Change your plan or mailbox seats "
+            "on this page instead — you won't be billed twice.",
+        )
+    extra_items: list[tuple[str, int]] = []
+    if req.extra_mailboxes:
+        extra_price = _extra_price_for(plan)
+        if not extra_price:
+            raise HTTPException(
+                503,
+                "Extra mailboxes can't be bought online right now — check out "
+                "without them, or contact support.",
+            )
+        extra_items.append((extra_price, req.extra_mailboxes))
     price_id = _price_for(plan)
     if not price_id:
         logger.warning("no checkout price configured for plan %s", plan)
@@ -316,18 +438,25 @@ async def create_checkout(
     user = await session.get(User, principal.user_id)
     domain = await _primary_domain(session, principal.tenant_id)
     base = get_settings().public_base_url.rstrip("/")
-    checkout = await stripe.create_checkout_session(
-        price_id=price_id,
-        customer_email=user.email if user else "",
-        # Stripe substitutes the real id into {CHECKOUT_SESSION_ID} on redirect.
-        success_url=f"{base}/billing?status=success&session_id={{CHECKOUT_SESSION_ID}}",
-        cancel_url=f"{base}/billing?status=cancel",
-        client_reference_id=str(principal.tenant_id),
-        metadata={
-            "tenant_id": str(principal.tenant_id),
-            "plan": plan,
-            "domain": domain or "",
-        },
+    checkout = await _stripe_call(
+        stripe.create_checkout_session(
+            price_id=price_id,
+            customer_email=user.email if user else "",
+            # Stripe substitutes the real id into {CHECKOUT_SESSION_ID} on redirect.
+            success_url=f"{base}/billing?status=success&session_id={{CHECKOUT_SESSION_ID}}",
+            cancel_url=f"{base}/billing?status=cancel",
+            client_reference_id=str(principal.tenant_id),
+            metadata={
+                "tenant_id": str(principal.tenant_id),
+                "plan": plan,
+                "domain": domain or "",
+                "extra_mailboxes": str(req.extra_mailboxes),
+            },
+            extra_items=extra_items,
+            trial_end=_checkout_trial_end(tenant),
+            customer_id=tenant.stripe_customer_id,
+        ),
+        "start checkout",
     )
     return {"url": checkout.url, "id": checkout.id}
 
@@ -339,6 +468,8 @@ async def _activate_paid_plan(
     plan: str | None,
     domain: str | None,
     customer_id: str | None = None,
+    subscription_id: str | None = None,
+    extra_mailboxes: str | None = None,
 ) -> bool:
     """Open the gate and set the plan after a verified payment. Idempotent — Stripe
     retries webhooks, and setting these fields twice is harmless."""
@@ -355,6 +486,10 @@ async def _activate_paid_plan(
         tenant.plan = plan
     if customer_id and not tenant.stripe_customer_id:
         tenant.stripe_customer_id = customer_id
+    if subscription_id:
+        tenant.stripe_subscription_id = subscription_id
+    if extra_mailboxes and extra_mailboxes.isdigit():
+        tenant.extra_mailbox_seats = int(extra_mailboxes)
 
     now = datetime.now(UTC)
     reg = registrable_domain(domain or "")
@@ -424,6 +559,8 @@ async def stripe_webhook(request: Request, session: Session) -> dict:
                 plan=meta.get("plan"),
                 domain=meta.get("domain"),
                 customer_id=obj.get("customer"),
+                subscription_id=obj.get("subscription"),
+                extra_mailboxes=meta.get("extra_mailboxes"),
             )
         else:
             logger.info(
@@ -437,6 +574,17 @@ async def stripe_webhook(request: Request, session: Session) -> dict:
             obj.get("id"),
             meta.get("tenant_id"),
         )
+    elif etype in ("customer.subscription.created", "customer.subscription.updated"):
+        # Plan or seat changes made anywhere (this app, the Stripe portal, the
+        # Stripe dashboard) land here, so what we grant always matches what the
+        # customer is billed for.
+        if obj.get("status") in ("active", "trialing", "past_due"):
+            tenant = await _tenant_for_event(
+                session, tenant_id=meta.get("tenant_id"), customer_id=obj.get("customer")
+            )
+            if tenant is not None and tenant.stripe_subscription_id in (None, obj.get("id")):
+                _apply_subscription(tenant, obj)
+                await session.commit()
     elif etype == "customer.subscription.deleted":
         # Subscription ended (canceled or lapsed) → fall back to Guard (free).
         # Never locked out — Guard keeps domain/brand monitoring on.
@@ -444,16 +592,17 @@ async def stripe_webhook(request: Request, session: Session) -> dict:
             session,
             tenant_id=meta.get("tenant_id"),
             customer_id=obj.get("customer"),
+            subscription_id=obj.get("id"),
         )
 
     return {"received": True}
 
 
-async def _downgrade_to_guard(
+async def _tenant_for_event(
     session: AsyncSession, *, tenant_id: str | None, customer_id: str | None
-) -> bool:
-    """Drop a tenant to Guard when their subscription ends. Idempotent. Finds the
-    tenant by the metadata tenant_id, or failing that by the Stripe customer id."""
+) -> Tenant | None:
+    """The tenant a Stripe event is about: the metadata tenant_id, or failing
+    that the Stripe customer id."""
     tenant: Tenant | None = None
     if tenant_id:
         try:
@@ -466,12 +615,155 @@ async def _downgrade_to_guard(
                 select(Tenant).where(Tenant.stripe_customer_id == customer_id)
             )
         ).scalar_one_or_none()
+    return tenant
+
+
+async def _downgrade_to_guard(
+    session: AsyncSession,
+    *,
+    tenant_id: str | None,
+    customer_id: str | None,
+    subscription_id: str | None = None,
+) -> bool:
+    """Drop a tenant to Guard when their subscription ends. Idempotent."""
+    tenant = await _tenant_for_event(session, tenant_id=tenant_id, customer_id=customer_id)
     if tenant is None:
+        return False
+    if (
+        subscription_id
+        and tenant.stripe_subscription_id
+        and tenant.stripe_subscription_id != subscription_id
+    ):
+        # An old subscription ending must not cancel the one they pay for now.
         return False
     tenant.plan = "guard"
     tenant.payment_method_ok = False
+    tenant.stripe_subscription_id = None
+    tenant.extra_mailbox_seats = 0
     await session.commit()
     return True
+
+
+# ── Changing a live Stripe subscription ─────────────────────────────────────
+_PLAN_ORDER = ("essential", "complete")
+
+
+class SetSeatsRequest(BaseModel):
+    extra_mailboxes: int = Field(ge=0, le=500, description="total seats beyond the plan's five")
+
+
+@router.put("/seats")
+async def set_mailbox_seats(
+    req: SetSeatsRequest, principal: OwnerUser, session: Session
+) -> dict:
+    """Set how many extra mailbox seats the tenant pays for, on its Stripe
+    subscription. More seats are charged (prorated) right away and granted only
+    once that payment succeeds; fewer seats are credited on the next invoice."""
+    tenant = await session.get(Tenant, principal.tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "tenant not found")
+    if not tenant.stripe_subscription_id:
+        raise HTTPException(
+            409, "Start your plan first — you can add extra mailboxes at checkout."
+        )
+    stripe = _stripe_or_503()
+    extra_price = _extra_price_for(tenant.plan)
+    if not extra_price:
+        raise HTTPException(
+            503, "Extra mailboxes can't be bought online right now — contact support."
+        )
+    used = await _mailboxes_in_use(session, tenant.id)
+    floor = max(0, used - included_mailbox_seats(tenant.plan))
+    if req.extra_mailboxes < floor:
+        raise HTTPException(
+            409,
+            f"You're protecting {used} mailboxes, so you need at least {floor} "
+            f"extra seat{'' if floor == 1 else 's'}. Remove mailboxes first, then "
+            "reduce seats.",
+        )
+    current = tenant.extra_mailbox_seats or 0
+    if req.extra_mailboxes != current:
+        sub = await _stripe_call(
+            stripe.get_subscription(tenant.stripe_subscription_id), "load your subscription"
+        )
+        seat_items = [i for i in _subscription_items(sub) if _is_extra_price(_item_price(i))]
+        ops: list[dict[str, str]] = []
+        if seat_items:
+            head, *rest = seat_items
+            if req.extra_mailboxes:
+                ops.append(
+                    {"id": head["id"], "price": extra_price, "quantity": str(req.extra_mailboxes)}
+                )
+            else:
+                ops.append({"id": head["id"], "deleted": "true"})
+            ops.extend({"id": i["id"], "deleted": "true"} for i in rest)
+        elif req.extra_mailboxes:
+            ops.append({"price": extra_price, "quantity": str(req.extra_mailboxes)})
+        try:
+            if ops:
+                await stripe.update_subscription(
+                    tenant.stripe_subscription_id,
+                    items=ops,
+                    charge_now=req.extra_mailboxes > current,
+                )
+        except payments.PaymentError as exc:
+            logger.warning("seat change failed for tenant %s: %s", tenant.id, exc)
+            raise HTTPException(
+                402,
+                "The payment for the extra mailboxes didn't go through, so nothing "
+                "changed. Update your card under Manage billing and try again.",
+            ) from exc
+        tenant.extra_mailbox_seats = req.extra_mailboxes
+        await session.commit()
+    return {
+        "extra_mailbox_seats": tenant.extra_mailbox_seats,
+        "capacity": included_mailbox_seats(tenant.plan) + tenant.extra_mailbox_seats,
+    }
+
+
+async def change_subscription_plan(session: AsyncSession, tenant: Tenant, target: str) -> None:
+    """Move a Stripe subscriber to another paid plan by swapping the price on the
+    subscription they already have. An upgrade is charged (prorated) before it
+    is granted; a downgrade is credited. Used by /tenant/plan — without this, a
+    paying Essential customer could switch to Complete for free."""
+    if target == tenant.plan:
+        return
+    if target not in _PAID_PLANS:
+        raise HTTPException(
+            409,
+            "To stop paying, cancel under Manage billing. You keep your plan until "
+            "the end of the period you've paid for, then move to Guard (free).",
+        )
+    stripe = _stripe_or_503()
+    new_price = _price_for(target)
+    if not new_price:
+        raise HTTPException(503, f"The {target.capitalize()} plan isn't available right now.")
+    sub_id = tenant.stripe_subscription_id or ""
+    sub = await _stripe_call(stripe.get_subscription(sub_id), "load your subscription")
+    ops: list[dict[str, str]] = []
+    for item in _subscription_items(sub):
+        pid = _item_price(item)
+        if _plan_for_price(pid):
+            ops.append({"id": item["id"], "price": new_price})
+        elif _is_extra_price(pid) and (seat_price := _extra_price_for(target)):
+            ops.append({"id": item["id"], "price": seat_price})
+    if not ops:
+        raise HTTPException(
+            409, "We couldn't find your plan on the subscription — contact support."
+        )
+    upgrade = tenant.plan not in _PLAN_ORDER or (
+        _PLAN_ORDER.index(target) > _PLAN_ORDER.index(tenant.plan)
+    )
+    try:
+        await stripe.update_subscription(sub_id, items=ops, charge_now=upgrade)
+    except payments.PaymentError as exc:
+        logger.warning("plan change failed for tenant %s: %s", tenant.id, exc)
+        raise HTTPException(
+            402,
+            "The payment for the new plan didn't go through, so your plan hasn't "
+            "changed. Update your card under Manage billing and try again.",
+        ) from exc
+    tenant.plan = target
 
 
 class PortalRequest(BaseModel):
@@ -493,7 +785,10 @@ async def billing_portal(
     # Only allow returning to an in-app path, never an arbitrary absolute URL.
     path = req.return_path if req.return_path.startswith("/") else "/billing"
     base = get_settings().public_base_url.rstrip("/")
-    url = await stripe.create_billing_portal_session(
-        customer_id=tenant.stripe_customer_id, return_url=f"{base}{path}"
+    url = await _stripe_call(
+        stripe.create_billing_portal_session(
+            customer_id=tenant.stripe_customer_id, return_url=f"{base}{path}"
+        ),
+        "open the billing portal",
     )
     return {"url": url}

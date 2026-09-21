@@ -2153,10 +2153,12 @@ function AddMailbox({
   onAdded,
   mailboxes,
   domain,
+  extraCents,
 }: {
   onAdded: () => Promise<void>;
   mailboxes?: TenantInfo["mailboxes"];
   domain?: string | null;
+  extraCents?: number;
 }) {
   // Examples on the customer's own domain read as instructions, not as a form.
   const d = domain || "yourcompany.com";
@@ -2256,7 +2258,9 @@ function AddMailbox({
             <p className="fg-2 mt-1 text-[11px] leading-relaxed">
               {mailboxes && mailboxes.capacity === 0
                 ? "Upgrade to Essential or Complete to protect mailboxes."
-                : "Buy more seats (or upgrade your plan) to add another mailbox."}
+                : `Your plan includes 5${
+                    extraCents ? `; each extra mailbox is $${(extraCents / 100).toFixed(2)}/mo` : ""
+                  }. Add seats on the billing page.`}
             </p>
             <Link to="/billing" className="mt-2 inline-block">
               <Button size="sm" variant="accent">
@@ -2712,6 +2716,12 @@ function UpgradePlans({
     (tenant.subscribed_plan ?? tenant.plan).slice(1);
 
   async function upgrade(planId: string) {
+    // A paying subscriber's upgrade is a charge — confirm it on the billing
+    // page (which shows the price), never with one click here.
+    if (tenant.billing?.subscription) {
+      navigate(`/billing?plan=${planId}`);
+      return;
+    }
     setBusy(planId);
     setNote(null);
     try {
@@ -2800,8 +2810,8 @@ function UpgradePlans({
         ))}
           </div>
           <p className="fg-3 mt-3 text-[11px] leading-relaxed">
-            15 days free on signup. Pay monthly with no penalty, or save up to 20%
-            yearly. Bigger teams pay much less per seat.
+            15 days free on signup, then billed monthly — cancel anytime. Each plan
+            includes 5 mailboxes; extra ones are added from billing.
           </p>
         </>
       )}
@@ -3662,6 +3672,7 @@ export default function Dashboard() {
                 onAdded={load}
                 mailboxes={tenant?.mailboxes}
                 domain={tenant?.primary_domain}
+                extraCents={tenant?.billing?.extra_mailbox_cents}
               />
             </div>
             {/* The client sensor: without a device reporting, the sign-in and

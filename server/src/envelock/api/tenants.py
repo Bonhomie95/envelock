@@ -26,7 +26,7 @@ from envelock.auth.security import (
     verify_password,
     verify_totp,
 )
-from envelock.billing.pricing import included_mailbox_seats
+from envelock.billing.pricing import extra_mailbox_cents, included_mailbox_seats
 from envelock.channels.mail.ingest import ingest_address, new_ingest_token, onboarding_instructions
 from envelock.core.capabilities import (
     capabilities_for,
@@ -137,7 +137,7 @@ def _mailbox_capacity(tenant: Tenant) -> int:
     seats plus any purchased, or 0 on Guard (no mailboxes without a paid plan/trial).
 
     During the trial the tenant sits on the top plan, so the allowance is COMPLETE's
-    (7). A paid Essential tenant gets 5. Extra purchased seats add on top."""
+    (5, same as Essential). Extra purchased seats add on top."""
     from envelock.billing.entitlement import mailbox_capacity
 
     return mailbox_capacity(tenant)
@@ -456,6 +456,13 @@ async def current_tenant(principal: ActiveUser, session: Session) -> dict:
         "subscribed_plan": subscribed_plan,
         "pending_members": pending_members,
         "trial_ended": bool(ends and not trial_active and not paid),
+        "billing": {
+            # A live Stripe subscription: plan and seat changes update it in
+            # place (never a second checkout).
+            "subscription": bool(tenant and tenant.stripe_subscription_id),
+            "extra_mailbox_cents": extra_mailbox_cents(subscribed_plan)
+            or extra_mailbox_cents("complete"),
+        },
         "mailboxes": {
             "used": mailbox_used,
             "capacity": mailbox_capacity,
@@ -518,13 +525,19 @@ async def change_plan(req: ChangePlanRequest, principal: OwnerUser, session: Ses
     trial_active = bool(ends and ends > now)
 
     is_paid_target = target not in ("guard",)
-    if is_paid_target and not (trial_active or tenant.payment_method_ok):
+    if tenant.stripe_subscription_id:
+        # A paying Stripe customer: the plan IS the subscription. Recording the
+        # choice alone let an Essential payer switch to Complete for free.
+        from envelock.api.billing import change_subscription_plan
+
+        await change_subscription_plan(session, tenant, target)
+    elif is_paid_target and not (trial_active or tenant.payment_method_ok):
         raise HTTPException(
             402,
             "add a payment method to move to a paid plan — your trial has ended",
         )
-
-    tenant.plan = target
+    else:
+        tenant.plan = target
     await session.commit()
 
     subscribed_plan = tenant.plan
@@ -1823,12 +1836,27 @@ async def quarantine(alert_id: UUID, actor: ActiveUser, session: Session) -> dic
 
     source = SourceMechanism.FORWARD_INGEST
     caps = frozenset()
-    if alert.mailbox_id:
-        mailbox = await session.get(Mailbox, alert.mailbox_id)
-        if mailbox and mailbox.sources:
-            sources = frozenset(SourceMechanism(s) for s in mailbox.sources if s)
-            caps = capabilities_for(sources)
-            source = next(iter(sources))
+    mailbox = await session.get(Mailbox, alert.mailbox_id) if alert.mailbox_id else None
+    sources = (
+        frozenset(SourceMechanism(s) for s in mailbox.sources if s)
+        if mailbox and mailbox.sources
+        else frozenset()
+    )
+    if not sources:
+        # No live connection (never connected, or disconnected since the alert).
+        # Falling through to the forwarding default told the customer their
+        # mailbox was "connected by forwarding" — untrue, and no help.
+        return {
+            "succeeded": False,
+            "reason": (
+                "This mailbox isn't connected to Envelock right now, so we can't "
+                "move the message. Delete it in your mail app, then acknowledge "
+                "this alert."
+            ),
+            "alert_only": True,
+        }
+    caps = capabilities_for(sources)
+    source = next(iter(sources))
 
     result = plan_remediation(action=RemediationAction.QUARANTINE, capabilities=caps, source=source)
     if not result.succeeded:

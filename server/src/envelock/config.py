@@ -422,6 +422,11 @@ class Settings(BaseSettings):
     # Stripe, not hardcoded in a charge call.
     stripe_price_essential: str | None = None
     stripe_price_complete: str | None = None
+    # Per-seat recurring monthly Prices for mailboxes beyond the plan's included
+    # five (billing/pricing.EXTRA_MAILBOX_CENTS: $2.00 Essential, $3.50 Complete).
+    # Unset → extra seats can't be bought self-serve and the API says so.
+    stripe_price_extra_mailbox_essential: str | None = None
+    stripe_price_extra_mailbox_complete: str | None = None
     adyen_api_key: SecretStr | None = None  # Europe / global enterprise
     adyen_merchant_account: str | None = None
     mercadopago_access_token: SecretStr | None = None  # Latin America
