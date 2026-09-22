@@ -407,6 +407,59 @@ async def test_oauth_refresh_updates_expiry(session, monkeypatch) -> None:
         get_settings.cache_clear()
 
 
+@pytest.mark.asyncio
+async def test_oauth_refresh_invalid_grant_flags_reconnect(session, monkeypatch) -> None:
+    """A withdrawn/expired consent must show up as "reconnect", not silent silence."""
+    import json
+
+    from envelock.channels.mail import oauth, oauth_refresh
+    from envelock.models import Mailbox, MailboxCredential, Tenant
+    from envelock.security.crypto import seal
+
+    monkeypatch.setenv("ENVELOCK_GOOGLE_CLIENT_ID", "cid")
+    monkeypatch.setenv("ENVELOCK_GOOGLE_CLIENT_SECRET", "csecret")
+    monkeypatch.setenv("ENVELOCK_GOOGLE_REDIRECT_URI", "https://app/callback")
+    from envelock.config import get_settings
+
+    get_settings.cache_clear()
+
+    class FakeTransport:
+        async def post_form(self, url, data):
+            return {"error": "invalid_grant", "error_description": "Token has been expired or revoked."}
+
+    oauth.set_default_transport(FakeTransport())
+    try:
+        tid = uuid4()
+        session.add(Tenant(id=tid, name="Acme"))
+        await session.flush()
+        mb = Mailbox(
+            tenant_id=tid, address="user@acme.com",
+            sources=[SourceMechanism.GMAIL_API.value],
+        )
+        session.add(mb)
+        await session.flush()
+        sealed = seal(
+            json.dumps({"access_token": "old", "refresh_token": "rt"}).encode(),
+            aad=str(mb.id).encode(),
+        )
+        session.add(
+            MailboxCredential(
+                mailbox_id=mb.id, tenant_id=tid, kind="oauth_token",
+                ciphertext=sealed.ciphertext, wrapped_dek=sealed.wrapped_dek, key_id=sealed.key_id,
+                token_expires_at=datetime.now(UTC) - timedelta(minutes=5),
+            )
+        )
+        await session.commit()
+
+        assert await oauth_refresh.refresh_due_tokens(session) == 0
+        await session.refresh(mb)
+        assert mb.needs_reconnect is True
+        assert "reconnect" in (mb.connection_error or "")
+    finally:
+        oauth.set_default_transport(None)
+        get_settings.cache_clear()
+
+
 # ── 8. Export tokens are persisted and authenticate a read-only feed ─────────
 def test_export_token_persisted_and_authenticates(client: TestClient) -> None:
     h = _auth_header(client, "owner@exportco.com")

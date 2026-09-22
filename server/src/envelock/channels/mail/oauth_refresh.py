@@ -78,6 +78,14 @@ async def refresh_one(
         tokens = await oauth.refresh_tokens(prov, refresh_token=refresh_token)
     except oauth.OAuthError as exc:
         logger.warning("oauth refresh failed for mailbox %s: %s", mailbox.id, exc)
+        # invalid_grant means the consent is gone for good — revoked, expired
+        # (an unverified app in "Testing" gets 7-day refresh tokens), or the
+        # password changed. Retrying never fixes it; say so on the mailbox.
+        if "invalid_grant" in str(exc):
+            mailbox.needs_reconnect = True
+            mailbox.connection_error = (
+                "the mailbox owner's permission has expired or been withdrawn — reconnect"
+            )
         return False
 
     _reseal(
