@@ -14,6 +14,11 @@
 #   --email ADDRESS   for the Let's Encrypt certificate (expiry notices)
 #   --skip-tls        do everything except the HTTPS certificate (DNS not ready)
 #   --tls-only        only request the certificate (after DNS points here)
+#   --standby-of IP   build a STANDBY: a streaming copy of the live server at IP,
+#                     with the API and worker installed but off (see
+#                     replication-primary.sh and failover.sh). Needs the live
+#                     server's .env and .env.worker in /root, and
+#                     ENVELOCK_REPLICATION_PASSWORD set.
 #
 # What it does, in order: a login user `ubuntu`, system packages, a firewall,
 # Postgres + Redis, GitHub access, the repository, the Python
@@ -32,13 +37,14 @@ SOURCE_ENV="${ENVELOCK_SOURCE_ENV:-/root/.env}"
 SECRETS="/root/envelock-secrets"
 HOSTS=(envelock.org www.envelock.org app.envelock.org api.envelock.org admin.envelock.org)
 
-EMAIL=""; SKIP_TLS=0; TLS_ONLY=0
+EMAIL=""; SKIP_TLS=0; TLS_ONLY=0; PRIMARY_IP=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --email) EMAIL="${2:?--email needs an address}"; shift 2 ;;
     --skip-tls) SKIP_TLS=1; shift ;;
     --tls-only) TLS_ONLY=1; shift ;;
-    -h|--help) sed -n '2,24p' "$0"; exit 0 ;;
+    --standby-of) PRIMARY_IP="${2:?--standby-of needs the IP of the live server}"; SKIP_TLS=1; shift 2 ;;
+    -h|--help) sed -n '2,29p' "$0"; exit 0 ;;
     *) echo "unknown option: $1 (try --help)" >&2; exit 2 ;;
   esac
 done
@@ -146,7 +152,28 @@ ok "open: 22 (SSH), 80, 443 — everything else closed (database, Redis, API sta
 # ---- 4. database -------------------------------------------------------------
 log "4/13  Postgres and Redis"
 systemctl enable --now postgresql redis-server >/dev/null 2>&1
-if [ ! -f "$SECRETS" ]; then
+if [ -n "$PRIMARY_IP" ]; then
+  # A standby's database is a byte-for-byte copy of the live one, kept current by
+  # streaming replication — roles, passwords and data included. Nothing is
+  # created here; it is copied.
+  : "${ENVELOCK_REPLICATION_PASSWORD:?set ENVELOCK_REPLICATION_PASSWORD (printed by replication-primary.sh)}"
+  PG_VER="$(ls /etc/postgresql | sort -n | tail -1)"
+  PGDATA="/var/lib/postgresql/$PG_VER/main"
+  if [ "$(sudo -u postgres psql -tAc 'SELECT pg_is_in_recovery()' 2>/dev/null)" = "t" ]; then
+    ok "already a standby"
+  else
+    systemctl stop postgresql
+    rm -rf "$PGDATA"
+    sudo -u postgres env PGPASSWORD="$ENVELOCK_REPLICATION_PASSWORD" pg_basebackup \
+      -h "$PRIMARY_IP" -U envelock_replicator -D "$PGDATA" \
+      -X stream -S envelock_standby -R -d "sslmode=require" \
+      || fail "could not copy the database from $PRIMARY_IP — did replication-primary.sh run there with --standby-ip $(public_ip)?"
+    systemctl start postgresql
+    ok "copied from $PRIMARY_IP; streaming"
+  fi
+  [ "$(sudo -u postgres psql -tAc 'SELECT pg_is_in_recovery()')" = "t" ] \
+    || fail "Postgres is not running as a standby"
+elif [ ! -f "$SECRETS" ]; then
   (
     umask 077
     {
@@ -157,6 +184,7 @@ if [ ! -f "$SECRETS" ]; then
   )
   ok "passwords generated → $SECRETS"
 fi
+if [ -z "$PRIMARY_IP" ]; then
 # shellcheck disable=SC1090
 . "$SECRETS"
 sudo -u postgres psql -v ON_ERROR_STOP=1 -q <<SQL
@@ -172,6 +200,7 @@ if ! sudo -u postgres psql -tAc "SELECT 1 FROM pg_database WHERE datname='envelo
   sudo -u postgres createdb -O envelock envelock
 fi
 ok "database 'envelock' owned by role 'envelock'"
+fi
 
 # ---- 5. GitHub access --------------------------------------------------------
 log "5/13  GitHub access"
@@ -215,7 +244,17 @@ ok "python environment ready"
 
 # ---- 7. settings -------------------------------------------------------------
 log "7/13  production settings"
-if [ -f "$APPS/server/.env.worker" ]; then
+if [ -n "$PRIMARY_IP" ]; then
+  # The standby must be the same deployment: same database passwords (they came
+  # over with the data), same app secret, same credential keys.
+  for f in .env .env.worker; do
+    if [ ! -f "$APPS/server/$f" ]; then
+      [ -f "/root/$f" ] || fail "copy the live server's server/$f to /root/$f first (see replication-primary.sh's output)"
+      install -m 600 -o "$APP_USER" -g "$APP_USER" "/root/$f" "$APPS/server/$f"
+    fi
+  done
+  ok ".env and .env.worker copied from the live server"
+elif [ -f "$APPS/server/.env.worker" ]; then
   ok ".env and .env.worker already exist — left untouched"
 else
   [ -f "$SOURCE_ENV" ] || fail "copy your laptop's server/.env to $SOURCE_ENV first (see the top of this script)"
@@ -231,6 +270,9 @@ fi
 PRIVATE="$(grep -E '^ENVELOCK_CREDENTIAL_PRIVATE_KEY=' "$APPS/server/.env.worker" | cut -d= -f2-)"
 
 # ---- 8. schema + row-level security -----------------------------------------
+if [ -n "$PRIMARY_IP" ]; then
+  log "8-9/13 schema and row-level security — copied with the database (standby)"
+else
 log "8/13  database tables"
 # Development mode for these two commands only: production refuses to load at
 # all until row-level security is in place, which is what step 9 sets up.
@@ -261,6 +303,7 @@ GRANT SELECT ON ALL TABLES IN SCHEMA public TO envelock_backup;
 ALTER DEFAULT PRIVILEGES FOR ROLE envelock IN SCHEMA public GRANT SELECT ON TABLES TO envelock_backup;
 SQL
 ok "app role (restricted) and backup role (read-only, bypasses RLS) ready"
+fi
 
 # ---- 10. services ------------------------------------------------------------
 log "10/13 services"
@@ -270,6 +313,12 @@ for unit in envelock-api.service envelock-worker.service envelock-backup.service
 done
 install -d -o "$APP_USER" -g "$APP_USER" /var/backups/envelock
 systemctl daemon-reload
+if [ -n "$PRIMARY_IP" ]; then
+  # Installed, deliberately OFF: a second API/worker would poll every mailbox
+  # twice and write to a read-only database. failover.sh turns them on.
+  systemctl disable --now envelock-api envelock-worker envelock-backup.timer >/dev/null 2>&1 || true
+  ok "API, worker and backups installed but off until failover"
+else
 systemctl enable envelock-api envelock-worker envelock-backup.timer >/dev/null 2>&1
 systemctl restart envelock-api envelock-worker
 systemctl start envelock-backup.timer
@@ -297,6 +346,7 @@ else
 fi
 systemctl is-active --quiet envelock-worker && ok "worker running" \
   || { journalctl -u envelock-worker -n 40 --no-pager; fail "the worker is not running — its log is above"; }
+fi
 
 # ---- 11. nginx ---------------------------------------------------------------
 log "11/13 nginx"
@@ -324,6 +374,24 @@ else
 fi
 
 # ---- 13. first deploy --------------------------------------------------------
+if [ -n "$PRIMARY_IP" ]; then
+  log "13/13 building the web app and admin console (no deploy: the database is read-only)"
+  as_app "cd $APPS/client && { npm ci || npm install; } >/dev/null && npm run build >/dev/null"
+  as_app "cd $APPS/admin && { npm ci || npm install; } >/dev/null && npm run build >/dev/null"
+  chmod -R a+rX "$APPS/client/dist" "$APPS/admin/dist"
+  ok "built"
+  printf '%s\n' \
+    "" \
+    "────────────────────────────────────────────────────────────────────────────" \
+    " Standby ready: a live copy of $PRIMARY_IP, everything installed and off." \
+    "" \
+    " Check replication:   bash $APPS/server/deploy/replica-status.sh" \
+    " If the live server is lost:" \
+    "   sudo bash $APPS/server/deploy/failover.sh --email you@yourdomain.com" \
+    " then point DNS at this server (docs/LAUNCH-GUIDE.md, \"A standby server\")." \
+    "────────────────────────────────────────────────────────────────────────────"
+  exit 0
+fi
 log "13/13 first deploy (builds the web app and admin console)"
 as_app "$DEPLOY_DIR/deploy.sh" || fail "deploy.sh stopped — its message above says why"
 

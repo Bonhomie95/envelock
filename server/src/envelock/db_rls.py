@@ -70,6 +70,9 @@ EXEMPT: frozenset[str] = frozenset(
         # tenant's confirmed fraud protects every other tenant. Keyed by domain,
         # holds no tenant's content.
         "graph_verdicts",
+        # Confirmed fraud bank accounts, cross-tenant for the same reason; a
+        # keyed hash per account, no customer content.
+        "fraud_accounts",
         # Envelock's own operators, not a customer's data.
         "staff_accounts",
         # Verdict cache, keyed by hash; holds no customer data.

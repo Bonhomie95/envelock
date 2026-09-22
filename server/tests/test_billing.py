@@ -16,8 +16,8 @@ def test_worked_example_b_five_seat_essential() -> None:
 
 def test_worked_example_a_five_seat_complete_annual() -> None:
     q = quote(plan=Plan.COMPLETE, term=BillingTerm.ANNUAL, protected=5)
-    assert q.subtotal_cents == 4750  # $47.50 list
-    assert q.total_usd == 38.00  # −20%
+    assert q.subtotal_cents == 4900  # $49 list
+    assert q.total_usd == 39.20  # −20%
 
 
 def test_worked_example_c_thousand_seats() -> None:
@@ -40,7 +40,7 @@ def test_two_class_pricing_beats_all_protected() -> None:
 def test_worked_example_d_multi_domain() -> None:
     """Additional mail domains cost half; mailbox bands pool across them."""
     q = quote(plan=Plan.COMPLETE, mail_domains=3, protected=40, monitored=200)
-    assert q.platform_cents == 3000 + 1500 + 1500
+    assert q.platform_cents == 3150 + 1575 + 1575
     assert 26000 <= q.total_cents <= 28000
 
 
@@ -61,9 +61,8 @@ def test_term_discounts() -> None:
         (BillingTerm.SEMIANNUAL, 0.90),
         (BillingTerm.ANNUAL, 0.80),
     ):
-        assert quote(plan=Plan.COMPLETE, term=term, protected=10).total_cents == int(
-            base * expected
-        )
+        got = quote(plan=Plan.COMPLETE, term=term, protected=10).total_cents
+        assert abs(got - base * expected) <= 1  # to the cent
 
 
 # ── Trial ────────────────────────────────────────────────────────────────────

@@ -627,3 +627,71 @@ async def test_the_read_watch_never_marks_mail_read(session) -> None:
     flat = [item for call in requested for item in call]
     assert flat, "the watch must have fetched something"
     assert all("RFC822" not in item and item != "BODY[]" for item in flat)
+
+
+# ── The warning shown where the person is reading ────────────────────────────
+def _flagged_message(tenant_mailbox_id: str, message_id: str, *, state: str = "open") -> None:
+    from datetime import UTC, datetime
+    from uuid import UUID
+
+    from envelock.models import Mailbox, Message
+
+    async def go(s):  # noqa: ANN001, ANN202
+        mailbox = await s.get(Mailbox, UUID(tenant_mailbox_id))
+        msg = Message(
+            tenant_id=mailbox.tenant_id, mailbox_id=mailbox.id, rfc_message_id=message_id,
+            direction="inbound", sender_address="billing@gemini.example",
+            received_at=datetime.now(UTC), source="imap_idle",
+        )
+        s.add(msg)
+        await s.flush()
+        alert = Alert(
+            tenant_id=mailbox.tenant_id, mailbox_id=mailbox.id, tier="critical",
+            title="Bank details changed by a known supplier", body="…", state=state,
+            requires_callback=True, counterparty_domain="gemini.example",
+        )
+        s.add(alert)
+        await s.flush()
+        s.add(Finding(
+            tenant_id=mailbox.tenant_id, mailbox_id=mailbox.id, message_id=msg.id,
+            alert_id=alert.id, service="A1", tier="critical", score=100,
+            summary="changed", evidence={},
+        ))
+        await s.commit()
+
+    _db(go)
+
+
+def _open(client: TestClient, sensor: dict, ref: str) -> dict:
+    r = client.post("/api/v1/sensor/message-opened",
+                    json={"device_fingerprint": FINGERPRINT, "message_ref": ref},
+                    headers=sensor)
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_opening_a_flagged_message_returns_its_warning(client: TestClient) -> None:
+    _, mailbox_id, sensor = _enrolled(client)
+    _flagged_message(mailbox_id, "<Remit-88@Gemini.Example>")
+
+    warning = _open(client, sensor, "remit-88@gemini.example")["warning"]
+    assert warning["tier"] == "critical"
+    assert warning["title"] == "Bank details changed by a known supplier"
+    assert "verified by phone" in warning["action"]  # no number on file yet
+    assert set(warning) == {"tier", "title", "action", "verify_phone", "confirmed_fraud"}
+
+    assert _open(client, sensor, "<something-else@mail.example>")["warning"] is None
+    assert _open(client, sensor, "*")["warning"] is None
+
+
+def test_a_dismissed_alert_is_no_longer_shown(client: TestClient) -> None:
+    _, mailbox_id, sensor = _enrolled(client)
+    _flagged_message(mailbox_id, "<fp-1@gemini.example>", state="dismissed")
+    assert _open(client, sensor, "<fp-1@gemini.example>")["warning"] is None
+
+
+def test_a_sensor_sees_only_its_own_mailbox(client: TestClient) -> None:
+    h, mailbox_id, sensor = _enrolled(client)
+    other = _mailbox(client, h, f"ap@{DOMAIN}")
+    _flagged_message(other, "<other-box@gemini.example>")
+    assert _open(client, sensor, "<other-box@gemini.example>")["warning"] is None

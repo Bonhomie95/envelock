@@ -26,6 +26,7 @@ import base64
 import binascii
 import json
 import logging
+from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Request, Response
@@ -53,8 +54,15 @@ MAX_VALIDATION_TOKEN = 512
 
 async def _fetch_mailbox(
     address: str, *, tenant_id: UUID | None, require_source: str | None = None
-) -> dict | None:
-    """Sync one mailbox, scoped to the tenant the notification was issued for.
+) -> bool:
+    """Flag one mailbox for an immediate sync, scoped to the tenant the
+    notification was issued for. True when a mailbox matched.
+
+    Flag, don't fetch: this runs in the API, which under split key custody can
+    seal but not decrypt the mailbox's access token — fetching here failed on
+    every notification in production. The worker drains flagged mailboxes every
+    few seconds (`oauth_fetch.drain_requested`). It also answers the provider
+    at once: Graph drops notifications to an endpoint slower than ~3 seconds.
 
     The Gmail push token is one process-wide secret (the URL is registered with
     a single Pub/Sub subscription, so it cannot carry a tenant). To keep that
@@ -63,8 +71,6 @@ async def _fetch_mailbox(
     the named provider source — a forged notification for an IMAP-only mailbox
     matches nothing.
     """
-    from envelock.workers.oauth_fetch import sync_oauth_mailbox
-
     async with get_sessionmaker()() as session:
         query = select(Mailbox).where(
             Mailbox.address == address.lower(), Mailbox.is_active.is_(True)
@@ -75,8 +81,11 @@ async def _fetch_mailbox(
             query = query.where(Mailbox.sources.contains([require_source]))
         mailbox = (await session.execute(query)).scalars().first()
         if mailbox is None:
-            return None
-        return await sync_oauth_mailbox(session, mailbox)
+            return False
+        if mailbox.sync_requested_at is None:
+            mailbox.sync_requested_at = datetime.now(UTC)
+            await session.commit()
+        return True
 
 
 @router.post("/graph")

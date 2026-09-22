@@ -50,7 +50,7 @@ class GraphProvider(MailProvider):
     # admin consent and were dropped so a Microsoft mailbox connects with no
     # admin involvement (see channels/mail/oauth._Microsoft.scopes).
     SCOPES = (
-        "Mail.Read",
+        "Mail.ReadWrite",
         "MailboxSettings.Read",
     )
     AUTHORITY = "https://login.microsoftonline.com"
@@ -166,7 +166,6 @@ def _iso(value: str | None) -> datetime | None:
 class GmailProvider(MailProvider):
     source = SourceMechanism.GMAIL_API
     SCOPES = (
-        "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/admin.reports.audit.readonly",
     )

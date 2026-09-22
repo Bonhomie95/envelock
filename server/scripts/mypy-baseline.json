@@ -1,9 +1,8 @@
 {
   "_comment": "Known mypy errors per file. This number may only go DOWN. Regenerate with: python scripts/typecheck.py --update",
-  "total": 71,
+  "total": 33,
   "files": {
     "src/envelock/api/auth.py": 1,
-    "src/envelock/api/tenants.py": 1,
     "src/envelock/billing/payments.py": 5,
     "src/envelock/channels/mail/imap_probe.py": 2,
     "src/envelock/channels/mail/imap_sync.py": 4,
@@ -11,10 +10,6 @@
     "src/envelock/channels/mail/parser.py": 4,
     "src/envelock/channels/mail/providers.py": 1,
     "src/envelock/config.py": 1,
-    "src/envelock/detections/content.py": 15,
-    "src/envelock/detections/identity.py": 6,
-    "src/envelock/detections/impersonation.py": 8,
-    "src/envelock/detections/sessions.py": 8,
     "src/envelock/llm/providers.py": 2,
     "src/envelock/notify/dispatch.py": 1,
     "src/envelock/notify/senders.py": 1,

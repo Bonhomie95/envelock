@@ -604,6 +604,7 @@ const LazyDocs = lazy(() => import("./pages/Docs"));
 const LazyLegal = lazy(() => import("./pages/Legal"));
 const LazyStatus = lazy(() => import("./pages/Status"));
 const LazyAnalyse = lazy(() => import("./pages/Analyse"));
+const LazySupplierVerify = lazy(() => import("./pages/SupplierVerify"));
 
 function RouteFallback() {
   return (
@@ -629,6 +630,9 @@ export default function App() {
       <Suspense fallback={<RouteFallback />}>
         <ErrorBoundary>
         <Routes>
+          {/* A supplier answering our "did you change your details?" text —
+              not our customer, so no marketing chrome at all. */}
+          <Route path="/v/:token" element={<LazySupplierVerify />} />
           <Route element={<MarketingLayout />}>
             <Route path="/" element={<Landing />} />
             <Route path="/signin" element={<SignIn />} />

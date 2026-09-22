@@ -151,7 +151,9 @@ class _Microsoft:
     #: api/channels._OAUTH_SOURCES) so its protection level stays honest.
     scopes: tuple[str, ...] = (
         "offline_access",
-        "https://graph.microsoft.com/Mail.Read",
+        # ReadWrite, not Read: quarantine (move) and the protected copy (link
+        # rewrite + banner) are the product. Still user-consentable.
+        "https://graph.microsoft.com/Mail.ReadWrite",
         "https://graph.microsoft.com/MailboxSettings.Read",
     )
     #: Requested separately when connecting a mailbox over IMAP with XOAUTH2.
@@ -180,7 +182,9 @@ class _Google:
     authorize_endpoint: str = "https://accounts.google.com/o/oauth2/v2/auth"
     token_endpoint: str = "https://oauth2.googleapis.com/token"  # noqa: S105 — an OAuth endpoint URL, not a secret
     scopes: tuple[str, ...] = (
-        "https://www.googleapis.com/auth/gmail.readonly",
+        # modify (not readonly): label-quarantine, and insert the protected copy
+        # + trash the original. It does NOT allow permanent deletion or sending.
+        "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/admin.reports.audit.readonly",
     )
     #: Gmail's IMAP XOAUTH2 needs the full-mail scope; the API path does not.

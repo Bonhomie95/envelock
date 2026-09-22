@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from envelock import __version__
 from envelock.api import (
+    accounting,
     admin,
     auth,
     billing,
@@ -24,6 +25,7 @@ from envelock.api import (
     staff_auth,
     tenants,
     v1,
+    verification,
     webhooks,
 )
 from envelock.config import get_settings
@@ -403,6 +405,11 @@ def create_app() -> FastAPI:
     app.include_router(webhooks.router)
     #: The click-time redirector — the enforcement half of link safety.
     app.include_router(redirect.router)
+    #: Confirming a bank-detail change with the supplier (panel + public page).
+    app.include_router(verification.router)
+    app.include_router(verification.public)
+    #: Xero / QuickBooks Online — the vendor master, live.
+    app.include_router(accounting.router)
 
     # Billing is CORE, not an extra. It was parked behind `focus_core` while the
     # client's /billing route was also commented out — so the default deployment

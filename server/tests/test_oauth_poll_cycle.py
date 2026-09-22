@@ -88,7 +88,7 @@ async def test_the_cycle_reaches_the_mailbox_instead_of_raising(
 
     seen: list = []
 
-    async def _fake_sync(session, mailbox, *, transport=None):  # noqa: ANN001, ARG001
+    async def _fake_sync(session, mailbox, *, transport=None, write_transport=None):  # noqa: ANN001, ARG001
         seen.append(mailbox.id)
         return {"ok": True, "fetched": 2, "alerted": 0}
 
@@ -108,7 +108,7 @@ async def test_one_failing_mailbox_is_counted_not_fatal(
     """A provider outage on one tenant must not stop the others being polled."""
     from envelock.workers import oauth_fetch
 
-    async def _boom(session, mailbox, *, transport=None):  # noqa: ANN001, ARG001
+    async def _boom(session, mailbox, *, transport=None, write_transport=None):  # noqa: ANN001, ARG001
         raise RuntimeError("provider said no")
 
     monkeypatch.setattr(oauth_fetch, "sync_oauth_mailbox", _boom)

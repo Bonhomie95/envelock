@@ -523,7 +523,7 @@ export default function Billing() {
           {tier && (
             <>
               {/* Stacked: the aside is narrow, and name + price + "/mo · 5
-                  mailboxes" on one row ran together ("Complete$47.50"). */}
+                  mailboxes" on one row ran together ("Complete$49"). */}
               <div className="mt-4">
                 <span className="text-sm font-semibold">{tier.name}</span>
                 <div className="tnum mt-0.5 font-mono text-lg font-semibold">

@@ -45,13 +45,29 @@ export function fakeFetch(routes = {}) {
 }
 
 /** The standard happy-path server for one mailbox. */
-export function envelockServer({ mailbox = "cfo@acme.example", token = "envs_testtoken1234567890" } = {}) {
+export function envelockServer({
+  mailbox = "cfo@acme.example",
+  token = "envs_testtoken1234567890",
+  warnings = {},
+} = {}) {
   return fakeFetch({
     "POST /api/v1/sensor/enroll": () => [200, { token, mailbox, device_id: "d1", heartbeat_seconds: 60 }],
     "POST /api/v1/sensor/heartbeat": () => [200, { acknowledged: true }],
-    "POST /api/v1/sensor/message-opened": (b) => [200, { recorded: true, message_ref: b.message_ref }],
+    "POST /api/v1/sensor/message-opened": (b) => [
+      200,
+      { recorded: true, message_ref: b.message_ref, warning: warnings[b.message_ref] ?? null },
+    ],
   });
 }
+
+/** The server's warning for a flagged message, as /sensor/message-opened sends it. */
+export const BANK_CHANGE_WARNING = {
+  tier: "critical",
+  title: "Bank details changed by a known supplier",
+  action: "Don't pay until you've called +1 803 555 0100 (the number on file) to verify.",
+  verify_phone: "+1 803 555 0100",
+  confirmed_fraud: false,
+};
 
 export function clock(start = Date.parse("2026-09-21T09:00:00Z")) {
   let t = start;

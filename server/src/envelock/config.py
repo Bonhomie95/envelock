@@ -113,6 +113,24 @@ class Settings(BaseSettings):
     google_redirect_uri: str | None = None
     google_pubsub_topic: str | None = None
 
+    # ── Accounting systems (integrations/accounting.py) ───────────────────────
+    #: Xero app (developer.xero.com → My Apps). Redirect URI:
+    #: https://api.envelock.org/api/v1/accounting/xero/callback
+    xero_client_id: str | None = None
+    xero_client_secret: SecretStr | None = None
+    xero_redirect_uri: str | None = None
+    #: Read suppliers + note bills. Newer Xero apps may need the granular
+    #: equivalents (see LAUNCH-GUIDE) — hence a setting, not a constant.
+    xero_scopes: str = "offline_access accounting.contacts.read accounting.transactions"
+    #: QuickBooks Online app (developer.intuit.com). Redirect URI:
+    #: https://api.envelock.org/api/v1/accounting/quickbooks/callback
+    quickbooks_client_id: str | None = None
+    quickbooks_client_secret: SecretStr | None = None
+    quickbooks_redirect_uri: str | None = None
+    quickbooks_environment: Literal["production", "sandbox"] = "production"
+    #: How often a connected accounting system is re-read.
+    accounting_sync_seconds: int = 6 * 3600
+
     # ── Channel 1: Tier 3 IMAP broker (PRD §5.3, §12.11D) ────────────────────
     imap_idle_enabled: bool = True
     imap_monitored_poll_seconds: int = 900
@@ -212,10 +230,24 @@ class Settings(BaseSettings):
     link_rewrite_enabled: bool = True
     #: Inject the warning banner into the body of a flagged message (write-back).
     banner_enabled: bool = True
+    #: The same write-back for mailboxes connected through the Gmail / Microsoft
+    #: Graph APIs. Quarantine only moves a message (label / folder), so it is on.
+    #: The protected copy REPLACES the message; its first live run should be on
+    #: a mailbox of your own (LAUNCH-GUIDE step 12), so each provider is switched
+    #: on explicitly once you've seen a copy come out right.
+    api_quarantine_enabled: bool = True
+    gmail_rewrite_enabled: bool = False
+    graph_rewrite_enabled: bool = False
     #: Public origin of the click-time redirector, used to build rewritten links.
     #: Must be reachable from the recipient's device. Empty = this API's own
     #: local origin (dev). Production: a short dedicated domain or the API host.
     redirect_base_url: str = ""
+    #: Shared with the Cloudflare edge worker (server/deploy/edge/). When set,
+    #: every rewritten link also carries its destination, signed with this
+    #: secret, so the edge can still send people on (after a warning page) if
+    #: this server is unreachable — otherwise an outage breaks every link in
+    #: every protected inbox at once. Unset = plain `/r/{token}` links.
+    link_edge_secret: SecretStr | None = None
     #: How many URLs per message get live reputation checks at delivery time
     #: (each is one cached Safe Browsing lookup when a key is configured).
     url_check_max_per_message: int = 5
@@ -291,6 +323,15 @@ class Settings(BaseSettings):
     escalation_cycle_seconds: int = 60
     retention_purge_seconds: int = 3600
     oauth_refresh_seconds: int = 1800
+    #: Fallback poll for Gmail/Graph mailboxes. With push subscriptions live this
+    #: only catches a missed notification; without them it IS the latency.
+    oauth_poll_seconds: int = 300
+    #: How often the worker picks up mailboxes a push notification (or "Sync
+    #: now") flagged. This is the real-time path's latency.
+    oauth_push_drain_seconds: int = 5
+    #: How often push subscriptions (Graph) and watches (Gmail) are checked and
+    #: renewed. Both expire within days; each is renewed once under a day is left.
+    push_subscription_seconds: int = 3600
     #: How often to re-check that verified domains still have their DNS proof, and
     #: revoke verification if the record was deleted (so access re-gates on the
     #: verify step). Hourly — deletion is rare and revocation is high-impact.

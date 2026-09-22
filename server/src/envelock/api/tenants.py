@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
@@ -1834,8 +1834,6 @@ async def quarantine(alert_id: UUID, actor: ActiveUser, session: Session) -> dic
         raise HTTPException(404, "alert not found")
     await _assert_alert_access(session, actor, alert)
 
-    source = SourceMechanism.FORWARD_INGEST
-    caps = frozenset()
     mailbox = await session.get(Mailbox, alert.mailbox_id) if alert.mailbox_id else None
     sources = (
         frozenset(SourceMechanism(s) for s in mailbox.sources if s)
@@ -1855,6 +1853,7 @@ async def quarantine(alert_id: UUID, actor: ActiveUser, session: Session) -> dic
             ),
             "alert_only": True,
         }
+    assert mailbox is not None  # sources are only non-empty for a real mailbox
     caps = capabilities_for(sources)
     source = next(iter(sources))
 
@@ -1915,6 +1914,7 @@ async def quarantine(alert_id: UUID, actor: ActiveUser, session: Session) -> dic
         # Fall through to queueing: a transient IMAP failure should not lose the
         # human's decision — the worker retries it on the next cycle.
         message.quarantine_requested_at = datetime.now(UTC)
+        mailbox.sync_requested_at = mailbox.sync_requested_at or datetime.now(UTC)
         await session.commit()
         return {
             "succeeded": False,
@@ -1928,6 +1928,9 @@ async def quarantine(alert_id: UUID, actor: ActiveUser, session: Session) -> dic
     # decision; the IMAP worker executes it on its next cycle (≤ the poll
     # interval, 60s by default).
     message.quarantine_requested_at = datetime.now(UTC)
+    # Wakes the worker's fast path (Gmail/Graph act within seconds; IMAP on
+    # its next poll).
+    mailbox.sync_requested_at = mailbox.sync_requested_at or datetime.now(UTC)
     await alert_svc.record_audit(
         session,
         tenant_id=actor.tenant_id,
@@ -2009,8 +2012,39 @@ async def oversight(principal: AdminUser, session: Session) -> dict:
             select(func.count()).select_from(Domain).where(Domain.tenant_id == principal.tenant_id)
         )
     ).scalar_one()
+    # The dashboard's "stopped this month" card: the same figures the monthly
+    # digest leads with, over a rolling 30 days.
+    from envelock.notify.digest import _payments_checked
+
+    since = datetime.now(UTC) - timedelta(days=30)
+    requests, checked = await _payments_checked(
+        session, tenant_id=principal.tenant_id, since=since, until=datetime.now(UTC)
+    )
+    quarantined = (
+        await session.execute(
+            select(func.count()).select_from(Message).where(
+                Message.tenant_id == principal.tenant_id,
+                Message.quarantined_at >= since,
+            )
+        )
+    ).scalar_one()
+    confirmed = (
+        await session.execute(
+            select(func.count()).select_from(Alert).where(
+                Alert.tenant_id == principal.tenant_id,
+                Alert.state == "resolved",
+                Alert.resolved_at >= since,
+            )
+        )
+    ).scalar_one()
     return {
         **summary,
+        "month": {
+            "payment_requests": requests,
+            "payments_checked_by_currency": checked,
+            "quarantined": int(quarantined),
+            "confirmed_fraud": int(confirmed),
+        },
         "mailboxes": len(mailboxes),
         "domains": domains,
         "coverage": {
@@ -2532,79 +2566,15 @@ async def import_vendor_master(
     export adds what is new and leaves the rest alone.
     """
     rows, problems = _vendor_rows(req.csv)
+    from envelock.services.suppliers import apply_supplier_rows
 
-    created_suppliers = 0
-    updated_suppliers = 0
-    created_records = 0
-    skipped_records = 0
-    seen: dict[str, Counterparty] = {}
-
-    for row in rows:
-        reg = row["domain"]
-        counterparty = seen.get(reg)
-        if counterparty is None:
-            counterparty = (
-                await session.execute(
-                    select(Counterparty).where(
-                        Counterparty.tenant_id == principal.tenant_id,
-                        Counterparty.registrable_domain == reg,
-                    )
-                )
-            ).scalar_one_or_none()
-            if counterparty is None:
-                now = datetime.now(UTC)
-                counterparty = Counterparty(
-                    tenant_id=principal.tenant_id,
-                    registrable_domain=reg,
-                    first_seen_at=now,
-                    last_seen_at=now,
-                    message_count=0,
-                )
-                session.add(counterparty)
-                await session.flush()
-                created_suppliers += 1
-            else:
-                updated_suppliers += 1
-            seen[reg] = counterparty
-
-        if name := row.get("name"):
-            counterparty.display_name = counterparty.display_name or name
-        if phone := row.get("phone"):
-            counterparty.verified_phone = counterparty.verified_phone or phone
-
-        for scheme in ("iban", "account", "swift", "sortcode", "ach", "crypto"):
-            value = normalise_identifier(scheme, row.get(scheme) or "")
-            if not value:
-                continue
-            existing = (
-                await session.execute(
-                    select(BankRecord.id).where(
-                        BankRecord.counterparty_id == counterparty.id,
-                        BankRecord.scheme == scheme,
-                        BankRecord.identifier == value,
-                    )
-                )
-            ).scalar_one_or_none()
-            if existing is not None:
-                skipped_records += 1
-                continue
-            now = datetime.now(UTC)
-            session.add(
-                BankRecord(
-                    tenant_id=principal.tenant_id,
-                    counterparty_id=counterparty.id,
-                    scheme=scheme,
-                    identifier=value,
-                    bank_name=row.get("bank_name") or None,
-                    first_seen_at=now,
-                    # Imported from the customer's own accounting system, by an
-                    # admin, out of band from any email — which is a stronger
-                    # provenance than anything we could infer from a message.
-                    verified_at=now,
-                    verified_by=principal.user_id,
-                )
-            )
-            created_records += 1
+    counts = await apply_supplier_rows(
+        session, tenant_id=principal.tenant_id, rows=rows, actor_id=principal.user_id
+    )
+    created_suppliers = counts["suppliers_created"]
+    updated_suppliers = counts["suppliers_matched"]
+    created_records = counts["bank_records_created"]
+    skipped_records = counts["bank_records_already_present"]
 
     summary = {
         "dry_run": req.dry_run,

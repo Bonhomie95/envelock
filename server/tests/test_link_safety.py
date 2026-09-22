@@ -530,3 +530,49 @@ async def test_poll_cycle_skips_lapsed_trial_tenants(session):
 
     assert totals["mailboxes"] == 0  # not polled at all
     assert client.appended == []
+
+
+# ── Edge fallback (links that survive an origin outage) ──────────────────────
+def test_edge_payload_matches_the_worker_vectors(monkeypatch):
+    """The Cloudflare worker (deploy/edge/) verifies what this signs. Both sides
+    run against the same vectors file, so a drift on either side fails a test."""
+    import json
+    import pathlib
+
+    from envelock.config import get_settings
+    from envelock.platform.links import link_path
+
+    vectors = json.loads(
+        (pathlib.Path(__file__).parents[1] / "deploy/edge/test-vectors.json").read_text()
+    )
+    monkeypatch.setenv("ENVELOCK_LINK_EDGE_SECRET", vectors["secret"])
+    get_settings.cache_clear()
+    try:
+        for case in vectors["cases"]:
+            assert "/r/" + link_path(case["token"], case["url"]) == case["path"]
+    finally:
+        get_settings.cache_clear()
+
+
+def test_without_an_edge_secret_links_stay_plain(monkeypatch):
+    from envelock.config import get_settings
+    from envelock.platform.links import link_path
+
+    monkeypatch.delenv("ENVELOCK_LINK_EDGE_SECRET", raising=False)
+    get_settings.cache_clear()
+    assert link_path("tok", "https://a.example/") == "tok"
+
+
+def test_the_origin_resolves_a_link_with_its_fallback_segment(client, monkeypatch):
+    from envelock.config import get_settings
+
+    monkeypatch.setenv("ENVELOCK_LINK_EDGE_SECRET", "edge-secret")
+    get_settings.cache_clear()
+    try:
+        path = _mint_token_sync()
+    finally:
+        get_settings.cache_clear()
+    assert "/" in path  # token/payload.sig
+    resp = client.get(f"/r/{path}", follow_redirects=False)
+    assert resp.status_code == 302
+    assert resp.headers["location"] == "https://destination.example.com/page"

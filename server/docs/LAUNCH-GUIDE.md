@@ -5,8 +5,8 @@ says **what**, **why**, and **exactly how**. Work top to bottom.
 
 > Updated 21 September 2026 for: one repository (`Bonhomie95/envelock`), an
 > IONOS VPS (4 vCores, 8 GB RAM, 240 GB NVMe), and the new setup script that
-> builds the server for you. The code is tested — 795 server tests (794 again
-> with database isolation enforced), 54 sensor tests, 24 web-app tests — and
+> builds the server for you. The code is tested — 829 server tests (828 again
+> with database isolation enforced), 58 sensor tests, 24 web-app tests — and
 > the whole server setup was run end to end, twice, on a fresh Ubuntu 24.04
 > machine.
 
@@ -46,6 +46,10 @@ Steps marked 👤 are yours. Everything else is automated.
   - [ ] 14. 👤 SMS alerts (optional)
   - [ ] 15. 👤 Lawyer review of the legal pages
   - [ ] 16. 👤 Off-server backups
+  - [ ] 19. 👤 Real-time mail and write-back for Microsoft 365 and Gmail
+  - [ ] 20. 👤 Xero and QuickBooks apps
+  - [ ] 21. 👤 Links that survive an outage (Cloudflare)
+  - [ ] 22. 👤 A standby server
 - [ ] **Part D — test with real things**
   - [ ] 17. 👤 Try the add-ons in the real apps
   - [ ] 18. 👤 Connect real mailboxes
@@ -68,7 +72,7 @@ notes still line up.)
 ```bash
 cd ~/Documents/DEV/web/envelock
 git add -A
-git commit -m "5 mailboxes per plan + paid extra seats on Stripe; billing fixes"
+git commit -m "M365/Gmail write-back + push, supplier verification, Xero/QBO, link edge, standby server"
 git push
 ```
 
@@ -258,7 +262,7 @@ journalctl -u envelock-worker -n 80 --no-pager
    | Product | Price | Pricing model |
    |---|---|---|
    | Envelock Essential | $25.00 | Flat rate |
-   | Envelock Complete | $47.50 | Flat rate |
+   | Envelock Complete | $49.00 | Flat rate |
    | Envelock Essential — extra mailbox | $2.00 | Per unit |
    | Envelock Complete — extra mailbox | $3.50 | Per unit |
 
@@ -315,9 +319,11 @@ journalctl -u envelock-worker -n 80 --no-pager
 **Why:** "Connect with Google / Microsoft" works for you today; the public hits
 warnings or a block until each provider reviews the app.
 
-**Google — the long one, start now.** Envelock asks for `gmail.readonly` and,
-for Workspace admins, `admin.reports.audit.readonly`. Gmail read access is a
-**restricted scope**: Google requires app verification *and* an independent
+**Google — the long one, start now.** Envelock asks for `gmail.modify` and,
+for Workspace admins, `admin.reports.audit.readonly`. `gmail.modify` (not
+read-only) is what lets Envelock move a fraudulent email out of the inbox and
+swap in the copy with safe links; it cannot send mail or permanently delete
+anything. It is a **restricted scope**: Google requires app verification *and* an independent
 security assessment (CASA) before anyone beyond your test users can connect.
 Until then: at most 100 test users you add by hand, and their connection
 expires every 7 days.
@@ -337,6 +343,10 @@ an app password** — that path needs no Google approval.
 **Microsoft:**
 
 1. Azure portal → **Microsoft Entra ID → App registrations** → your app.
+   **API permissions → Add → Microsoft Graph → Delegated:** `Mail.ReadWrite`,
+   `MailboxSettings.Read`, `offline_access` (remove `Mail.Read` if it's there).
+   `Mail.ReadWrite` is what lets Envelock quarantine and protect links; it is
+   still user-consentable, so no admin wall.
 2. **Authentication:** redirect URI
    `https://api.envelock.org/api/v1/connect/oauth/microsoft/callback`;
    "Accounts in any organizational directory" selected.
@@ -402,6 +412,11 @@ ENVELOCK_SMS_SENDER_ID=+1XXXXXXXXXX
 then `sudo systemctl restart envelock-api envelock-worker`. Customers must
 verify their phone number before any SMS goes to it.
 
+The same provider sends **supplier confirmation texts**: on a bank-change alert,
+"Text them a confirm link" sends the supplier's number *on file* a one-time link
+where they answer "yes, we changed it" or "no, we didn't". Without SMS set up,
+that button is simply hidden and people verify by phone (which always works).
+
 ## 15. 👤 Lawyer review of the legal pages
 
 **Why:** `/terms`, `/privacy`, `/dpa` and `/subprocessors` are live. The facts
@@ -446,6 +461,154 @@ With IONOS **S3 Object Storage** (any S3-compatible storage works the same way):
 
 ---
 
+## 19. 👤 Real-time mail and write-back for Microsoft 365 and Gmail
+
+**Why:** Microsoft 365 no longer accepts password IMAP, so for most business
+customers "Connect with Microsoft" / "Connect with Google" is the only way in.
+Envelock now protects those mailboxes fully: it moves Critical mail to an
+"Envelock Quarantine" folder/label and can swap every message for a copy whose
+links are checked at click time. Push notifications make it act within
+seconds instead of on the 5-minute check.
+
+**A. Microsoft push** — nothing to create. In **both** `.env` and `.env.worker`:
+
+```
+ENVELOCK_MS_WEBHOOK_URL=https://api.envelock.org/api/v1/webhooks/graph
+```
+
+The worker creates and renews a subscription for every connected mailbox.
+
+**B. Gmail push** (Google Cloud console, same project as the OAuth app):
+
+1. **Pub/Sub → Topics → Create topic**, ID `gmail-push`. Copy its full name
+   (`projects/YOUR-PROJECT/topics/gmail-push`).
+2. On the topic → **Permissions → Add principal**
+   `gmail-api-push@system.gserviceaccount.com`, role **Pub/Sub Publisher**.
+3. Get Envelock's push token, on the server as `ubuntu`:
+   ```bash
+   cd ~/apps/server && ./.venv/bin/python -c "from envelock.security.webhook_auth import push_token; print(push_token())"
+   ```
+4. **Subscriptions → Create subscription** on that topic: delivery type
+   **Push**, endpoint
+   `https://api.envelock.org/api/v1/webhooks/gmail?token=THE_TOKEN_FROM_STEP_3`.
+5. In **both** env files: `ENVELOCK_GOOGLE_PUBSUB_TOPIC=projects/YOUR-PROJECT/topics/gmail-push`
+
+Then `sudo systemctl restart envelock-api envelock-worker`.
+
+**C. Switch on the protected copy — after one check on your own mailbox.**
+Quarantine is on already. The protected copy *replaces* each message, so it
+starts off; turn it on per provider once you've seen it come out right:
+
+1. Connect your own Microsoft 365 (or Gmail) mailbox as a **Protected** mailbox.
+2. In `.env.worker` add `ENVELOCK_GRAPH_REWRITE_ENABLED=true` (Gmail:
+   `ENVELOCK_GMAIL_REWRITE_ENABLED=true`), then `sudo systemctl restart envelock-worker`.
+3. Send yourself an email with a link and a small PDF attached. Within a
+   minute, open it in Outlook (or Gmail): the link should point at
+   `https://api.envelock.org/r/…` (or `go.envelock.org`, step 21), the
+   attachment should open, the date and sender should be unchanged, and it
+   should still be **unread**.
+4. If anything is off, set the line back to `false`, restart the worker, and
+   send me the email — nothing else changes.
+
+## 20. 👤 Xero and QuickBooks apps
+
+**Why:** customers connect their books once and Envelock reads every supplier,
+the account they're paid into and their phone number — the callback number the
+verify panel uses. When an email changes a supplier's bank details, their
+unpaid bills get a warning note in Xero/QuickBooks, where the person paying
+sees it. (Neither API has a real "hold" on a bill, so it's a note; Envelock
+never changes amounts, statuses or bank details.)
+
+**Xero** — [developer.xero.com](https://developer.xero.com/app/manage) → **New app**
+(Web app). Redirect URI `https://api.envelock.org/api/v1/accounting/xero/callback`.
+Copy the client ID and generate a secret. If Xero says your app must use the
+newer granular scopes, set `ENVELOCK_XERO_SCOPES` to the read-contacts and
+invoice-history scopes it lists, keeping `offline_access`.
+
+**QuickBooks Online** — [developer.intuit.com](https://developer.intuit.com/app/developer/dashboard)
+→ **Create an app** → QuickBooks Online and Payments → scope
+`com.intuit.quickbooks.accounting`. Redirect URI
+`https://api.envelock.org/api/v1/accounting/quickbooks/callback`. Use the
+**Production** keys (Intuit asks a short questionnaire before issuing them).
+
+In **both** env files, then restart both services:
+
+```
+ENVELOCK_XERO_CLIENT_ID=...
+ENVELOCK_XERO_CLIENT_SECRET=...
+ENVELOCK_XERO_REDIRECT_URI=https://api.envelock.org/api/v1/accounting/xero/callback
+ENVELOCK_QUICKBOOKS_CLIENT_ID=...
+ENVELOCK_QUICKBOOKS_CLIENT_SECRET=...
+ENVELOCK_QUICKBOOKS_REDIRECT_URI=https://api.envelock.org/api/v1/accounting/quickbooks/callback
+```
+
+The **Suppliers** page then shows "Connect Xero" / "Connect QuickBooks".
+Test with a Xero demo company (Xero gives every account one) before a customer.
+
+## 21. 👤 Links that survive an outage (Cloudflare)
+
+**Why:** every protected link in every customer's inbox points at your server.
+If it's down — a reboot, a bad deploy, an IONOS outage — every one of those
+links would fail at once. A tiny Cloudflare Worker in front of the links
+passes clicks through normally and, if your server can't be reached, still
+takes people to the real site after a "we couldn't check this link" page.
+
+1. Move `envelock.org`'s DNS to Cloudflare (free): cloudflare.com → **Add a
+   site** → copy your current records → change the nameservers at your
+   registrar. Keep `app`, `api`, `admin` as they are (grey cloud is fine).
+2. Make a shared secret on your laptop: `openssl rand -hex 32`.
+3. Deploy the worker from `server/deploy/edge/`:
+   ```bash
+   cd server/deploy/edge && npx wrangler login && npx wrangler deploy
+   npx wrangler secret put LINK_EDGE_SECRET      # paste the secret
+   ```
+   It serves `go.envelock.org` (see `wrangler.toml`).
+4. On the server, in **both** env files, then restart both services:
+   ```
+   ENVELOCK_REDIRECT_BASE_URL=https://go.envelock.org
+   ENVELOCK_LINK_EDGE_SECRET=<the same secret>
+   ```
+5. Check: send yourself a link, click it (works as before). Then
+   `sudo systemctl stop envelock-api`, click it again — you get Envelock's
+   "we couldn't check this link" page with a Continue button. Start the API again.
+
+Links written before this step keep working normally; they just don't have
+the outage fallback.
+
+## 22. 👤 A standby server
+
+**Why:** one server is one point of failure for a product that sits in your
+customers' mail. A second, smaller VPS keeps a live copy of the database
+(seconds behind) and can take over in about ten minutes.
+
+1. Buy a second IONOS VPS (the 4 GB plan is enough), Ubuntu 24.04, in a
+   **different datacenter** if IONOS offers one.
+2. On the **live** server, as root:
+   ```bash
+   bash /home/ubuntu/apps/server/deploy/replication-primary.sh --standby-ip STANDBY_IP
+   ```
+   It prints the next two commands — copy three files to the standby, then run
+   `setup-server.sh --standby-of LIVE_IP` there. Add the standby's GitHub
+   deploy key when asked, as in step 5.
+3. Check it: `bash /home/ubuntu/apps/server/deploy/replica-status.sh` on either
+   server shows "streaming". Do this once a week, or add it to your uptime monitor.
+
+**If the live server is lost**, on the standby:
+
+```bash
+sudo bash /home/ubuntu/apps/server/deploy/failover.sh --email you@envelock.org
+```
+
+It refuses while the old server still answers (two live servers would read
+every mailbox twice), asks you to type PROMOTE, makes the database writable,
+deploys, starts everything, and tells you which DNS records to point at it.
+If it stops halfway, run it again — it carries on. Afterwards, keep the old
+server **off**, and rebuild it as the new standby with steps 2–3 the other way round.
+
+This was rehearsed end to end on two Ubuntu 24.04 VMs: build, replicate, the
+refusal while the primary was up, the promotion after it went down, and an
+interrupted failover resumed.
+
 # Part D — Test with real things
 
 ## 17. 👤 Try the add-ons in the real apps
@@ -489,6 +652,10 @@ For each: connect → **Sync now** → send it an email from elsewhere → confi
 it's analysed within a minute, **and that it still shows as unread in the real
 inbox** — Envelock must never mark mail read.
 
+For Microsoft 365 and Gmail also check the enforcement (step 19): an email that
+"changes" a known supplier's bank details should land in **Envelock Quarantine**,
+and with the protected copy on, its links should go through Envelock.
+
 Need a mailbox you fully control? `server/deploy/TEST_MAIL_SERVER.md` sets one
 up (Postfix + Dovecot) — on a separate small server, not production.
 
@@ -526,6 +693,9 @@ sudo tail -f /var/log/nginx/error.log
 A free uptime monitor (UptimeRobot, Better Stack) on
 `https://api.envelock.org/ready`, every minute, alerting your phone. Use
 `/ready` — it fails when the database or Redis is down; `/health` doesn't.
+Add a second check on `https://go.envelock.org/r/check` (step 21): it should
+answer quickly, even with a "not recognised" page — a timeout means the link
+edge itself is down.
 
 ## Rolling back
 
@@ -589,6 +759,9 @@ cd ~/apps/server
 | `VAPID_*` | already generated — never change | free |
 | `STRIPE_*` | step 11 | 2.9% + 30¢ per charge |
 | `SMS_*` | step 14 (optional) | per message |
+| `MS_WEBHOOK_URL`, `GRAPH_/GMAIL_REWRITE_ENABLED` | step 19 | free |
+| `XERO_*`, `QUICKBOOKS_*` | step 20 | free |
+| `REDIRECT_BASE_URL`, `LINK_EDGE_SECRET` | step 21 | free (Cloudflare Workers free tier) |
 
 ---
 
@@ -650,15 +823,18 @@ ENVELOCK_DB_POOL_SIZE=30               # keep this above the concurrency
 
 # Appendix A — Google verification: paste-ready answers
 
-**Scope justification — `https://www.googleapis.com/auth/gmail.readonly`**
+**Scope justification — `https://www.googleapis.com/auth/gmail.modify`**
 
 > Envelock protects businesses from invoice and payment fraud (business email
 > compromise). With the mailbox owner's consent it reads incoming messages to
 > detect impersonation, changed bank details, lookalike sender domains and
-> malicious links, and alerts the business before a payment is made. It does
-> not send, delete or modify mail, and never uses message content for
-> advertising or model training. Read-only access is the minimum that allows
-> each new message to be checked as it arrives.
+> malicious links, and alerts the business before a payment is made. Modify
+> access is needed for two protective actions a read-only scope cannot do:
+> moving a message confirmed as fraudulent out of the inbox into a quarantine
+> label, and replacing a message with a copy whose links are checked at the
+> moment they are clicked (the original goes to Trash, recoverable by the
+> user). Envelock never sends mail, never permanently deletes mail, and never
+> uses message content for advertising or model training.
 
 **Scope justification — `https://www.googleapis.com/auth/admin.reports.audit.readonly`**
 

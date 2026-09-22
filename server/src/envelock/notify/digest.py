@@ -78,11 +78,41 @@ class Digest:
     unpriced_incidents: int = 0
     ai_consulted: int = 0
     items: list[DigestItem] = field(default_factory=list)
+    #: Inbound payment requests checked this month, and what they asked for:
+    #: [{"currency": "USD", "amount": 48250.0}] — per currency, never summed across.
+    payment_requests: int = 0
+    payments_checked_by_currency: list[dict] = field(default_factory=list)
 
     @property
     def worth_sending(self) -> bool:
-        """A month with nothing in it does not get an email. See the module note."""
-        return self.alerts_raised > 0
+        """A month with nothing in it does not get an email. See the module note.
+        Payment requests checked count as something: "we checked $48,250 of
+        payment requests and all of it was fine" is the quiet month's proof."""
+        return self.alerts_raised > 0 or self.payment_requests > 0
+
+    @property
+    def headline(self) -> str:
+        """The one line the owner reads: money checked, frauds stopped."""
+        parts = []
+        if self.payments_checked_by_currency:
+            money = " and ".join(
+                _money(r["amount"], r["currency"]) for r in self.payments_checked_by_currency[:2]
+            )
+            parts.append(f"{money} in payment requests checked")
+        elif self.payment_requests:
+            parts.append(
+                f"{self.payment_requests} payment "
+                f"{'request' if self.payment_requests == 1 else 'requests'} checked"
+            )
+        if self.confirmed:
+            parts.append(f"{self.confirmed} {'fraud' if self.confirmed == 1 else 'frauds'} stopped")
+        elif self.critical:
+            parts.append(
+                f"{self.critical} critical {'alert' if self.critical == 1 else 'alerts'}"
+            )
+        if not parts:
+            parts.append(f"{self.alerts_raised} caught this month")
+        return "; ".join(parts)
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -151,6 +181,9 @@ async def build_digest(
     )[:8]
 
     messages = await _count_messages(session, tenant_id=tenant_id, since=since, until=until)
+    requests, checked = await _payments_checked(
+        session, tenant_id=tenant_id, since=since, until=until
+    )
 
     return Digest(
         tenant_name=tenant.name,
@@ -163,6 +196,8 @@ async def build_digest(
         prevented_by_currency=prevented["by_currency"],
         unpriced_incidents=prevented["unpriced_incidents"],
         ai_consulted=sum(1 for a in alerts if a.ai_flagged),
+        payment_requests=requests,
+        payments_checked_by_currency=checked,
         items=[
             DigestItem(
                 tier=a.tier,
@@ -202,6 +237,34 @@ async def _count_messages(
     )
 
 
+async def _payments_checked(
+    session: AsyncSession, *, tenant_id: UUID, since: datetime, until: datetime
+) -> tuple[int, list[dict]]:
+    """(payment requests with an amount, total per currency, largest first)."""
+    from sqlalchemy import func
+
+    from envelock.models import Message
+
+    rows = (
+        await session.execute(
+            select(Message.payment_currency, func.count(), func.sum(Message.payment_amount))
+            .where(
+                Message.tenant_id == tenant_id,
+                Message.created_at >= since,
+                Message.created_at < until,
+                Message.payment_amount.is_not(None),
+            )
+            .group_by(Message.payment_currency)
+        )
+    ).all()
+    count = sum(int(n) for _, n, _ in rows)
+    totals = sorted(
+        ({"currency": cur, "amount": float(total or 0)} for cur, _, total in rows if cur),
+        key=lambda r: -r["amount"],
+    )
+    return count, totals
+
+
 def _money(amount: float, currency: str) -> str:
     symbol = {"USD": "$", "EUR": "€", "GBP": "£", "NGN": "₦"}.get(currency)
     body = f"{amount:,.2f}".removesuffix(".00")
@@ -233,6 +296,8 @@ def render_text(d: Digest) -> str:
     lines = [
         f"Envelock — {d.tenant_name}",
         _period(d),
+        "",
+        d.headline[0].upper() + d.headline[1:] + ".",
         "",
     ]
     prevented = _prevented_line(d)
@@ -350,8 +415,10 @@ def render_html(d: Digest) -> str:
         '<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;'
         'padding:28px;">'
         f'<div style="font-size:13px;color:#6b7280;">{e(_period(d))}</div>'
-        f'<div style="font-size:20px;font-weight:700;color:#111827;margin:4px 0 24px;">'
+        f'<div style="font-size:20px;font-weight:700;color:#111827;margin:4px 0 6px;">'
         f"{e(d.tenant_name)} — your month in email fraud</div>"
+        f'<div style="font-size:16px;font-weight:600;color:#c2410c;margin:0 0 24px;">'
+        f"{e(d.headline[0].upper() + d.headline[1:])}.</div>"
         f"{prevented_block}"
         f'<table role="presentation" style="border-collapse:collapse;width:100%;">'
         f"<tr>{stat_cells}</tr></table>"

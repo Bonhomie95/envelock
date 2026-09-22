@@ -100,6 +100,15 @@ async def _log_click(
         logger.debug("click log failed", exc_info=True)
 
 
+@router.get("/r/{token}/{fallback}", response_model=None)
+async def click_with_fallback(
+    token: str, fallback: str, request: Request, session: Session, go: int = 0  # noqa: ARG001
+) -> Response:
+    """The same link with its signed edge-fallback payload appended. The payload
+    is only for the Cloudflare worker during an outage; here the token decides."""
+    return await click(token, request, session, go)
+
+
 @router.get("/r/{token}", response_model=None)
 async def click(token: str, request: Request, session: Session, go: int = 0) -> Response:
     row = await get_link_token(session, token)

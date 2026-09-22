@@ -298,3 +298,27 @@ def test_oversight_reports_prevented_loss(client: TestClient) -> None:
     assert "prevented_loss" in body
     assert body["prevented_loss"]["by_currency"] == []
     assert body["prevented_loss"]["incidents"] == 0
+
+
+def test_the_headline_leads_with_money_checked_and_frauds_stopped() -> None:
+    """The owner reads one line. It should say what the month was worth."""
+    d = _digest(
+        payment_requests=14,
+        payments_checked_by_currency=[{"currency": "USD", "amount": 48250.0}],
+        confirmed=1,
+    )
+    assert d.headline == "$48,250 in payment requests checked; 1 fraud stopped"
+    assert d.headline.capitalize()[:1] in dg.render_text(d)
+    assert "$48,250 in payment requests checked" in dg.render_html(d)
+
+
+def test_a_quiet_month_with_payments_checked_is_still_worth_sending() -> None:
+    """No alerts, but $30k of payment requests were looked at and were fine —
+    that is the evidence of protection a quiet month otherwise lacks."""
+    d = _digest(
+        alerts_raised=0, critical=0, confirmed=0, items=[], prevented_by_currency=[],
+        payment_requests=6,
+        payments_checked_by_currency=[{"currency": "USD", "amount": 30000.0}],
+    )
+    assert d.worth_sending
+    assert d.headline == "$30,000 in payment requests checked"

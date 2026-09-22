@@ -28,14 +28,39 @@
   var lastKey = null;
   var lastActivity = 0;
 
-  function send(message) {
+  function send(message, onReply) {
     try {
       message.origin = location.origin;
       message.account = W.accountFromTitle(document.title);
-      api.runtime.sendMessage(message);
+      var reply = api.runtime.sendMessage(message);
+      if (onReply && reply && typeof reply.then === "function") {
+        reply.then(onReply, function () {});
+      }
     } catch (e) {
       /* The extension was updated or removed under this tab. Nothing to do. */
     }
+  }
+
+  /* Envelock's verdict on the message just opened, above it on the page. In a
+     shadow root so the webmail's CSS can't hide or restyle it, and replaced on
+     every message so a warning never lingers on the next one. */
+  var BANNER_ID = "envelock-warning-banner";
+  function showWarning(reply) {
+    var old = document.getElementById(BANNER_ID);
+    if (old) old.remove();
+    var line = reply && reply.warning;
+    if (!line || !document.body) return;
+    var host = document.createElement("div");
+    host.id = BANNER_ID;
+    var root = host.attachShadow ? host.attachShadow({ mode: "closed" }) : host;
+    var box = document.createElement("div");
+    box.setAttribute("role", "alert");
+    box.textContent = "\u26A0 " + line;
+    box.style.cssText =
+      "margin:8px;padding:10px 14px;border:2px solid #b91c1c;background:#fef2f2;" +
+      "color:#7f1d1d;font:600 13px/1.45 -apple-system,Segoe UI,Arial,sans-serif;border-radius:6px;";
+    root.appendChild(box);
+    document.body.insertBefore(host, document.body.firstChild);
   }
 
   function opened(key) {
@@ -51,7 +76,7 @@
         return res.ok ? res.text() : "";
       })
       .then(function (text) {
-        send({ type: "opened", ref: W.messageIdFromSource(text) || "*", key: key });
+        send({ type: "opened", ref: W.messageIdFromSource(text) || "*", key: key }, showWarning);
       })
       .catch(function () {
         send({ type: "opened", ref: "*", key: key });

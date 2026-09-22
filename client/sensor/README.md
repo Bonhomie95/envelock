@@ -1,7 +1,8 @@
 # Envelock sensor
 
 The small piece of Envelock that runs where people actually read their mail.
-It tells the Envelock API two things about one mailbox, and nothing else:
+It tells the Envelock API two things about one mailbox, and shows one thing back
+(the warning on a flagged message the person has just opened):
 
 - **this device is here** — `POST /api/v1/sensor/heartbeat`, once a minute while
   the mail client is open
@@ -38,6 +39,12 @@ drift.
 - **Outlook stores the token in `localStorage`, never roaming settings** —
   roaming settings live inside the mailbox, where an intruder could read the
   token and forge the very attestations meant to catch them.
+- **The one thing a token can read is the warning for a message it just
+  reported opening**, in its own mailbox, while the alert is in force: a tier,
+  a title and what to do. That is what puts "don't pay until you've called the
+  number on file" in Outlook's red bar, on Thunderbird's toolbar and above the
+  message in webmail. Never evidence, amounts or the alert list
+  (`test_a_sensor_sees_only_its_own_mailbox`, `test_opening_a_flagged_message_returns_its_warning`).
 - **No message content, ever.** Only the `Message-ID` header, and on Roundcube
   only the header block of the raw source is parsed.
 - **Least privilege.** The browser extension's broad `https://*/*` is optional

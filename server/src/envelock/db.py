@@ -168,6 +168,10 @@ _RUNTIME_COLUMNS: tuple[str, ...] = (
     "must_change_password boolean NOT NULL DEFAULT false",
     "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_customer_id varchar(64)",
     "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS stripe_subscription_id varchar(64)",
+    "ALTER TABLE mailboxes ADD COLUMN IF NOT EXISTS push_subscription_id varchar(255)",
+    "ALTER TABLE mailboxes ADD COLUMN IF NOT EXISTS push_expires_at timestamptz",
+    "ALTER TABLE messages ADD COLUMN IF NOT EXISTS payment_amount double precision",
+    "ALTER TABLE messages ADD COLUMN IF NOT EXISTS payment_currency varchar(8)",
     "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS "
     "extra_mailbox_seats integer NOT NULL DEFAULT 0",
     "ALTER TABLE mailbox_credentials ADD COLUMN IF NOT EXISTS "

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from envelock.core.capabilities import Capability
 from envelock.core.enums import AlertTier, AuthResult, MailDirection
+from envelock.core.events import MailEvent
 from envelock.detections.base import (
     DetectionContext,
     FindingResult,
@@ -44,8 +45,11 @@ def _strip_tags(html: str) -> str:
 
 def _body(ctx: DetectionContext) -> str:
     mail = ctx.mail
-    if mail is None:
-        return ""
+    return mail_text(mail) if mail is not None else ""
+
+
+def mail_text(mail: MailEvent) -> str:
+    """Subject, body and attachment text — everything the payment detections read."""
     parts = [mail.subject, mail.body_text]
     # An HTML-only message (no text/plain part) left body_text empty, so a
     # changed IBAN in the HTML was invisible to A1/A6/A7/A10/A14 while A2 (which
@@ -525,7 +529,48 @@ class _B8AuthPosture:
         ]
 
 
+@dataclass(frozen=True)
+class _A15KnownFraudAccount:
+    """A bank account that was already confirmed as fraud — by this customer or
+    any other. Fraudsters reuse mule accounts across victims, so this fires
+    even when the sender, the domain and the wording are all new."""
+
+    service: str = "A15"
+    requires: frozenset[Capability] = _INBOUND
+
+    def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
+        if ctx.mail is None or not ctx.fraud_accounts or not _is_external(ctx):
+            return []
+        others = sum(v.get("other_tenants", 0) for v in ctx.fraud_accounts.values())
+        own = any(v.get("own") for v in ctx.fraud_accounts.values())
+        who = (
+            "in a fraud attempt against another Envelock customer"
+            if others
+            else "in a fraud your team confirmed earlier"
+        )
+        return [
+            FindingResult(
+                service="A15",
+                tier=AlertTier.CRITICAL,
+                score=100,
+                summary=(
+                    f"The bank account in this message was used {who}. "
+                    "Do not pay it."
+                ),
+                evidence={
+                    "fraud_accounts": [
+                        {"scheme": v["scheme"], "identifier": k}
+                        for k, v in ctx.fraud_accounts.items()
+                    ],
+                    "reported_by_other_customers": others,
+                    "reported_by_you": own,
+                },
+            )
+        ]
+
+
 A1 = register(_A1BankChange())
+A15 = register(_A15KnownFraudAccount())
 A3 = register(_A3A4A5Impersonation())
 A6 = register(_A6ReplyToMismatch())
 A7 = register(_A7FirstContact())

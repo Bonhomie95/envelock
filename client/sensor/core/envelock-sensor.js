@@ -473,7 +473,28 @@
     });
   };
 
+  /**
+   * The server's warning for a message the person just opened, as one line of
+   * at most 150 characters — Outlook's notification bar limit, and about what
+   * a toolbar tooltip or desktop notification shows. Null when there is none.
+   */
+  function warningLine(warning) {
+    if (!warning || !warning.action) return null;
+    var label = warning.confirmed_fraud
+      ? "Envelock: confirmed fraud."
+      : "Envelock " + String(warning.tier || "").toUpperCase() + ":";
+    var line = label + " " + warning.action;
+    return line.length > 150 ? line.slice(0, 147) + "..." : line;
+  }
+
+  /** The warning in an attest() result, if the server sent one. */
+  function warningOf(result) {
+    return (result && result.ok && result.body && result.body.warning) || null;
+  }
+
   root.EnvelockSensor = {
+    warningLine: warningLine,
+    warningOf: warningOf,
     DEFAULT_API_BASE: DEFAULT_API_BASE,
     ACTIVITY_REF: ACTIVITY_REF,
     HEARTBEAT_SECONDS: HEARTBEAT_SECONDS,

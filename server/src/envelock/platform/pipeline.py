@@ -50,7 +50,7 @@ from envelock.util.payments import (
 #: phishing-link alert may also arrive in a mail quoting a sum, and counting
 #: that as "money we stopped leaving" would inflate the one number the customer
 #: is most likely to check against their own records.
-_MONEY_SERVICES = frozenset({"A1", "A2", "A3", "A4", "A5", "A13", "A14"})
+_MONEY_SERVICES = frozenset({"A1", "A2", "A3", "A4", "A5", "A13", "A14", "A15"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -348,6 +348,23 @@ async def build_context(
         ).all()
         internal_names = {n.strip().lower() for (n,) in name_rows if n and n.strip()}
 
+    # Shared fraud intelligence: any bank account in this payment email that a
+    # customer already confirmed as fraud (A15).
+    fraud_accounts: dict[str, dict] = {}
+    if isinstance(event, MailEvent) and event.direction is MailDirection.INBOUND:
+        from envelock.detections.impersonation import mail_text
+        from envelock.platform import fraud_accounts as fraud_accounts_store
+        from envelock.util.payments import extract_bank_identifiers, has_payment_context
+
+        text = mail_text(event)
+        if has_payment_context(text):
+            found = extract_bank_identifiers(text)
+            fraud_accounts = await fraud_accounts_store.lookup(
+                session,
+                tenant_id=tenant_id,
+                identifiers=[(b.scheme, b.identifier) for b in found],
+            )
+
     caps = capabilities_for(frozenset(sources))
     return DetectionContext(
         event=event,
@@ -356,6 +373,7 @@ async def build_context(
         owned_domains=owned_domains,
         known_counterparties=frozenset(known),
         internal_names=frozenset(internal_names),
+        fraud_accounts=fraud_accounts,
         counterparty=counterparty,
         thread_history=thread_history,
         active_sessions=active_sessions,
@@ -651,6 +669,15 @@ async def analyse_event(
             risk_score=assessment.score if assessment else 0,
             source_ref=event.source_ref,
         )
+        if event.direction is MailDirection.INBOUND:
+            from envelock.detections.impersonation import mail_text as _mail_text
+            from envelock.util.payments import has_payment_context as _is_payment
+
+            _text = _mail_text(event)
+            if _is_payment(_text):
+                _found = largest_amount(f"{event.subject or ''}\n{event.body_text or ''}")
+                if _found is not None:
+                    message.payment_amount, message.payment_currency = _found
         session.add(message)
         await session.flush()
         message_id = message.id

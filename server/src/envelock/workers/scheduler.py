@@ -157,6 +157,41 @@ async def oauth_fetch_job() -> dict:
     return await fetch_all_oauth_mailboxes()
 
 
+async def oauth_push_drain_job() -> dict:
+    """Act on push notifications within seconds (see oauth_fetch.drain_requested)."""
+    from envelock.workers.oauth_fetch import drain_requested
+
+    return await drain_requested()
+
+
+async def push_subscription_job() -> dict:
+    """Create and renew Graph subscriptions / Gmail watches before they lapse."""
+    from envelock.workers.push_subscriptions import ensure_all
+
+    return await ensure_all()
+
+
+async def accounting_requested_job() -> dict:
+    """Connections just made or with "Sync now" pressed — within seconds."""
+    from envelock.workers.accounting_sync import sync_due
+
+    return await sync_due(requested_only=True)
+
+
+async def accounting_sync_job() -> dict:
+    """Re-read every connected accounting system on its cadence."""
+    from envelock.workers.accounting_sync import sync_due
+
+    return await sync_due()
+
+
+async def accounting_bills_job() -> dict:
+    """Note the unpaid bills of suppliers named by new bank-change alerts."""
+    from envelock.workers.accounting_sync import flag_bills_for_new_alerts
+
+    return await flag_bills_for_new_alerts()
+
+
 async def domain_reverify_job() -> dict:
     """Revoke a domain's verification if its DNS proof was deleted — so a domain we
     once trusted can't stay trusted after the customer loses control of it. Only a
@@ -237,7 +272,7 @@ async def monthly_digest_job() -> dict:
                 .scalars()
                 .all()
             )
-            subject = f"Envelock — {built.alerts_raised} caught this month"
+            subject = f"Envelock: {built.headline}"
             text = dg.render_text(built)
             html_body = dg.render_html(built)
             for address in recipients:
@@ -354,8 +389,31 @@ def start_oauth_jobs(stop: asyncio.Event) -> list[asyncio.Task]:
         asyncio.create_task(
             _run_forever(
                 "oauth_fetch", oauth_fetch_job,
-                interval=settings.oauth_refresh_seconds, stop=stop,
+                interval=settings.oauth_poll_seconds, stop=stop,
             )
+        ),
+        asyncio.create_task(
+            _run_forever(
+                "oauth_push_drain", oauth_push_drain_job,
+                interval=settings.oauth_push_drain_seconds, stop=stop,
+            )
+        ),
+        asyncio.create_task(
+            _run_forever(
+                "push_subscriptions", push_subscription_job,
+                interval=settings.push_subscription_seconds, stop=stop,
+            )
+        ),
+        # Accounting systems: their tokens are sealed the same way, so their jobs
+        # live here with the other credential-holding work.
+        asyncio.create_task(
+            _run_forever("accounting_requested", accounting_requested_job, interval=15, stop=stop)
+        ),
+        asyncio.create_task(
+            _run_forever("accounting_sync", accounting_sync_job, interval=1800, stop=stop)
+        ),
+        asyncio.create_task(
+            _run_forever("accounting_bills", accounting_bills_job, interval=60, stop=stop)
         ),
     ]
 

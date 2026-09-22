@@ -172,3 +172,18 @@ test("device labels are what a person would recognise", () => {
   assert.equal(S.describeDevice("Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0").label, "Firefox on Linux");
   assert.equal(S.describeDevice("anything", "Outlook").label, "Outlook on unknown OS");
 });
+
+test("warningLine fits Outlook's 150-character bar and says what to do", () => {
+  assert.equal(S.warningLine(null), null);
+  assert.equal(
+    S.warningLine({ tier: "high", action: "Don't click links until you've checked." }),
+    "Envelock HIGH: Don't click links until you've checked.",
+  );
+  assert.equal(
+    S.warningLine({ tier: "critical", confirmed_fraud: true, action: "Do not pay." }),
+    "Envelock: confirmed fraud. Do not pay.",
+  );
+  const long = S.warningLine({ tier: "critical", action: "x".repeat(400) });
+  assert.equal(long.length, 150);
+  assert.ok(long.endsWith("..."));
+});

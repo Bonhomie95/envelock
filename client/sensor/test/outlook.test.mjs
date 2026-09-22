@@ -1,13 +1,28 @@
 /* The Outlook add-in's controller, driven with a fake Office object. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Outlook, S, clock, envelockServer } from "./helpers.mjs";
+import { BANK_CHANGE_WARNING, Outlook, S, clock, envelockServer } from "./helpers.mjs";
+
+function fakeItem(id, bars) {
+  return {
+    internetMessageId: id,
+    notificationMessages: {
+      replaceAsync(key, msg) {
+        bars.push({ op: "replace", id, key, ...msg });
+      },
+      removeAsync(key) {
+        bars.push({ op: "remove", id, key });
+      },
+    },
+  };
+}
 
 function fakeOffice(email, messageId) {
   const handlers = {};
+  const bars = [];
   const mailbox = {
     userProfile: { emailAddress: email },
-    item: messageId ? { internetMessageId: messageId } : null,
+    item: messageId ? fakeItem(messageId, bars) : null,
     addHandlerAsync(type, fn) {
       handlers[type] = fn;
     },
@@ -17,10 +32,12 @@ function fakeOffice(email, messageId) {
   };
   return {
     EventType: { ItemChanged: "olkItemSelectedChanged" },
+    MailboxEnums: { ItemNotificationMessageType: { ErrorMessage: "errorMessage" } },
     context: { mailbox, diagnostics: { platform: "OfficeOnline", version: "16.0" } },
     handlers,
+    bars,
     select(id) {
-      mailbox.item = { internetMessageId: id };
+      mailbox.item = fakeItem(id, bars);
       return handlers.olkItemSelectedChanged?.();
     },
   };
@@ -106,4 +123,25 @@ test("unpairing stops the timer, the listener and the reports", async () => {
   assert.equal(timers.length, 0);
   assert.equal(office.handlers.olkItemSelectedChanged, undefined);
   assert.deepEqual(await c.client.enrollments(), []);
+});
+
+test("a flagged message gets Outlook's red bar; a clean one clears it", async () => {
+  const office = fakeOffice("cfo@acme.example", "<remit-88@gemini.example>");
+  const server = envelockServer({ warnings: { "remit-88@gemini.example": BANK_CHANGE_WARNING } });
+  const { c } = controller(office, server);
+  await c.pair("ABCD-EFGH", "https://api.envelock.test");
+
+  const bar = office.bars.find((b) => b.op === "replace");
+  assert.equal(bar.id, "<remit-88@gemini.example>");
+  assert.equal(bar.type, "errorMessage");
+  assert.equal(
+    bar.message,
+    "Envelock CRITICAL: Don't pay until you've called +1 803 555 0100 (the number on file) to verify.",
+  );
+  assert.ok(bar.message.length <= 150);
+  assert.match((await c.snapshot()).warning, /Don't pay/);
+
+  await office.select("<newsletter@x>");
+  assert.deepEqual(office.bars.at(-1), { op: "remove", id: "<newsletter@x>", key: bar.key });
+  assert.equal((await c.snapshot()).warning, null);
 });

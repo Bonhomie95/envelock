@@ -18,7 +18,10 @@
     "128": "icons/icon-128.png"
   },
   "background": {
-    "scripts": ["envelock-sensor.js", "background.js"]
+    "scripts": [
+      "envelock-sensor.js",
+      "background.js"
+    ]
   },
   "browser_action": {
     "default_title": "Envelock",
@@ -33,7 +36,14 @@
     "messagesRead",
     "storage",
     "alarms",
+    "notifications",
     "https://api.envelock.org/*"
   ],
-  "optional_permissions": ["https://*/*"]
+  "optional_permissions": [
+    "https://*/*"
+  ],
+  "message_display_action": {
+    "default_title": "Envelock",
+    "default_icon": "icons/icon-32.png"
+  }
 }

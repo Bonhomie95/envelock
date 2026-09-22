@@ -85,7 +85,31 @@
       });
     }
 
-    function onDisplayed(message) {
+    /* Thunderbird has no bar inside the message we may write to without
+       "messagesModify", which the sensor deliberately never holds (it never
+       changes mail). So the warning goes on the message toolbar button — a red
+       badge and its tooltip, per message tab — and, for a flagged message, a
+       desktop notification the person can't miss. */
+    function showWarning(tab, ref, result) {
+      var line = S.warningLine(S.warningOf(result));
+      var action = api.messageDisplayAction;
+      if (action && tab && tab.id != null) {
+        action.setBadgeText({ tabId: tab.id, text: line ? "!" : "" });
+        if (line) action.setBadgeBackgroundColor({ tabId: tab.id, color: "#b91c1c" });
+        action.setTitle({ tabId: tab.id, title: line || "Envelock" });
+      }
+      if (line && api.notifications) {
+        api.notifications.create("envelock-" + ref, {
+          type: "basic",
+          title: "Envelock warning",
+          message: line,
+          iconUrl: "icons/icon-48.png",
+        });
+      }
+      return result;
+    }
+
+    function onDisplayed(message, tab) {
       if (!message || !message.headerMessageId) return Promise.resolve(null);
       var ref = S.normalizeMessageRef(message.headerMessageId);
       var t = now();
@@ -97,13 +121,20 @@
         var match = both[1].find(function (e) {
           return !e.revoked && emails.indexOf(e.mailbox) !== -1;
         });
-        return match ? client.attest(match.mailbox, ref) : null;
+        if (!match) return null;
+        return client.attest(match.mailbox, ref).then(function (result) {
+          return showWarning(tab, ref, result);
+        });
       });
     }
 
     function onDisplayedMany(tab, displayed) {
       var list = Array.isArray(displayed) ? displayed : (displayed && displayed.messages) || [];
-      return Promise.all(list.map(onDisplayed));
+      return Promise.all(
+        list.map(function (m) {
+          return onDisplayed(m, tab);
+        }),
+      );
     }
 
     function onOptionsMessage(msg) {
@@ -152,7 +183,7 @@
       });
       if (api.messageDisplay.onMessageDisplayed) {
         api.messageDisplay.onMessageDisplayed.addListener(function (tab, message) {
-          onDisplayed(message);
+          onDisplayed(message, tab);
         });
       }
       if (api.messageDisplay.onMessagesDisplayed) {

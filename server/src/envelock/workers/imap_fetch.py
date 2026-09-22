@@ -38,7 +38,6 @@ from envelock.db import get_sessionmaker
 from envelock.models import Domain, Mailbox, MailboxCredential, Message
 from envelock.notify.dispatch import deliver_pending
 from envelock.obs.metrics import observe_poll_cycle, set_worker_up
-from envelock.platform import links as link_safety
 from envelock.platform.pipeline import PipelineResult, analyse_event
 from envelock.security.crypto import CryptoError, SealedSecret, open_secret
 
@@ -122,39 +121,11 @@ async def _enforce_copy(
     message was flagged (and the tier warrants one — MEDIUM gets protected
     links without a banner). Returns True only when the swap happened."""
     settings = get_settings()
+    from envelock.workers.enforcement import plan_protected_copy
 
-    mapping: dict[str, str] = {}
-    if settings.link_rewrite_enabled and event.urls:
-        urls = link_safety.rewritable_urls(
-            list(event.urls), owned_domains=owned, redirect_base=settings.redirect_base
-        )
-        mapping = await link_safety.mint_link_tokens(
-            session,
-            urls,
-            tenant_id=event.tenant_id,
-            mailbox_id=event.mailbox_id,
-            message_id=pr.message_id,
-        )
-
-    banner = None
-    if (
-        banner_allowed
-        and settings.banner_enabled
-        and pr.alert_id is not None
-        and pr.assessment is not None
-    ):
-        severity = (
-            "critical"
-            if pr.assessment.tier is AlertTier.CRITICAL
-            else "warning"
-            if pr.assessment.tier in (AlertTier.HIGH, AlertTier.MEDIUM)
-            else "info"
-        )
-        banner = enforce.Banner(
-            severity=severity,
-            title=pr.assessment.title,
-            lines=tuple(f.summary for f in pr.findings[:3]),
-        )
+    mapping, banner = await plan_protected_copy(
+        session, event, pr, owned=owned, banner_allowed=banner_allowed
+    )
 
     if not mapping and banner is None:
         return False

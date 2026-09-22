@@ -42,7 +42,7 @@ TERM_DISCOUNT: dict[BillingTerm, float] = {
 PLATFORM_CENTS: dict[Plan, int] = {
     Plan.GUARD: 0,
     Plan.ESSENTIAL: 1500,
-    Plan.COMPLETE: 3000,
+    Plan.COMPLETE: 3150,
     Plan.SOLO: 0,
 }
 
@@ -59,7 +59,8 @@ PLAN_MAILBOX_SEATS: dict[Plan, int] = {
 
 #: Monthly price of each mailbox beyond the plan's included allowance, in cents.
 #: The first-band protected rate below, so an extra seat costs exactly what that
-#: mailbox adds to the plan's own price (Complete: $30 platform + 5 × $3.50).
+#: mailbox adds to the plan's own price (Complete: $31.50 platform + 5 × $3.50
+#: = $49).
 #: Charged through a per-seat Stripe Price (ENVELOCK_STRIPE_PRICE_EXTRA_MAILBOX_*)
 #: whose amount must match this.
 EXTRA_MAILBOX_CENTS: dict[Plan, int] = {

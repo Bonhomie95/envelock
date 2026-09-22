@@ -1,7 +1,7 @@
 /* The browser extension's background, driven with a fake `chrome`. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Background, clock, envelockServer, fakeStorageArea } from "./helpers.mjs";
+import { BANK_CHANGE_WARNING, Background, clock, envelockServer, fakeStorageArea } from "./helpers.mjs";
 
 const GMAIL = "https://mail.google.com";
 const HINET = "https://webmail.hinet.net";
@@ -30,9 +30,9 @@ function fakeChrome({ granted = true } = {}) {
   };
 }
 
-async function setup({ origin = GMAIL, mailbox = "cfo@acme.example", granted } = {}) {
+async function setup({ origin = GMAIL, mailbox = "cfo@acme.example", granted, warnings } = {}) {
   const api = fakeChrome({ granted });
-  const server = envelockServer({ mailbox });
+  const server = envelockServer({ mailbox, warnings });
   const now = clock();
   const bg = Background.create(api, { fetch: server, now, userAgent: "Chrome/128 Macintosh" });
   const reply = await bg.onOptionsMessage({
@@ -141,4 +141,23 @@ test("an unknown 'other webmail' address is refused before anything is sent", as
   const reply = await bg.onOptionsMessage({ type: "enroll", code: "ABCD-EFGH", webmailOrigin: "http://insecure.example" });
   assert.equal(reply.ok, false);
   assert.equal(server.calls.length, 0);
+});
+
+test("a flagged message's warning goes back to the page — the line only", async () => {
+  const { bg } = await setup({
+    origin: HINET,
+    warnings: { "remit-88@gemini.example": BANK_CHANGE_WARNING },
+  });
+  const flagged = await bg.onContentMessage(
+    { type: "opened", ref: "<remit-88@gemini.example>", account: null },
+    tab(HINET + "/?_task=mail"),
+  );
+  assert.deepEqual(Object.keys(flagged).sort(), ["matched", "warning"]);
+  assert.match(flagged.warning, /^Envelock CRITICAL: Don't pay until you've called/);
+
+  const clean = await bg.onContentMessage(
+    { type: "opened", ref: "<hello@x>", account: null },
+    tab(HINET + "/?_task=mail"),
+  );
+  assert.equal(clean.warning, null);
 });

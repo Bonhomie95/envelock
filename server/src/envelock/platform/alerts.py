@@ -206,12 +206,41 @@ async def _tenant_may_feed_graph(session: AsyncSession, tenant_id: UUID) -> bool
     return verified is not None
 
 
+async def alert_bank_identifiers(session: AsyncSession, alert: Alert) -> list[dict]:
+    """The bank accounts an alert is about: the changed account (A1) and any
+    already-known fraud account (A15), as `[{scheme, identifier}]`."""
+    from envelock.models import Finding
+
+    findings = (
+        await session.execute(
+            select(Finding).where(Finding.alert_id == alert.id, Finding.service.in_(("A1", "A15")))
+        )
+    ).scalars().all()
+    seen: dict[str, dict] = {}
+    for f in findings:
+        ev = f.evidence or {}
+        for item in (ev.get("new_identifiers") or []) + (ev.get("fraud_accounts") or []):
+            if item.get("identifier"):
+                seen.setdefault(item["identifier"], item)
+    return list(seen.values())
+
+
+async def report_fraud_accounts(session: AsyncSession, alert: Alert) -> int:
+    from envelock.platform import fraud_accounts
+
+    return await fraud_accounts.report(
+        session,
+        tenant_id=alert.tenant_id,
+        identifiers=await alert_bank_identifiers(session, alert),
+    )
+
+
 async def resolve(
     session: AsyncSession,
     *,
     alert_id: UUID,
     tenant_id: UUID,
-    actor_id: UUID,
+    actor_id: UUID | None,
     dismissed: bool = False,
 ) -> Alert | None:
     alert = await session.get(Alert, alert_id)
@@ -267,6 +296,12 @@ async def resolve(
         )
         propagated = entry.actionable
 
+    # The payment half of the same loop: the bank account this fraud asked for
+    # is recorded so it is flagged for every other customer (A15).
+    accounts_reported = 0
+    if not dismissed and await _tenant_may_feed_graph(session, tenant_id):
+        accounts_reported = await report_fraud_accounts(session, alert)
+
     await record_audit(
         session,
         tenant_id=tenant_id,
@@ -274,7 +309,11 @@ async def resolve(
         action=AuditAction.ALERT_DISMISSED if dismissed else AuditAction.ALERT_RESOLVED,
         target_type="alert",
         target_id=alert.id,
-        detail={"graph_propagated": propagated} if not dismissed else None,
+        detail=(
+            {"graph_propagated": propagated, "fraud_accounts_reported": accounts_reported}
+            if not dismissed
+            else None
+        ),
     )
     return alert
 

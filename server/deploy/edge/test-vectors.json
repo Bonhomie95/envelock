@@ -1,0 +1,15 @@
+{
+  "secret": "test-edge-secret",
+  "cases": [
+    {
+      "token": "AbC_123-xyz",
+      "url": "https://example.com/invoice?id=42&x=é",
+      "path": "/r/AbC_123-xyz/aHR0cHM6Ly9leGFtcGxlLmNvbS9pbnZvaWNlP2lkPTQyJng9w6k.Ttf-zQrbO1Ch_7vqtTWVr2"
+    },
+    {
+      "token": "tok2",
+      "url": "http://shipping-weekly.example/issue/42",
+      "path": "/r/tok2/aHR0cDovL3NoaXBwaW5nLXdlZWtseS5leGFtcGxlL2lzc3VlLzQy.MlV_DTN7oDOhHhctxf-vmT"
+    }
+  ]
+}

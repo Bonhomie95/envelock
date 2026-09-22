@@ -703,7 +703,72 @@ async def sensor_message_opened(
         )
     )
     await session.commit()
-    return {"recorded": True, "message_ref": ref}
+    return {
+        "recorded": True,
+        "message_ref": ref,
+        "warning": await _reading_pane_warning(session, mailbox, ref),
+    }
+
+
+async def _reading_pane_warning(session: AsyncSession, mailbox: Mailbox, ref: str) -> dict | None:
+    """What the person just opened, if Envelock flagged it — so the add-on can
+    say so where they are reading (Outlook's info bar, Thunderbird's toolbar,
+    a banner in webmail) rather than in a dashboard they don't have open.
+
+    The one thing a sensor token can read, and deliberately narrow: only its own
+    mailbox, only a message whose Message-ID it just reported opening, only an
+    alert still in force (a dismissal means "not fraud"), and only the headline
+    — never findings' evidence, amounts or the alert list."""
+    from sqlalchemy import func
+
+    from envelock.models import Alert, Finding, Message
+    from envelock.platform import verification
+
+    if not ref or ref == "*":
+        return None
+    message = (
+        await session.execute(
+            select(Message)
+            .where(
+                Message.mailbox_id == mailbox.id,
+                func.lower(func.btrim(Message.rfc_message_id, "<> ")) == ref,
+            )
+            .order_by(Message.created_at.desc())
+            .limit(1)
+        )
+    ).scalars().first()
+    if message is None:
+        return None
+    alert_id = (
+        await session.execute(
+            select(Finding.alert_id).where(
+                Finding.message_id == message.id, Finding.alert_id.is_not(None)
+            )
+        )
+    ).scalars().first()
+    alert = await session.get(Alert, alert_id) if alert_id else None
+    if alert is None or alert.state == "dismissed" or alert.tier not in ("critical", "high"):
+        return None
+    phone = None
+    if alert.requires_callback:
+        phone = (await verification.context(session, alert))["phone_on_file"]
+    if alert.state == "resolved":
+        action = "Confirmed fraud. Do not pay, reply or open anything in this email."
+    elif alert.requires_callback:
+        action = (
+            f"Don't pay until you've called {phone} (the number on file) to verify."
+            if phone
+            else "Don't pay until you've verified by phone — not a number from this email."
+        )
+    else:
+        action = "Don't click links, open attachments or reply until you've checked."
+    return {
+        "tier": alert.tier,
+        "title": alert.title,
+        "action": action,
+        "verify_phone": phone,
+        "confirmed_fraud": alert.state == "resolved",
+    }
 
 
 class FlagChanged(BaseModel):

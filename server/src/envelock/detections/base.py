@@ -79,6 +79,9 @@ class DetectionContext:
     #: staff impersonation (a sender using a colleague's name from an outside
     #: address — classic CEO fraud). Lower-cased.
     internal_names: frozenset[str] = frozenset()
+    #: Bank identifiers in this message that were confirmed as fraud before:
+    #: identifier -> {"scheme", "other_tenants", "own"} (see platform.fraud_accounts).
+    fraud_accounts: dict[str, dict] = field(default_factory=dict)
     now: datetime | None = None
 
     @property
@@ -113,8 +116,12 @@ class FindingResult:
 
 @runtime_checkable
 class Detection(Protocol):
-    service: str
-    requires: frozenset[Capability]
+    # Read-only: every detection is a frozen dataclass, and a plain annotation
+    # here declared a *settable* attribute that none of them could satisfy.
+    @property
+    def service(self) -> str: ...
+    @property
+    def requires(self) -> frozenset[Capability]: ...
 
     def evaluate(self, ctx: DetectionContext) -> list[FindingResult]: ...
 

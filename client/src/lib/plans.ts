@@ -33,7 +33,7 @@ export const PLAN_TIERS: PlanTier[] = [
   {
     id: "complete",
     name: "Complete",
-    price: "$47.50",
+    price: "$49",
     // Matches server/billing/pricing.py PLAN_MAILBOX_SEATS and EXTRA_MAILBOX_CENTS.
     per: "/mo · 5 mailboxes",
     extra: "$3.50",

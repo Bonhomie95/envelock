@@ -231,6 +231,28 @@ class DomainTrialLedger(Base, TimestampMixin):
     override_reason: Mapped[str | None] = mapped_column(Text)
 
 
+class FraudAccount(Base, TimestampMixin):
+    """Bank accounts confirmed as fraud by any customer — the payment-side twin
+    of the counterparty graph.
+
+    Fraudsters reuse mule accounts across victims. When one customer confirms a
+    bank-change fraud (or the real supplier says "that's not us"), the account
+    they were asked to pay is recorded here, and every other customer's inbound
+    mail that names it is flagged. Only a keyed hash of the account is stored
+    (HMAC under the server secret), never the number, and no customer content.
+    """
+
+    __tablename__ = "fraud_accounts"
+
+    account_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scheme: Mapped[str] = mapped_column(String(16))
+    confirmations: Mapped[int] = mapped_column(Integer, default=1)
+    first_reported: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    last_reported: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    #: Only to count distinct reporters; never leaves the server.
+    reporter_tenant_ids: Mapped[list[str]] = mapped_column(StringList, default=list)
+
+
 class GraphVerdict(Base, TimestampMixin):
     """E8 — the cross-tenant counterparty graph, made durable.
 
@@ -321,6 +343,10 @@ class Mailbox(Base, UUIDMixin, TimestampMixin):
     #: the only process that can open the credential — carries it out on its
     #: next cycle. Null when nothing is pending.
     sync_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Real-time delivery for Gmail/Graph mailboxes: the Graph subscription id
+    #: (or "gmail-watch") and when it lapses. The worker renews it before then.
+    push_subscription_id: Mapped[str | None] = mapped_column(String(255))
+    push_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     backfill_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: Look-back for a queued history scan, in days.
     backfill_requested_days: Mapped[int | None] = mapped_column(Integer)
@@ -488,6 +514,12 @@ class Message(Base, UUIDMixin, TimestampMixin):
     #: its next cycle and stamps quarantined_at.
     quarantine_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     quarantined_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: The sum an inbound PAYMENT REQUEST asked for (largest currency-marked
+    #: figure), whether or not it raised an alert — the "we checked $X of
+    #: payment requests this month" line in the digest. Null when the mail was
+    #: not about paying anyone, or named no amount.
+    payment_amount: Mapped[float | None] = mapped_column(Float)
+    payment_currency: Mapped[str | None] = mapped_column(String(8))
 
 
 class LinkToken(Base, UUIDMixin, TimestampMixin):
@@ -590,6 +622,78 @@ class Alert(Base, UUIDMixin, TimestampMixin):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     __table_args__ = (Index("ix_alerts_open", "tenant_id", "state", "tier"),)
+
+
+class AccountingConnection(Base, UUIDMixin, TimestampMixin):
+    """A link to the customer's accounting system (Xero or QuickBooks Online).
+
+    The vendor master there is the best source of truth a customer has about
+    who they pay, where, and what number to ring — so Envelock reads it, keeps
+    the supplier ledger in step, and when a bank-change alert fires, writes a
+    note onto that supplier's unpaid bills where the person paying will see it.
+    Tokens are envelope-encrypted like mailbox credentials: the API seals them
+    at connect time, only the worker can open them.
+    """
+
+    __tablename__ = "accounting_connections"
+
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    provider: Mapped[str] = mapped_column(String(16))  # xero|quickbooks
+    #: Xero tenantId / QuickBooks realmId — which company inside the account.
+    external_org_id: Mapped[str] = mapped_column(String(64))
+    org_name: Mapped[str | None] = mapped_column(String(255))
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+    wrapped_dek: Mapped[bytes] = mapped_column(LargeBinary)
+    key_id: Mapped[str] = mapped_column(String(128))
+    token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    connected_by: Mapped[UUID | None] = mapped_column(Uuid)
+    #: Note unpaid bills when a bank-change alert names one of their suppliers.
+    flag_bills: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
+    sync_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_sync_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    #: {suppliers_seen, suppliers_imported, skipped_no_domain, bank_records_created}
+    last_sync_summary: Mapped[dict | None] = mapped_column(JsonDict)
+    #: supplier domain -> the vendor/contact id in the accounting system.
+    supplier_ids: Mapped[dict | None] = mapped_column(JsonDict)
+
+    __table_args__ = (UniqueConstraint("tenant_id", "provider"),)
+
+
+class PaymentVerification(Base, UUIDMixin, TimestampMixin):
+    """One attempt to confirm a payment-detail change with the supplier, out of
+    band — the step that actually stops the loss (E3).
+
+    Only ever through the phone number on file (`Counterparty.verified_phone`),
+    never a number or address from the email: in the common version of this
+    fraud the supplier's own mailbox is the compromised one, so "reply to
+    confirm" asks the attacker. Two channels:
+
+    * ``call`` — a person rings the number on file and records what they heard.
+    * ``sms``  — a text to the number on file with a one-time link; the supplier
+      answers yes/no on a public page. Only the SHA-256 of the link token is
+      stored.
+    """
+
+    __tablename__ = "payment_verifications"
+
+    tenant_id: Mapped[UUID] = mapped_column(ForeignKey("tenants.id"), index=True)
+    alert_id: Mapped[UUID] = mapped_column(ForeignKey("alerts.id"), index=True)
+    counterparty_domain: Mapped[str | None] = mapped_column(String(253))
+    channel: Mapped[str] = mapped_column(String(8))  # call|sms
+    phone: Mapped[str | None] = mapped_column(String(32))
+    #: pending → confirmed | denied | no_answer | expired
+    status: Mapped[str] = mapped_column(String(16), default="pending")
+    token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    requested_by: Mapped[UUID | None] = mapped_column(Uuid)
+    responded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Who recorded a call outcome (null for an SMS answered by the supplier).
+    recorded_by: Mapped[UUID | None] = mapped_column(Uuid)
+    note: Mapped[str | None] = mapped_column(Text)
+    #: The account being verified, masked ("IBAN ••••5555") — what the supplier
+    #: is asked about, and what the evidence pack shows.
+    account_masked: Mapped[str | None] = mapped_column(String(64))
 
 
 class NotificationDelivery(Base, UUIDMixin, TimestampMixin):

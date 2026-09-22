@@ -367,6 +367,13 @@ export interface NetworkStats {
 
 export interface Oversight {
   prevented_loss: PreventedLoss;
+  /** Rolling 30 days — the dashboard's "stopped this month". */
+  month?: {
+    payment_requests: number;
+    payments_checked_by_currency: { currency: string; amount: number }[];
+    quarantined: number;
+    confirmed_fraud: number;
+  };
   total: number;
   open: number;
   critical_open: number;
@@ -419,6 +426,50 @@ export interface TenantInfo {
   primary_domain: string | null;
   //: Colleagues who self-registered and are awaiting an admin's approval.
   pending_members: number;
+}
+
+export interface AccountingConnectionInfo {
+  provider: "xero" | "quickbooks";
+  label: string;
+  org_name: string | null;
+  flag_bills: boolean;
+  connected_at: string;
+  last_sync_at: string | null;
+  syncing: boolean;
+  last_error: string | null;
+  summary: {
+    suppliers_seen: number;
+    suppliers_imported: number;
+    skipped_no_domain: number;
+    suppliers_created: number;
+    bank_records_created: number;
+  } | null;
+}
+
+export interface VerificationAttempt {
+  id: string;
+  channel: "call" | "sms";
+  status: "pending" | "confirmed" | "denied" | "no_answer" | "expired";
+  phone: string | null;
+  account: string | null;
+  note: string | null;
+  created_at: string;
+  responded_at: string | null;
+  expires_at: string | null;
+}
+
+export interface PaymentVerificationInfo {
+  supplier: string | null;
+  supplier_name: string | null;
+  /** The number on the supplier record — never one taken from the email. */
+  phone_on_file: string | null;
+  /** Masked, e.g. "IBAN ••••5555". */
+  account: string | null;
+  amount: number | null;
+  currency: string | null;
+  sms_available: boolean;
+  attempts: VerificationAttempt[];
+  alert_state: string;
 }
 
 export interface QualityMetric {
@@ -549,6 +600,34 @@ async function tryRefresh(): Promise<boolean> {
     })();
   }
   return refreshInFlight;
+}
+
+/** An authenticated file download (the API needs the bearer token, so a plain
+ *  link can't carry it). Refreshes an expired session once, like `request`. */
+async function download(path: string, fallbackName: string, _retried = false): Promise<void> {
+  const res = await fetch(apiUrl(path), {
+    headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
+  });
+  if (res.status === 401 && !_retried && auth.refreshToken && (await tryRefresh())) {
+    return download(path, fallbackName, true);
+  }
+  if (!res.ok) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json())?.detail ?? detail;
+    } catch {
+      /* not JSON */
+    }
+    throw new ApiError(res.status, String(detail));
+  }
+  const name =
+    /filename="([^"]+)"/.exec(res.headers.get("Content-Disposition") ?? "")?.[1] ?? fallbackName;
+  const url = URL.createObjectURL(await res.blob());
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 async function request<T>(path: string, init?: RequestInit, _retried = false): Promise<T> {
@@ -1059,6 +1138,60 @@ export const api = {
         created_at: string;
       }[];
     }>(`/api/v1/alerts/${id}/ai`),
+
+  // ── Supplier verification of a bank-detail change ─────────────────────────
+  verification: (alertId: string) =>
+    request<PaymentVerificationInfo>(`/api/v1/alerts/${alertId}/verification`),
+
+  recordCallOutcome: (
+    alertId: string,
+    outcome: "confirmed" | "denied" | "no_answer",
+    note?: string,
+  ) =>
+    request<{ attempt: VerificationAttempt; alert_state: string }>(
+      `/api/v1/alerts/${alertId}/verification/call`,
+      { method: "POST", body: JSON.stringify({ outcome, note }) },
+    ),
+
+  sendVerificationText: (alertId: string) =>
+    request<{ attempt: VerificationAttempt }>(
+      `/api/v1/alerts/${alertId}/verification/sms`,
+      { method: "POST" },
+    ),
+
+  // Public (no session): the page a supplier opens from our text.
+  supplierVerification: (token: string) =>
+    request<{ company: string; account: string | null; status: string }>(
+      `/api/v1/verify/${encodeURIComponent(token)}`,
+    ),
+
+  answerSupplierVerification: (token: string, answer: "yes" | "no") =>
+    request<{ status: string }>(`/api/v1/verify/${encodeURIComponent(token)}`, {
+      method: "POST",
+      body: JSON.stringify({ answer }),
+    }),
+
+  // ── Accounting systems (Xero / QuickBooks Online) ──────────────────────────
+  accounting: () =>
+    request<{
+      available: { provider: "xero" | "quickbooks"; label: string }[];
+      connections: AccountingConnectionInfo[];
+    }>("/api/v1/accounting"),
+  connectAccounting: (provider: string) =>
+    request<{ url: string }>(`/api/v1/accounting/${provider}/connect`, { method: "POST" }),
+  syncAccounting: (provider: string) =>
+    request<AccountingConnectionInfo>(`/api/v1/accounting/${provider}/sync`, { method: "POST" }),
+  setAccountingFlagBills: (provider: string, flag_bills: boolean) =>
+    request<AccountingConnectionInfo>(`/api/v1/accounting/${provider}`, {
+      method: "PATCH",
+      body: JSON.stringify({ flag_bills }),
+    }),
+  disconnectAccounting: (provider: string) =>
+    request<{ disconnected: boolean }>(`/api/v1/accounting/${provider}`, { method: "DELETE" }),
+
+  // The alert's evidence record (PDF) — for an insurer, a bank or the police.
+  downloadEvidence: (alertId: string) =>
+    download(`/api/v1/alerts/${alertId}/evidence.pdf`, "envelock-evidence.pdf"),
 
   quarantineAlert: (id: string) =>
     request<{

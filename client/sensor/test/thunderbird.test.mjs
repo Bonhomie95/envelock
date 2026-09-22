@@ -1,10 +1,18 @@
 /* The Thunderbird add-on, driven with a fake `messenger`. */
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Thunderbird, clock, envelockServer, fakeStorageArea } from "./helpers.mjs";
+import { BANK_CHANGE_WARNING, Thunderbird, clock, envelockServer, fakeStorageArea } from "./helpers.mjs";
 
 function fakeMessenger(accounts) {
+  const shown = { badge: {}, title: {}, color: {}, notes: [] };
   return {
+    shown,
+    messageDisplayAction: {
+      setBadgeText: ({ tabId, text }) => (shown.badge[tabId] = text),
+      setTitle: ({ tabId, title }) => (shown.title[tabId] = title),
+      setBadgeBackgroundColor: ({ tabId, color }) => (shown.color[tabId] = color),
+    },
+    notifications: { create: (id, opts) => shown.notes.push({ id, ...opts }) },
     storage: { local: fakeStorageArea() },
     accounts: {
       list: async () => accounts,
@@ -21,10 +29,12 @@ const ACCOUNTS = [
   { id: "account2", identities: [{ email: "home@personal.example" }] },
 ];
 
-async function setup({ accounts = ACCOUNTS, mailbox = "cfo@acme.example" } = {}) {
-  const server = envelockServer({ mailbox });
+async function setup({ accounts = ACCOUNTS, mailbox = "cfo@acme.example", warnings = {} } = {}) {
+  const server = envelockServer({ mailbox, warnings });
   const now = clock();
-  const tb = Thunderbird.create(fakeMessenger(accounts), { fetch: server, now, version: "128.3.0" });
+  const messenger = fakeMessenger(accounts);
+  const tb = Thunderbird.create(messenger, { fetch: server, now, version: "128.3.0" });
+  tb.shown = messenger.shown;
   const reply = await tb.onOptionsMessage({ type: "enroll", code: "ABCD-EFGH", apiBase: "https://api.envelock.test" });
   assert.equal(reply.ok, true, reply.error);
   return { server, now, tb, reply };
@@ -77,4 +87,18 @@ test("a message opened from a file (no folder) is ignored", async () => {
   const { server, tb } = await setup();
   await tb.onDisplayed({ headerMessageId: "from-disk@x", external: true });
   assert.equal(server.to("/sensor/message-opened").length, 0);
+});
+
+test("a flagged message badges the toolbar button and notifies", async () => {
+  const { tb } = await setup({ warnings: { "remit-88@gemini.example": BANK_CHANGE_WARNING } });
+  await tb.onDisplayed({ headerMessageId: "remit-88@gemini.example", folder: { accountId: "account1" } }, { id: 7 });
+  assert.equal(tb.shown.badge[7], "!");
+  assert.equal(tb.shown.color[7], "#b91c1c");
+  assert.match(tb.shown.title[7], /^Envelock CRITICAL: Don't pay until you've called \+1 803 555 0100/);
+  assert.equal(tb.shown.notes.length, 1);
+  assert.match(tb.shown.notes[0].message, /number on file/);
+
+  await tb.onDisplayed({ headerMessageId: "clean@x", folder: { accountId: "account1" } }, { id: 7 });
+  assert.equal(tb.shown.badge[7], "", "a clean message clears the badge");
+  assert.equal(tb.shown.notes.length, 1);
 });

@@ -16,6 +16,9 @@ reputation source must never break the customer's links.
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import logging
 import secrets
 from uuid import UUID
@@ -66,6 +69,35 @@ def rewritable_urls(
     return out
 
 
+#: URLs longer than this carry no fallback payload (the link would get unwieldy);
+#: they still work normally, just not through an origin outage.
+EDGE_PAYLOAD_MAX_URL = 2000
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+def edge_signature(secret: str, token: str, url: str) -> str:
+    """HMAC-SHA256 over "token\nurl", base64url, first 22 chars (132 bits).
+    Mirrored exactly by server/deploy/edge/link-fallback.js."""
+    mac = hmac.new(secret.encode(), f"{token}\n{url}".encode(), hashlib.sha256).digest()
+    return _b64(mac)[:22]
+
+
+def link_path(token: str, url: str) -> str:
+    """What goes after `/r/` in a rewritten link: the token, plus — when an edge
+    secret is configured — `/{base64url(url)}.{signature}` for the outage path.
+    The origin resolves by token alone and ignores the rest."""
+    from envelock.config import get_settings
+
+    secret = get_settings().link_edge_secret
+    if secret is None or not secret.get_secret_value() or len(url) > EDGE_PAYLOAD_MAX_URL:
+        return token
+    sig = edge_signature(secret.get_secret_value(), token, url)
+    return f"{token}/{_b64(url.encode())}.{sig}"
+
+
 async def mint_link_tokens(
     session: AsyncSession,
     urls: list[str],
@@ -87,7 +119,7 @@ async def mint_link_tokens(
                 original_url=url[:8192],
             )
         )
-        mapping[url] = token
+        mapping[url] = link_path(token, url)
     if mapping:
         await session.flush()
     return mapping
@@ -149,7 +181,9 @@ async def evaluate_url(url: str) -> tuple[str, list[str]]:
 
 __all__ = [
     "evaluate_url",
+    "edge_signature",
     "get_link_token",
+    "link_path",
     "mint_link_tokens",
     "rewritable_urls",
     "url_host",

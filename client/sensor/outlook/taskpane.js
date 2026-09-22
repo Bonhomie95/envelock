@@ -52,9 +52,35 @@
       return item && item.internetMessageId ? item.internetMessageId : null;
     }
 
+    var WARNING_KEY = "envelock-warning";
+    var lastWarning = null;
+
+    /* Outlook's own info bar at the top of the reading pane — the one place in
+       Outlook a person reads before they act. Replaced (not stacked) per
+       message, and removed when the message has nothing flagged. */
+    function showWarning(result) {
+      var item = mb.item;
+      var line = S.warningLine(S.warningOf(result));
+      lastWarning = line;
+      var bar = item && item.notificationMessages;
+      if (!bar) return;
+      if (line && office.MailboxEnums) {
+        bar.replaceAsync(WARNING_KEY, {
+          type: office.MailboxEnums.ItemNotificationMessageType.ErrorMessage,
+          message: line,
+        });
+      } else if (bar.removeAsync) {
+        bar.removeAsync(WARNING_KEY);
+      }
+    }
+
     function attestCurrent() {
       var id = currentMessageId();
-      return id ? client.attest(mailbox, id) : Promise.resolve(null);
+      if (!id) return Promise.resolve(null);
+      return client.attest(mailbox, id).then(function (result) {
+        showWarning(result);
+        return result;
+      });
     }
 
     function beat() {
@@ -137,7 +163,13 @@
         var mine = both[0].find(function (s) {
           return s.mailbox === mailbox;
         });
-        return { mailbox: mailbox, enrollment: mine || null, deviceId: both[1], watching: Boolean(timer) };
+        return {
+          mailbox: mailbox,
+          enrollment: mine || null,
+          deviceId: both[1],
+          watching: Boolean(timer),
+          warning: lastWarning,
+        };
       });
     }
 
@@ -179,6 +211,8 @@
           if (e && e.revoked) show("This device was removed in the Envelock dashboard. Pair it again to keep reporting.", false);
           return;
         }
+        $("warning").textContent = s.warning || "";
+        $("warning").classList.toggle("hidden", !s.warning);
         $("mailbox").textContent = s.mailbox;
         $("dot").className = "dot" + (e.live ? " live" : "");
         $("state").textContent = e.live

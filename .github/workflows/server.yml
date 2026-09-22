@@ -55,6 +55,11 @@ jobs:
       - name: Lint
         run: ruff check src tests
 
+      # The Cloudflare worker that keeps protected links working through an
+      # origin outage. Shares signature test vectors with tests/test_link_safety.
+      - name: Edge worker tests
+        run: node --test deploy/edge/link-fallback.test.mjs
+
       # A ratchet, not a hard gate: `strict = true` was configured for the life
       # of the project, never run here, and produced 532 errors — a standard the
       # code did not meet and no change was measured against. This fails only on

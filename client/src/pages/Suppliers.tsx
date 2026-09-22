@@ -43,6 +43,7 @@ import {
   type VendorImportResult,
 } from "../lib/api";
 import { Button, TierChip, cn } from "../components/primitives";
+import AccountingPanel from "../components/AccountingPanel";
 import ConfirmDialog from "../components/ConfirmDialog";
 import { toast } from "../lib/toast";
 
@@ -677,6 +678,7 @@ export default function Suppliers() {
         </p>
       </div>
 
+      {canEdit && <AccountingPanel onSynced={load} />}
       {canEdit && <VendorImport onDone={load} />}
 
       {canEdit && (

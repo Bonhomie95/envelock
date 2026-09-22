@@ -1,0 +1,13 @@
+# Deploy: `npx wrangler deploy` from this folder (see LAUNCH-GUIDE, "Links that
+# survive an outage"). Set the secret once with:
+#   npx wrangler secret put LINK_EDGE_SECRET
+name = "envelock-link-fallback"
+main = "link-fallback.js"
+compatibility_date = "2026-09-01"
+
+# The hostname your rewritten links use (ENVELOCK_REDIRECT_BASE_URL on the
+# server). The zone must be on Cloudflare.
+routes = [{ pattern = "go.envelock.org", custom_domain = true }]
+
+[vars]
+ORIGIN = "https://api.envelock.org"

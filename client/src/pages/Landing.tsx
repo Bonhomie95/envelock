@@ -355,7 +355,7 @@ const PLANS = [
   },
   {
     name: "Complete",
-    price: "$47.50",
+    price: "$49",
     unit: "per month, 5 mailboxes · $3.50/mo each extra",
     line: "Adds protection if a mailbox is broken into.",
     features: [

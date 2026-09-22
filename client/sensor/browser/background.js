@@ -109,8 +109,15 @@
               work.push(client.attest(m, ref));
             });
           }
-          return Promise.all(work).then(function () {
-            return { matched: mailboxes.length };
+          return Promise.all(work).then(function (results) {
+            /* The first flagged verdict, as one line, for the page to show above
+               the message (see content.js). The page gets the line only — never
+               the token, the mailbox list or anything else from here. */
+            var line = null;
+            results.slice(1).forEach(function (r) {
+              line = line || S.warningLine(S.warningOf(r));
+            });
+            return { matched: mailboxes.length, warning: line };
           });
         });
       });

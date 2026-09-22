@@ -227,4 +227,9 @@ async def test_the_oauth_jobs_have_a_starter_of_their_own() -> None:
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
-    assert names == {"oauth_refresh", "oauth_fetch"}
+    # Everything that opens a stored token: mailbox OAuth, push subscriptions,
+    # and the accounting connections (sealed the same way).
+    assert names == {
+        "oauth_refresh", "oauth_fetch", "oauth_push_drain", "push_subscriptions",
+        "accounting_requested", "accounting_sync", "accounting_bills",
+    }

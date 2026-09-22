@@ -78,7 +78,7 @@ def test_registry_is_complete_regardless_of_import_order() -> None:
     from envelock.detections.base import registry
 
     services = set(registry())
-    for group, count in (("A", 14), ("B", 9), ("C", 14)):
+    for group, count in (("A", 15), ("B", 9), ("C", 14)):
         found = {s for s in services if s.startswith(group)}
         assert len(found) == count, f"group {group}: {sorted(found)}"
 

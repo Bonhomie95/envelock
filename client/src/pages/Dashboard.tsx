@@ -1,5 +1,5 @@
 import { createElement, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Activity,
   Banknote,
@@ -7,7 +7,7 @@ import {
   Check,
   CheckCircle2,
   Copy,
-  CreditCard,
+  FileDown,
   Fingerprint,
   Forward,
   Globe,
@@ -15,7 +15,6 @@ import {
   KeyRound,
   Link2,
   Loader2,
-  PhoneCall,
   Plus,
   RefreshCw,
   ShieldAlert,
@@ -61,6 +60,9 @@ import ConnectionAdvisor from "../components/ConnectionAdvisor";
 import { DomainVerify } from "../components/DomainVerify";
 import MfaEnroll from "../components/MfaEnroll";
 import SensorPanel from "../components/SensorPanel";
+import TodayPanel, { type HealthIssue } from "../components/TodayPanel";
+import { mailboxIssues } from "../lib/health";
+import VerifyPanel from "../components/VerifyPanel";
 import { PLAN_RANK, PLAN_TIERS } from "../lib/plans";
 import { toast } from "../lib/toast";
 import {
@@ -286,11 +288,13 @@ function AlertRow({
   onAcknowledge,
   onQuarantine,
   onResolve,
+  onRefresh,
 }: {
   alert: AlertRecord;
   onAcknowledge: (id: string) => Promise<void>;
   onQuarantine: (id: string) => Promise<void>;
   onResolve: (id: string, dismiss: boolean) => Promise<void>;
+  onRefresh: () => Promise<void>;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
@@ -374,20 +378,8 @@ function AlertRow({
             {alert.body}
           </p>
 
-          {alert.requires_callback && !acked && (
-            <div className="callout mt-4 flex flex-wrap items-center gap-2.5 px-4 py-3">
-              <PhoneCall size={14} className="shrink-0" aria-hidden />
-              <span className="text-xs font-semibold">
-                {alert.callback_phone
-                  ? `Call ${alert.callback_phone} to verify — the number on file with us, not the one in the email`
-                  : "Verify by phone before paying. No number on file for this supplier yet."}
-              </span>
-              {!alert.callback_phone && (
-                <Link to="/suppliers" className="accent text-xs font-semibold underline underline-offset-4">
-                  Add their number →
-                </Link>
-              )}
-            </div>
+          {alert.requires_callback && (
+            <VerifyPanel alertId={alert.id} closed={closed} onChanged={onRefresh} />
           )}
 
           {note && (
@@ -455,6 +447,32 @@ function AlertRow({
                 </Button>
               </>
             )}
+            {/* The record an insurer, bank or the police will ask for:
+                headers, what changed, the callback, the timeline. */}
+            <Button
+              size="sm"
+              variant="quiet"
+              disabled={busy !== null}
+              className="ml-auto"
+              title="Download this alert's evidence record (PDF)"
+              onClick={async () => {
+                setBusy("evidence");
+                try {
+                  await api.downloadEvidence(alert.id);
+                } catch (e) {
+                  setNote(e instanceof ApiError ? e.message : "Couldn't build the evidence PDF.");
+                } finally {
+                  setBusy(null);
+                }
+              }}
+            >
+              {busy === "evidence" ? (
+                <Loader2 size={12} className="animate-spin" aria-hidden />
+              ) : (
+                <FileDown size={12} aria-hidden />
+              )}
+              EVIDENCE PDF
+            </Button>
           </div>
         </div>
       </div>
@@ -3048,8 +3066,44 @@ function primaryDomainVerified(t: TenantInfo): boolean {
   );
 }
 
+type DashTab = "alerts" | "mailboxes" | "activity" | "setup";
+const DASH_TABS: DashTab[] = ["alerts", "mailboxes", "activity", "setup"];
+
 export default function Dashboard() {
   const navigate = useNavigate();
+  // The tab lives in the URL: a link can open straight onto it, Back works,
+  // and a refresh keeps you where you were.
+  const [params, setParams] = useSearchParams();
+  const tab: DashTab = DASH_TABS.includes(params.get("tab") as DashTab)
+    ? (params.get("tab") as DashTab)
+    : "alerts";
+  const showTab = useCallback(
+    (next: DashTab) => {
+      setParams(
+        (p) => {
+          if (next === "alerts") p.delete("tab");
+          else p.set("tab", next);
+          return p;
+        },
+        { replace: false },
+      );
+      requestAnimationFrame(() =>
+        document
+          .getElementById("dash-tabs")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" }),
+      );
+    },
+    [setParams],
+  );
+  // Older in-page links ("#coverage") point at the mailbox list, now a tab.
+  useEffect(() => {
+    const onHash = () => {
+      if (window.location.hash === "#coverage") showTab("mailboxes");
+    };
+    onHash();
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, [showTab]);
   // Tracks whether the primary domain was verified on the previous load, so we can
   // catch it flipping to unverified (its DNS record was deleted and the server
   // revoked it) and force a re-auth + re-verify. null = not yet known.
@@ -3202,7 +3256,6 @@ export default function Dashboard() {
   }, [alerts, filter]);
   // Counted the same way as the queue, so the header and the list agree.
   const open = alerts.filter((a) => a.state === "open" || a.state === "acked");
-  const critical = open.filter((a) => a.tier === "critical").length;
 
   async function acknowledge(id: string) {
     await api.acknowledgeAlert(id);
@@ -3349,108 +3402,107 @@ export default function Dashboard() {
   const known = tenant !== null;
   const isWorkspaceAdmin = auth.role === "owner" || auth.role === "admin";
   const domain = known ? (resolvedDomain ?? "no domain yet") : "—";
-  const domainCount = tenant?.domains.length ?? stats?.domains ?? 0;
-  const figure = (n: number) => (known ? String(n) : "—");
+
+  // "Protection health": everything that stops Envelock from protecting this
+  // workspace, in one list with the fix beside each — replacing four banners
+  // that stacked up above the queue.
+  const { broken, unconnected } = mailboxIssues(mailboxes, MAIL_SOURCES);
+  const issues: HealthIssue[] = [];
+  if (tenant?.trial_ended && isWorkspaceAdmin)
+    issues.push({
+      id: "trial-ended",
+      text: "Your trial has ended, so your mailboxes aren't protected.",
+      action: { label: "Choose a plan", onClick: () => navigate("/billing") },
+    });
+  if (isWorkspaceAdmin && mailboxes.length === 0 && tenant)
+    issues.push({
+      id: "no-mailboxes",
+      text: "No mailboxes are protected yet.",
+      action: { label: "Add mailboxes", onClick: () => showTab("mailboxes") },
+    });
+  if (broken.length)
+    issues.push({
+      id: "broken",
+      text: `${broken.length} mailbox${broken.length === 1 ? " has" : "es have"} lost ${broken.length === 1 ? "its" : "their"} connection.`,
+      action: { label: "Reconnect", onClick: () => showTab("mailboxes") },
+    });
+  if (unconnected.length)
+    issues.push({
+      id: "unconnected",
+      text: `${unconnected.length} mailbox${unconnected.length === 1 ? " is" : "es are"} added but not connected.`,
+      action: { label: "Connect", onClick: () => showTab("mailboxes") },
+    });
+  if (me && !me.mfa_enabled)
+    issues.push({
+      id: "mfa",
+      text: "Two-factor sign-in is off — a stolen password is enough to get in.",
+      action: { label: "Turn it on", onClick: () => setMfaOpen(true) },
+    });
+  if (isWorkspaceAdmin && tenant && tenant.pending_members > 0)
+    issues.push({
+      id: "pending",
+      text: `${tenant.pending_members} teammate${tenant.pending_members === 1 ? " is" : "s are"} waiting for approval.`,
+      action: { label: "Review", onClick: () => navigate("/team") },
+    });
+  if (
+    isWorkspaceAdmin &&
+    tenant?.trial.active &&
+    tenant.trial.days_left !== null &&
+    !tenant.trial.payment_method_ok
+  )
+    issues.push({
+      id: "trial",
+      text: `${tenant.trial.days_left} day${tenant.trial.days_left === 1 ? "" : "s"} left in your trial — add a card to keep protection on.`,
+      action: { label: "Set up billing", onClick: () => navigate("/billing") },
+    });
+
+  const TABS = [
+    ["alerts", "Alerts", open.length],
+    ["mailboxes", "Mailboxes", mailboxes.length],
+    ["activity", "Activity", null],
+    ["setup", "Setup", null],
+  ] as const;
 
   return (
     <main>
       <div className="shell pt-5">
-        {/* Identity on the left, the four numbers that matter on the right. The
-            cells are hairline-separated rather than spaced so the row reads as
-            one instrument panel, not four floating cards. */}
-        <div className="statstrip grid-cols-2 sm:grid-cols-3 lg:grid-cols-5">
-          <div className="stat-cell col-span-2 flex flex-col justify-center sm:col-span-3 lg:col-span-1">
-            <span className="sect-label truncate">
-              {tenant?.name && tenant.name !== domain ? tenant.name : "Workspace"}
-            </span>
-            <div className="mt-1.5 flex flex-wrap items-center gap-2">
-              <p className="truncate text-sm font-semibold">{domain}</p>
-              {tenant && <PlanBadge tenant={tenant} />}
-            </div>
-          </div>
-          {(
-            [
-              ["OPEN", figure(open.length), open.length > 0 ? "is-warn" : "is-quiet"],
-              ["CRITICAL", figure(critical), critical > 0 ? "is-hot" : "is-quiet"],
-              ["MAILBOXES", figure(mailboxes.length), "is-quiet"],
-              ["DOMAINS", figure(domainCount), "is-quiet"],
-            ] as const
-          ).map(([label, value, tone]) => (
-            <div key={label} className="stat-cell">
-              <div className="sect-label">{label}</div>
-              <div className={cn("stat-figure mt-2", tone)}>{value}</div>
-            </div>
-          ))}
-        </div>
-        <PreventedPanel prevented={stats?.prevented_loss} />
-
-        <div className="mt-2 flex items-center justify-end">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <span className="sect-label truncate">
+            {tenant?.name && tenant.name !== domain ? tenant.name : "Workspace"}
+          </span>
+          <span className="truncate text-sm font-semibold">{domain}</span>
+          {tenant && <PlanBadge tenant={tenant} />}
           <button
             onClick={() => void load()}
             aria-label="Refresh"
-            className="fg-3 mono-xs flex cursor-pointer items-center gap-1.5 p-2 transition-colors hover:text-[var(--fg)]"
+            className="fg-3 mono-xs ml-auto flex cursor-pointer items-center gap-1.5 p-2 transition-colors hover:text-[var(--fg)]"
           >
-            <RefreshCw
-              size={13}
-              className={cn(loading && "animate-spin")}
-              aria-hidden
-            />
+            <RefreshCw size={13} className={cn(loading && "animate-spin")} aria-hidden />
             REFRESH
           </button>
         </div>
-      </div>
 
-      {me && !me.mfa_enabled && (
-        <div className="border-b border-[var(--warn)]/30">
-          <div className="shell py-4">
-            <div className="callout flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
-              <ShieldAlert size={18} className="shrink-0" aria-hidden />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">
-                  Two-factor authentication is off
-                </p>
-                <p className="mt-0.5 text-xs leading-relaxed">
-                  A stolen password is enough to take this account. Turn on your
-                  authenticator app — it takes about a minute.
-                </p>
-              </div>
-              <Button
-                size="sm"
-                variant={mfaOpen ? "quiet" : "accent"}
-                className="shrink-0"
-                onClick={() => setMfaOpen((o) => !o)}
-                aria-expanded={mfaOpen}
-              >
-                {mfaOpen ? (
-                  <>
-                    <X size={13} aria-hidden /> CLOSE
-                  </>
-                ) : (
-                  <>
-                    <ShieldAlert size={13} aria-hidden /> SET UP TWO-FACTOR
-                  </>
-                )}
-              </Button>
-            </div>
-
-            {mfaOpen && (
-              <div className="panel rise mt-3 p-5">
-                <MfaEnroll
-                  onDone={async () => {
-                    setMfaOpen(false);
-                    await load();
-                  }}
-                  onCancel={() => setMfaOpen(false)}
-                />
-              </div>
-            )}
-          </div>
+        <div className="mt-3">
+          <TodayPanel
+            open={open}
+            stats={stats}
+            issues={issues}
+            onShowAlerts={() => showTab("alerts")}
+          />
         </div>
-      )}
 
-      {/* Domain verification is handled by a full-screen gate above (the dashboard
-          only renders once the primary domain is DNS-verified), so there is no
-          inline verify banner here. */}
+        {me && !me.mfa_enabled && mfaOpen && (
+          <div className="panel rise mt-4 p-5">
+            <MfaEnroll
+              onDone={async () => {
+                setMfaOpen(false);
+                await load();
+              }}
+              onCancel={() => setMfaOpen(false)}
+            />
+          </div>
+        )}
+      </div>
 
       {error && error !== "signed-out" && (
         <div className="shell py-4">
@@ -3460,83 +3512,39 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Teammates awaiting approval — admins/owners are told here so they don't
-          have to stumble onto the Team page to find a pending colleague. */}
-      {/* Unparked: /team is in the console rail (App.tsx APP_NAV), so this no
-          longer points at a hidden page. It matters more now that email
-          verification is on — a colleague confirms their address, lands in
-          `pending`, and without this nobody is ever told they are waiting. */}
-      {tenant &&
-        tenant.pending_members > 0 &&
-        (auth.role === "owner" || auth.role === "admin") && (
-          <div className="shell pt-4">
-            <div className="callout flex flex-col gap-3 p-4 sm:flex-row sm:items-center">
-              <ShieldAlert size={18} className="shrink-0" aria-hidden />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">
-                  {tenant.pending_members} teammate
-                  {tenant.pending_members === 1 ? "" : "s"} awaiting approval
-                </p>
-                <p className="mt-0.5 text-xs leading-relaxed">
-                  Someone from your company signed up and needs access. Review them,
-                  set their role, or decline — from your Team page.
-                </p>
-              </div>
-              <Link to="/team" className="shrink-0">
-                <Button size="sm" variant="accent">
-                  REVIEW TEAM
-                </Button>
-              </Link>
-            </div>
-          </div>
-        )}
 
-      {/* Trial countdown. Unparked with the billing router and the /billing
-          route, which are both live: the trial runs 15 days and then drops to
-          Guard, and this was the only thing in the product that said so while
-          there was still time to act. A customer discovering the drop by losing
-          protection is a churn event we caused. */}
-      {/* Admins only: a member has no Billing page, so "Set up billing" was a
-          button to somewhere they cannot go. */}
-      {isWorkspaceAdmin &&
-        tenant?.trial.active &&
-        tenant.trial.days_left !== null &&
-        !tenant.trial.payment_method_ok && (
-          <div className="shell pt-4">
-            <div
+      <div className="shell scroll-mt-16 pt-8" id="dash-tabs">
+        <div
+          className="flex gap-1 overflow-x-auto border-b border-[var(--rule)]"
+          role="tablist"
+          aria-label="Dashboard sections"
+        >
+          {TABS.map(([id, label, count]) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              id={`tab-${id}`}
+              aria-selected={tab === id}
+              aria-controls={`panel-${id}`}
+              onClick={() => showTab(id)}
               className={cn(
-                "callout flex flex-col gap-3 p-4 sm:flex-row sm:items-center",
-                tenant.trial.days_left <= 3 && "border-[var(--danger)]",
+                "font-mono -mb-px shrink-0 cursor-pointer border-b-2 px-3 py-2.5 text-[11px] tracking-wide uppercase transition-colors",
+                tab === id
+                  ? "accent border-[var(--accent)]"
+                  : "fg-3 border-transparent hover:text-[var(--fg)]",
               )}
             >
-              <Banknote size={18} className="shrink-0" aria-hidden />
-              <div className="min-w-0 flex-1">
-                <p className="text-sm font-semibold">
-                  {tenant.trial.days_left} day
-                  {tenant.trial.days_left === 1 ? "" : "s"} left in your{" "}
-                  {(tenant.subscribed_plan ?? "complete").toString().replace(/^\w/, (c) => c.toUpperCase())}{" "}
-                  trial
-                </p>
-                <p className="mt-0.5 text-xs leading-relaxed">
-                  Add a payment method to keep full protection when it ends —
-                  otherwise you drop to Guard (free), never locked out.
-                </p>
-              </div>
-              <Link to="/billing" className="shrink-0">
-                <Button size="sm" variant="accent">
-                  <CreditCard size={13} aria-hidden /> SET UP BILLING
-                </Button>
-              </Link>
-            </div>
-          </div>
-        )}
+              {label}
+              {count !== null && count > 0 && <span className="tnum ml-1.5">{count}</span>}
+            </button>
+          ))}
+        </div>
+      </div>
 
-      <div className="shell grid12 py-8">
-        <section className="col-span-12 lg:col-span-8">
-          {/* The queue header is a ruled label rather than a panel lid: each
-              alert is now its own bordered card carrying a tier bar, and
-              nesting cards inside a panel gave every alert two competing
-              borders. */}
+      <div className="shell py-6" role="tabpanel" id={`panel-${tab}`} aria-labelledby={`tab-${tab}`}>
+        {tab === "alerts" && (
+          <section className="mx-auto max-w-4xl">
           <div className="ruled-label">
             <h2 className="sect-label">
               Alert queue
@@ -3591,16 +3599,18 @@ export default function Dashboard() {
                   onAcknowledge={acknowledge}
                   onQuarantine={quarantine}
                   onResolve={resolve}
+                  onRefresh={() => load()}
                 />
               ))
             )}
           </div>
 
-          {/* Mailboxes are the first thing a new customer acts on. They sat at
-              the bottom of the narrow side column, under four other panels,
-              with addresses truncated — while this wide column held only the
-              alert queue and empty space. */}
-          <div className="mt-8 space-y-6">
+          </section>
+        )}
+
+        {tab === "mailboxes" && (
+          <div className="grid12">
+            <section className="col-span-12 space-y-6 lg:col-span-8">
             <div className="panel" id="coverage">
               <div className="border-b px-5 py-3.5">
                 <div className="flex items-baseline justify-between gap-3">
@@ -3675,8 +3685,6 @@ export default function Dashboard() {
                 extraCents={tenant?.billing?.extra_mailbox_cents}
               />
             </div>
-            {/* The client sensor: without a device reporting, the sign-in and
-                silent-access alerts on the Complete plan have nothing to go on. */}
             {mailboxes.length > 0 && (
               <SensorPanel
                 mailboxes={mailboxes}
@@ -3685,51 +3693,25 @@ export default function Dashboard() {
               />
             )}
 
-            {/* Unparked: the CT watcher runs (FOCUS_CORE=false), and this is the
-                only place a Guard customer sees what it found for them. */}
-            <LookalikeWatch />
-
-            {/* /api/v1/audit is live, it is E5's whole point ("IT can see who
-                acted and who ignored it"), and the privacy notice promises the
-                customer an audit trail they can read. */}
-            <AuditTrail />
+            </section>
+            <aside className="col-span-12 mt-6 space-y-6 lg:col-span-4 lg:mt-0">
+              {mailboxes.length > 0 && <CoverageSummary mailboxes={mailboxes} />}
+              <AppPasswordNotice />
+            </aside>
           </div>
-        </section>
+        )}
 
-        <aside className="col-span-12 mt-6 space-y-6 lg:col-span-4 lg:mt-0">
-          {mailboxes.length > 0 && <CoverageSummary mailboxes={mailboxes} />}
-
-          {/* The checklist is setup work (add mailboxes, billing) that only an
-              admin can do; a member saw tasks they had no way to complete. */}
-          {tenant && me && isWorkspaceAdmin && (
-            <OnboardingChecklist
-              connectedCount={
-                mailboxes.filter((m) => m.sources.some((s) => MAIL_SOURCES.has(s)))
-                  .length
-              }
-              mfaEnabled={me.mfa_enabled}
-              paymentOk={tenant.trial.payment_method_ok}
-              onSetupMfa={() => {
-                setMfaOpen(true);
-                window.scrollTo({ top: 0, behavior: "smooth" });
-              }}
-            />
-          )}
-
-          {/* parked: not in two-feature v1 (billing)
-          {tenant && <UpgradePlans tenant={tenant} onChanged={load} />}
-          */}
-
-          <PushAlerts />
-
-          <ConnectionAdvisor defaultDomain={hasDomain ? domain : ""} />
-
-          <AppPasswordNotice />
-
-
-
-
-
+        {tab === "activity" && (
+          <div className="grid12">
+            <section className="col-span-12 space-y-6 lg:col-span-8">
+              <PreventedPanel prevented={stats?.prevented_loss} />
+              {/* The CT watcher's finds — the only place a Guard customer sees
+                  what it found for them. */}
+              <LookalikeWatch />
+              {/* E5: who read it, who acted, who ignored it. */}
+              <AuditTrail />
+            </section>
+            <aside className="col-span-12 mt-6 space-y-6 lg:col-span-4 lg:mt-0">
           {stats && (
             <div className="panel p-5">
               <h2 className="sect-label">Oversight</h2>
@@ -3761,8 +3743,36 @@ export default function Dashboard() {
             </div>
           )}
 
-          <GoverningMetrics />
-        </aside>
+              <GoverningMetrics />
+            </aside>
+          </div>
+        )}
+
+        {tab === "setup" && (
+          <div className="grid12">
+            <section className="col-span-12 space-y-6 lg:col-span-7">
+          {tenant && me && isWorkspaceAdmin && (
+            <OnboardingChecklist
+              connectedCount={
+                mailboxes.filter((m) => m.sources.some((s) => MAIL_SOURCES.has(s)))
+                  .length
+              }
+              mfaEnabled={me.mfa_enabled}
+              paymentOk={tenant.trial.payment_method_ok}
+              onSetupMfa={() => {
+                setMfaOpen(true);
+                window.scrollTo({ top: 0, behavior: "smooth" });
+              }}
+            />
+          )}
+
+              <ConnectionAdvisor defaultDomain={hasDomain ? domain : ""} />
+            </section>
+            <aside className="col-span-12 mt-6 space-y-6 lg:col-span-5 lg:mt-0">
+              <PushAlerts />
+            </aside>
+          </div>
+        )}
       </div>
 
       <ConfirmDialog

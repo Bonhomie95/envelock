@@ -66,6 +66,7 @@ dependencies = [
     "pyzbar>=0.1.9",               # B3 — decode QR codes ("quishing")
     "pytesseract>=0.3.13",         # A1 — OCR bank details from image attachments
     "pillow>=11.0",                # image decoding for OCR + QR
+    "reportlab>=4.2",              # the per-alert evidence pack (PDF)
     "schwifty>=2024.11",           # IBAN validation — A1
     "python-stdnum>=1.20",         # SWIFT/BIC, sort codes — A1
 
@@ -140,7 +141,7 @@ check_untyped_defs = true
 module = [
     "aioimaplib.*", "imapclient.*", "mailparser.*", "aiosmtpd.*", "msal.*",
     "googleapiclient.*", "google.*", "pywebpush.*", "user_agents.*",
-    "whois.*", "yara.*", "oletools.*", "pdfminer.*", "pyzbar.*",
+    "whois.*", "yara.*", "oletools.*", "pdfminer.*", "pyzbar.*", "reportlab.*",
     "pytesseract.*", "PIL.*", "schwifty.*", "stdnum.*", "docx.*",
     "confusable_homoglyphs.*", "dkim.*", "clickhouse_connect.*", "arq.*",
 ]
