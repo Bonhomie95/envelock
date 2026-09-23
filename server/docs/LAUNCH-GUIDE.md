@@ -470,13 +470,15 @@ Envelock now protects those mailboxes fully: it moves Critical mail to an
 links are checked at click time. Push notifications make it act within
 seconds instead of on the 5-minute check.
 
-**A. Microsoft push** — nothing to create. In **both** `.env` and `.env.worker`:
+**A. Microsoft push** — nothing to create, and nothing to set: step 5 already
+put this in **both** `.env` and `.env.worker`:
 
 ```
 ENVELOCK_MS_WEBHOOK_URL=https://api.envelock.org/api/v1/webhooks/graph
 ```
 
 The worker creates and renews a subscription for every connected mailbox.
+Confirm with `grep MS_WEBHOOK ~/apps/server/.env`.
 
 **B. Gmail push** (Google Cloud console, same project as the OAuth app):
 
@@ -556,24 +558,29 @@ takes people to the real site after a "we couldn't check this link" page.
 1. Move `envelock.org`'s DNS to Cloudflare (free): cloudflare.com → **Add a
    site** → copy your current records → change the nameservers at your
    registrar. Keep `app`, `api`, `admin` as they are (grey cloud is fine).
-2. Make a shared secret on your laptop: `openssl rand -hex 32`.
+2. Read the shared secret the server already generated (step 5 made one, so
+   links written since day one carry their signed destination):
+   ```bash
+   grep ENVELOCK_LINK_EDGE_SECRET ~/apps/server/.env
+   ```
 3. Deploy the worker from `server/deploy/edge/`:
    ```bash
    cd server/deploy/edge && npx wrangler login && npx wrangler deploy
    npx wrangler secret put LINK_EDGE_SECRET      # paste the secret
    ```
    It serves `go.envelock.org` (see `wrangler.toml`).
-4. On the server, in **both** env files, then restart both services:
+4. On the server, in **both** env files, then restart both services — only
+   this one line changes, the secret is already there:
    ```
    ENVELOCK_REDIRECT_BASE_URL=https://go.envelock.org
-   ENVELOCK_LINK_EDGE_SECRET=<the same secret>
    ```
 5. Check: send yourself a link, click it (works as before). Then
    `sudo systemctl stop envelock-api`, click it again — you get Envelock's
    "we couldn't check this link" page with a Continue button. Start the API again.
 
-Links written before this step keep working normally; they just don't have
-the outage fallback.
+Links written before this step keep working normally, and because the secret
+was generated at setup they already carry the outage fallback — it starts
+working the moment the worker is live.
 
 ## 22. 👤 A standby server
 

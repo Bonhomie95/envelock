@@ -425,7 +425,10 @@ async def test_oauth_refresh_invalid_grant_flags_reconnect(session, monkeypatch)
 
     class FakeTransport:
         async def post_form(self, url, data):
-            return {"error": "invalid_grant", "error_description": "Token has been expired or revoked."}
+            return {
+                "error": "invalid_grant",
+                "error_description": "Token has been expired or revoked.",
+            }
 
     oauth.set_default_transport(FakeTransport())
     try:

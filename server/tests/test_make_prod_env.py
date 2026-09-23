@@ -99,6 +99,19 @@ def test_development_values_never_reach_production() -> None:
     assert _values(api)["ENVELOCK_SECRET_KEY"] == _values(worker)["ENVELOCK_SECRET_KEY"]
 
 
+def test_push_and_link_fallback_are_on_from_the_first_boot() -> None:
+    """Both are free and need no third-party account, and both are worthless if
+    turned on later: a link rewritten without the edge secret can never gain the
+    outage fallback."""
+    api, worker, _ = _build()
+    a, w = _values(api), _values(worker)
+    for v in (a, w):
+        assert v["ENVELOCK_MS_WEBHOOK_URL"].endswith("/api/v1/webhooks/graph")
+        assert len(v["ENVELOCK_LINK_EDGE_SECRET"]) == 64
+    # The signature only verifies at the edge if both processes use one secret.
+    assert a["ENVELOCK_LINK_EDGE_SECRET"] == w["ENVELOCK_LINK_EDGE_SECRET"]
+
+
 def test_a_missing_mail_relay_is_refused_up_front() -> None:
     tool = _tool()
     text = _laptop_env().replace(

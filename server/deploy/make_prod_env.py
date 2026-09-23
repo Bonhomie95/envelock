@@ -45,6 +45,9 @@ PRODUCTION = {
     "ENVELOCK_WEB_BASE_URL": "https://app.envelock.org",
     "ENVELOCK_PUBLIC_BASE_URL": "https://app.envelock.org",
     "ENVELOCK_REDIRECT_BASE_URL": "https://api.envelock.org",
+    # Graph tells us about new mail instead of us asking every 5 minutes. Nothing
+    # to register at Microsoft; the worker subscribes per mailbox and renews.
+    "ENVELOCK_MS_WEBHOOK_URL": "https://api.envelock.org/api/v1/webhooks/graph",
     "ENVELOCK_CORS_ORIGINS": "https://app.envelock.org,https://admin.envelock.org",
     "ENVELOCK_REQUIRE_EMAIL_VERIFICATION": "true",
     "ENVELOCK_REQUIRE_DOMAIN_VERIFICATION": "true",
@@ -188,6 +191,12 @@ def build(
         common["ENVELOCK_SECRET_KEY"] = secrets.token_urlsafe(48)
     if not values.get("ENVELOCK_METRICS_TOKEN"):
         common["ENVELOCK_METRICS_TOKEN"] = secrets.token_urlsafe(32)
+    if not values.get("ENVELOCK_LINK_EDGE_SECRET"):
+        # Generated now, not when Cloudflare is set up (guide step 21): links
+        # rewritten before the edge exists then already carry their signed
+        # destination, so they gain the outage fallback the day it goes live.
+        # Links minted without it never do.
+        common["ENVELOCK_LINK_EDGE_SECRET"] = secrets.token_hex(32)
     if not values.get("ENVELOCK_BACKUP_RETAIN_DAYS"):
         # The dumps share the database's disk. Two weeks of them is most of a
         # small VPS once the database is large; off-server copies keep history.
