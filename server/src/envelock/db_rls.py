@@ -197,12 +197,16 @@ async def apply_rls(conn: AsyncConnection, *, app_role: str) -> list[str]:
 
     applied: list[str] = []
 
+    # A bool, not the raw scalar: the value is only ever used as a flag, and
+    # `scalar_one_or_none()` is typed differently across SQLAlchemy releases —
+    # under 2.1 mypy narrows it to `None` and calls every `is not None` branch
+    # below unreachable, so the grants silently stopped being type-checked.
     role_exists = (
         await conn.execute(
             text("SELECT 1 FROM pg_roles WHERE rolname = :r"), {"r": app_role}
         )
-    ).scalar_one_or_none()
-    if role_exists is None:
+    ).scalar_one_or_none() is not None
+    if not role_exists:
         logger.warning(
             "RLS: role %r does not exist — policies will be applied but no grants "
             "made. Create it with `python -m envelock.security.provision_rls`.",
@@ -241,7 +245,7 @@ async def apply_rls(conn: AsyncConnection, *, app_role: str) -> list[str]:
                 f"USING {expr} WITH CHECK {expr}"
             )
         )
-        if role_exists is not None:
+        if role_exists:
             await conn.execute(
                 text(
                     f'GRANT SELECT, INSERT, UPDATE, DELETE ON "{name}" TO "{app_role}"'
@@ -249,7 +253,7 @@ async def apply_rls(conn: AsyncConnection, *, app_role: str) -> list[str]:
             )
         applied.append(name)
 
-    if role_exists is not None:
+    if role_exists:
         # Exempt tables still need grants, they just carry no tenant policy.
         for name in sorted(EXEMPT - {"alembic_version"}):
             if name in live:

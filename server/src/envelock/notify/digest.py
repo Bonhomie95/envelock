@@ -258,10 +258,13 @@ async def _payments_checked(
         )
     ).all()
     count = sum(int(n) for _, n, _ in rows)
-    totals = sorted(
-        ({"currency": cur, "amount": float(total or 0)} for cur, _, total in rows if cur),
-        key=lambda r: -r["amount"],
-    )
+    # Sorted as typed pairs, then shaped into dicts. Sorting the dicts directly
+    # meant negating `r["amount"]`, and a dict with a str and a float in it has
+    # value type `object` — which mypy rejects the unary minus on. Doing the
+    # arithmetic before the dict exists keeps the money a float throughout.
+    pairs = [(cur, float(total or 0)) for cur, _, total in rows if cur]
+    pairs.sort(key=lambda p: -p[1])
+    totals = [{"currency": cur, "amount": amount} for cur, amount in pairs]
     return count, totals
 
 
