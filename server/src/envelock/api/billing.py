@@ -524,14 +524,14 @@ async def _activate_paid_plan(
 
     await session.commit()
     if newly_paid:
-        from envelock.notify.account import app_url, notify_admins
+        from envelock.notify.account import app_url, notify_admins, plan_label, plan_title
 
-        named = (tenant.plan or "your plan").capitalize()
+        named = plan_label(tenant.plan)
         await notify_admins(
             session,
             tenant.id,
-            subject=f"Envelock {named} is active",
-            heading=f"{named} is active",
+            subject=f"{plan_title(tenant.plan)} is active",
+            heading=f"{plan_title(tenant.plan)} is active",
             preheader="Your payment went through — mailbox protection is on.",
             paragraphs=[
                 f"Your payment went through and {named} is now active.",
@@ -681,21 +681,21 @@ def _invoice_amount(invoice: dict) -> str:
 
 
 async def _notify_renewal_paid(session: AsyncSession, tenant: Tenant, invoice: dict) -> None:
-    from envelock.notify.account import app_url, notify_admins
+    from envelock.notify.account import app_url, notify_admins, plan_label, plan_title
 
     amount = _invoice_amount(invoice)
-    named = (tenant.plan or "your plan").capitalize()
+    named = plan_label(tenant.plan)
     charged = f"{amount} " if amount else ""
     await notify_admins(
         session,
         tenant.id,
         subject=f"Envelock renewed — {amount}" if amount else "Your Envelock plan renewed",
-        heading="Your plan renewed",
+        heading=f"{plan_title(tenant.plan)} renewed",
         preheader=f"{charged}charged. Protection continues uninterrupted.",
         paragraphs=[
-            f"{named} renewed and {charged}was charged to your card."
+            f"{plan_title(tenant.plan)} renewed and {charged}was charged to your card."
             if amount
-            else f"{named} renewed successfully.",
+            else f"{plan_title(tenant.plan)} renewed successfully.",
             "Protection continues uninterrupted. Nothing for you to do.",
         ],
         text=(

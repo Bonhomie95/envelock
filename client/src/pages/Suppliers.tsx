@@ -657,25 +657,48 @@ export default function Suppliers() {
         <span className="sect-label">Payment safety</span>
       </div>
       <h1 className="headline mt-5">Suppliers</h1>
+      {/* Says whose side this is on, in the first sentence. "Suppliers" as a
+          page title reads to some people as "we protect your suppliers" — this
+          is the opposite: your own record of who you pay, which is what makes a
+          changed account detectable. */}
       <p className="lede mt-4 text-base">
-        The accounts your suppliers are really paid into, and the numbers to ring
-        to check. When an invoice asks for a different account, this is what we
-        check it against.
+        Your record of who you pay: the account each supplier is really paid
+        into, and a number you&rsquo;ve checked to ring them on. When an email
+        asks you to pay somewhere new, this is what proves it wrong.
       </p>
 
-      {/* Coverage, stated plainly rather than as a decorative dial. */}
+      {/* Coverage, stated plainly rather than as a decorative dial.
+
+          With nothing on file the ratio is "0/0" — arithmetically right and
+          completely uninformative, and it reads as something broken rather than
+          as something not started. An empty list is the one state where the
+          number is worth less than a sentence saying what to do about it. */}
       <div className="panel mt-8 flex flex-wrap items-center gap-x-8 gap-y-3 p-5">
-        <div>
-          <div className="font-mono tnum text-2xl font-semibold">
-            {rows ? `${covered}/${rows.length}` : "—"}
-          </div>
-          <div className="sect-label mt-1">Suppliers fully covered</div>
-        </div>
-        <p className="fg-3 max-w-sm text-xs leading-relaxed">
-          A supplier is covered once we hold both an account and a number to ring.
-          With one missing, a bank-change email from them is still caught — but
-          your team has nothing trustworthy to verify it against.
-        </p>
+        {rows && rows.length === 0 ? (
+          <p className="text-sm leading-relaxed">
+            <span className="font-semibold">No suppliers on file yet.</span>{" "}
+            <span className="fg-2">
+              Add the ones you pay — or import them from your accounting system
+              below — and we&rsquo;ll check every bank-detail change against
+              what&rsquo;s here.
+            </span>
+          </p>
+        ) : (
+          <>
+            <div>
+              <div className="font-mono tnum text-2xl font-semibold">
+                {rows ? `${covered}/${rows.length}` : "—"}
+              </div>
+              <div className="sect-label mt-1">Suppliers fully covered</div>
+            </div>
+            <p className="fg-3 max-w-sm text-xs leading-relaxed">
+              A supplier is covered once we hold both an account and a number to
+              ring. With one missing, a bank-change email from them is still
+              caught — but your team has nothing trustworthy to verify it
+              against.
+            </p>
+          </>
+        )}
       </div>
 
       {canEdit && <AccountingPanel onSynced={load} />}

@@ -52,6 +52,40 @@ def app_url(path: str = "") -> str:
     return f"{get_settings().web_base_url.rstrip('/')}{path}"
 
 
+#: Display names, written out rather than derived with `.capitalize()`. That
+#: call lowercases everything after the first letter, so any plan later named
+#: with more than one word or an internal capital would silently render wrong —
+#: and it has no answer at all for a plan we don't recognise.
+_PLAN_NAMES = {
+    "guard": "Guard",
+    "solo": "Solo",
+    "essential": "Essential",
+    "complete": "Complete",
+}
+
+
+def plan_label(plan: str | None) -> str:
+    """A plan named the way a sentence needs it: "the Complete plan".
+
+    Bare "Complete" reads as a status word rather than a product — "Complete is
+    active" looks like a progress message. The article and the noun are what
+    make it a name. An unrecognised or missing plan degrades to "your plan",
+    which is always true and never wrong.
+    """
+    name = _PLAN_NAMES.get((plan or "").strip().lower())
+    return f"the {name} plan" if name else "your plan"
+
+
+def plan_title(plan: str | None) -> str:
+    """`plan_label` at the start of a sentence or heading: "The Complete plan".
+
+    Only the first character is touched — `str.capitalize()` would flatten the
+    plan's own capital ("The complete plan").
+    """
+    label = plan_label(plan)
+    return label[:1].upper() + label[1:]
+
+
 async def notify_admins(
     session: AsyncSession,
     tenant_id: UUID,

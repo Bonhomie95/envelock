@@ -240,7 +240,7 @@ async def renewal_reminder_job() -> dict:
     from sqlalchemy import or_, select
 
     from envelock.models import Tenant
-    from envelock.notify.account import app_url, notify_admins
+    from envelock.notify.account import app_url, notify_admins, plan_title
     from envelock.notify.mail import is_configured
 
     if not is_configured():
@@ -325,12 +325,11 @@ async def renewal_reminder_job() -> dict:
                     "and settings are kept."
                 )
             else:
-                named = (tenant.plan or "your plan").capitalize()
                 subject = f"Envelock renews {when}"
-                heading = f"{named} renews {when}"
+                heading = f"{plan_title(tenant.plan)} renews {when}"
                 paragraphs = [
-                    f"{named} renews {when} and your card will be charged "
-                    "automatically.",
+                    f"{plan_title(tenant.plan)} renews {when} and your card will be "
+                    "charged automatically.",
                     "Nothing for you to do — this is just so the charge isn't a "
                     "surprise.",
                 ]
