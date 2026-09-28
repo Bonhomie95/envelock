@@ -32,6 +32,8 @@ _BUCKETS: tuple[tuple[str, str], ...] = (
     # reset-with-code and the authenticated change.
     ("/api/v1/auth/password", "auth.password"),
     ("/api/v1/auth/recovery", "auth.recovery"),
+    # Public, unauthenticated, and sends mail to a caller-named address.
+    ("/api/v1/contact", "contact"),
     # Verification resend SENDS EMAIL to a caller-named address — same bombing
     # shape as password reset, same tight bucket.
     ("/api/v1/auth/verify-email", "auth.password"),

@@ -101,3 +101,4 @@ test-results/
 # they never end up in a customer-visible checkout or a security review bundle.
 # ─────────────────────────────────────────────────────────────────────────────
 UI_PROMPTS.md
+.md

@@ -18,7 +18,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -110,11 +110,35 @@ class RegisterRequest(BaseModel):
     # Length ceilings everywhere: an unbounded password is unbounded scrypt work.
     password: str = Field(min_length=12, max_length=256)
     tenant_name: str = Field(min_length=1, max_length=200)
+    #: Turnstile solution. Optional in the model because a deployment with no
+    #: secret configured renders no widget; `_require_captcha` decides whether
+    #: an absent token matters.
+    captcha_token: str | None = Field(default=None, max_length=4096)
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
     password: str = Field(max_length=256)
+    captcha_token: str | None = Field(default=None, max_length=4096)
+
+
+async def _require_captcha(token: str | None, request: Request) -> None:
+    """Refuse the request when the CAPTCHA is enabled and unsolved.
+
+    Sits in front of credential checking, so a bot farming passwords is stopped
+    before it costs us a scrypt hash. No-op on a deployment with no Turnstile
+    secret — `turnstile.verify` returns True — so development and staging are
+    unchanged, and it fails OPEN if Cloudflare itself is unreachable rather than
+    locking customers out of their own accounts.
+    """
+    from envelock.security import turnstile
+
+    client_ip = request.client.host if request.client else None
+    if not await turnstile.verify(token, remote_ip=client_ip):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "the anti-spam check did not pass — please try again",
+        )
 
 
 class MfaVerifyRequest(BaseModel):
@@ -332,10 +356,11 @@ async def _tenant_claim_is_credible(session: AsyncSession, tenant_id: UUID) -> b
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 @router.post("/register", status_code=status.HTTP_201_CREATED)
-async def register(req: RegisterRequest, session: Session) -> dict:
+async def register(req: RegisterRequest, request: Request, session: Session) -> dict:
     """First user of a corporate domain becomes its owner; later colleagues from
     the same domain join that tenant as members — one company, one tenant, one
     trial. Free-mail signups each get their own tenant."""
+    await _require_captcha(req.captcha_token, request)
     email = req.email.lower().strip()
 
     # Reject throwaway inboxes: alerts, recovery and billing all need a real one,
@@ -509,7 +534,11 @@ async def register(req: RegisterRequest, session: Session) -> dict:
 
 
 @router.post("/login")
-async def login(req: LoginRequest, session: Session) -> dict:
+async def login(req: LoginRequest, request: Request, session: Session) -> dict:
+    # Ahead of the lockout and the password check: a bot spraying credentials
+    # should not get as far as costing us a scrypt hash, nor be able to lock a
+    # real customer out of their own account by burning their attempts.
+    await _require_captcha(req.captcha_token, request)
     email = req.email.lower().strip()
 
     locked, retry_after = await active_lockout().ais_locked(email)

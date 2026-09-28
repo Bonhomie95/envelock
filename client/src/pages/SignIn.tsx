@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { ApiError, api, auth } from "../lib/api";
+import { Turnstile } from "../components/Turnstile";
 import {
   checkPassphrase,
   isConsumerEmail,
@@ -79,6 +80,11 @@ export default function SignIn() {
      mismatch only surfaces at the next sign-in, by which point they no longer
      know which of the two they meant. Reveal + confirm catches it here. */
   const [showPassword, setShowPassword] = useState(false);
+  /* Turnstile on the two credential forms. The site key arrives from the
+     server's public options endpoint, so a deployment that has not enabled it
+     renders nothing here and the server accepts the request unchallenged. */
+  const [captchaSiteKey, setCaptchaSiteKey] = useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
   const [confirmPassword, setConfirmPassword] = useState("");
   const passwordsMatch = mode !== "signup" || password === confirmPassword;
   const [domain, setDomain] = useState("");
@@ -108,6 +114,19 @@ export default function SignIn() {
         : "We couldn't reach Envelock — it may be waking up. Try again in a moment.",
     );
   }
+
+  useEffect(() => {
+    let live = true;
+    api
+      .contactOptions()
+      .then((r) => live && setCaptchaSiteKey(r.captcha_site_key))
+      // Not enabled, or the endpoint is briefly unavailable: render no widget.
+      // The server accepts an unchallenged request in exactly that case.
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
 
   async function submitCredentials(e: FormEvent) {
     e.preventDefault();
@@ -141,6 +160,7 @@ export default function SignIn() {
           // Never the address itself: it became the company's name everywhere
           // (dashboard, profile, operator console) when the domain was left blank.
           tenant_name: domain || email.split("@")[1] || email,
+          ...(captchaToken ? { captcha_token: captchaToken } : {}),
         });
         rememberEmail(email);
         if (reg.verification_required) {
@@ -154,7 +174,11 @@ export default function SignIn() {
           return;
         }
       }
-      const login = await api.login({ email, password });
+      const login = await api.login({
+        email,
+        password,
+        ...(captchaToken ? { captcha_token: captchaToken } : {}),
+      });
       rememberEmail(email);
       setMfaToken(login.mfa_token);
 
@@ -540,6 +564,8 @@ export default function SignIn() {
                   )}
                 </div>
               )}
+
+              <Turnstile siteKey={captchaSiteKey} onToken={setCaptchaToken} />
 
               <Button
                 type="submit"

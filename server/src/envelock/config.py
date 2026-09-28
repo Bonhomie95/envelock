@@ -414,6 +414,32 @@ class Settings(BaseSettings):
     #: RCPT address is necessary but not sufficient; pin the source too.
     ingest_allowed_ips: str = ""
 
+    # ── Contact form and CAPTCHA ─────────────────────────────────────────────
+    #: Cloudflare Turnstile. The SITE key is public and is served to the browser;
+    #: the SECRET is what proves a solved challenge and never leaves the server.
+    #: Free and unmetered, and on the normal path the visitor sees no puzzle.
+    turnstile_site_key: str | None = None
+    turnstile_secret_key: SecretStr | None = None
+
+    #: Where the contact form delivers. One inbox, with the topic in the subject
+    #: (`[Billing] …`), so there is exactly one mailbox to watch — an alias
+    #: nobody reads is worse than no alias.
+    contact_email: str = "support@envelock.org"
+    #: Optional per-topic overrides, `topic=address` comma-separated, e.g.
+    #: "billing=billing@envelock.org,bug=bugs@envelock.org". Anything not named
+    #: here falls back to `contact_email`, so splitting the inbox later is a
+    #: settings change rather than a deploy.
+    contact_topic_emails: str = ""
+
+    @property
+    def contact_topic_map(self) -> dict[str, str]:
+        out: dict[str, str] = {}
+        for pair in self.contact_topic_emails.split(","):
+            topic, _, address = pair.partition("=")
+            if topic.strip() and address.strip():
+                out[topic.strip().lower()] = address.strip()
+        return out
+
     #: Allow tenant-configured SIEM webhook URLs to resolve to private/reserved
     #: addresses. Off by default — that shape is SSRF. Turn on only for a
     #: self-hosted deployment whose SIEM lives on the same private network.
@@ -714,6 +740,16 @@ class Settings(BaseSettings):
                     "link that is never delivered, and no new customer could "
                     "ever sign in. Set ENVELOCK_SMTP_HOST and ENVELOCK_SMTP_FROM."
                 )
+
+        # A site key with no secret renders the widget and then cannot check
+        # anything it returns — a CAPTCHA that is pure theatre, and worse than
+        # none because it is trusted. Either both or neither.
+        if self.turnstile_site_key and not self.turnstile_secret_key:
+            raise ValueError(
+                "ENVELOCK_TURNSTILE_SITE_KEY is set without "
+                "ENVELOCK_TURNSTILE_SECRET_KEY — the challenge would be shown to "
+                "visitors and never verified. Set the secret, or unset both."
+            )
 
         # The forwarding ingest accepts mail addressed to a per-tenant token. The
         # token proves which tenant a copy is for; it does not prove the sender is

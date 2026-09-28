@@ -353,6 +353,7 @@ const FOOTER = [
     links: [
       ["Documentation", "/docs"],
       ["System status", "/status"],
+            ["Contact us", "/contact"],
       ["Our security", "/docs#security"],
       ["Terms of service", "/terms"],
       ["Privacy notice", "/privacy"],
@@ -664,6 +665,7 @@ const LazyDocs = lazy(() => import("./pages/Docs"));
 // page a byte.
 const LazyLegal = lazy(() => import("./pages/Legal"));
 const LazyStatus = lazy(() => import("./pages/Status"));
+const LazyContact = lazy(() => import("./pages/Contact"));
 const LazyAnalyse = lazy(() => import("./pages/Analyse"));
 const LazySupplierVerify = lazy(() => import("./pages/SupplierVerify"));
 
@@ -712,6 +714,7 @@ export default function App() {
             <Route path="/analyse" element={<LazyAnalyse />} />
             <Route path="/docs" element={<LazyDocs />} />
             <Route path="/status" element={<LazyStatus />} />
+            <Route path="/contact" element={<LazyContact />} />
             {/* One component, four routes — it switches on the pathname. */}
             <Route path="/terms" element={<LazyLegal />} />
             <Route path="/privacy" element={<LazyLegal />} />

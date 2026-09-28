@@ -53,7 +53,12 @@ def is_configured() -> bool:
 
 
 async def send_mail(
-    *, to: str, subject: str, body: str, html_body: str | None = None
+    *,
+    to: str,
+    subject: str,
+    body: str,
+    html_body: str | None = None,
+    reply_to: str | None = None,
 ) -> MailResult:
     """Send one transactional message. Never raises.
 
@@ -79,6 +84,11 @@ async def send_mail(
     # Transactional, not bulk — keep it out of bulk filtering heuristics, and
     # tell well-behaved autoresponders not to reply to it.
     message["Auto-Submitted"] = "auto-generated"
+    # From stays ours whatever the caller passes: sending AS a visitor would
+    # fail our own SPF/DKIM and teach mail providers that envelock.org forges
+    # senders. Reply-To is how a reply still reaches the right person.
+    if reply_to:
+        message["Reply-To"] = reply_to
     message.set_content(body)
     if html_body:
         message.add_alternative(html_body, subtype="html")

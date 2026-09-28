@@ -1378,6 +1378,26 @@ export const api = {
     ),
 
   // ── Tier 1 OAuth connection ─────────────────────────────────────────────────
+  /** Public: the contact topics and, when enabled, the CAPTCHA site key. */
+  contactOptions: () =>
+    request<{
+      topics: { id: string; label: string }[];
+      captcha_site_key: string | null;
+    }>("/api/v1/contact/options"),
+
+  submitContact: (body: {
+    topic: string;
+    email: string;
+    name?: string;
+    subject: string;
+    message: string;
+    captcha_token?: string | null;
+  }) =>
+    request<{ received: boolean }>("/api/v1/contact", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   oauthProviders: () =>
     request<{ configured: string[]; supported: string[] }>(
       "/api/v1/connect/oauth/providers",

@@ -247,9 +247,18 @@ function VendorImport({ onDone }: { onDone: () => Promise<void> }) {
 }
 
 /* ── Add one supplier by hand ────────────────────────────────────────────── */
+/* The manual form takes everything the CSV import takes.
+   It used to accept only domain and name, so adding a supplier by hand left it
+   permanently "not covered" — no account to compare an invoice against and no
+   number to ring — and the only way to get those in was to add the supplier,
+   find it in the list, expand it, and fill two more forms. The import path
+   accepted all four in one go, which is what made the gap obvious. */
 function AddSupplier({ onAdded }: { onAdded: (domain: string) => Promise<void> }) {
   const [domain, setDomain] = useState("");
   const [name, setName] = useState("");
+  const [scheme, setScheme] = useState<BankRecord["scheme"]>("iban");
+  const [identifier, setIdentifier] = useState("");
+  const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
 
   async function submit() {
@@ -263,12 +272,29 @@ function AddSupplier({ onAdded }: { onAdded: (domain: string) => Promise<void> }
       const r = await api.addSupplier({
         domain: value,
         ...(name.trim() ? { display_name: name.trim() } : {}),
+        ...(phone.trim() ? { verified_phone: phone.trim() } : {}),
       });
+      // The bank record is a separate resource, so it is a second call. A
+      // failure here must not read as "the supplier wasn't added" — it was.
+      let bankWarning = "";
+      if (identifier.trim()) {
+        try {
+          await api.addBankRecord(r.domain, {
+            scheme,
+            identifier: identifier.trim(),
+          });
+        } catch (e) {
+          bankWarning =
+            e instanceof ApiError ? ` The account was refused: ${e.message}` : "";
+        }
+      }
       setDomain("");
       setName("");
-      toast.success(
-        r.created ? `Added ${r.domain}.` : `${r.domain} was already on file.`,
-      );
+      setIdentifier("");
+      setPhone("");
+      const base = r.created ? `Added ${r.domain}.` : `${r.domain} was already on file.`;
+      if (bankWarning) toast.error(base + bankWarning);
+      else toast.success(base);
       await onAdded(r.domain);
     } catch (e) {
       toast.error(
@@ -279,27 +305,75 @@ function AddSupplier({ onAdded }: { onAdded: (domain: string) => Promise<void> }
     }
   }
 
+  const enter = (e: { key: string }) => e.key === "Enter" && void submit();
+
   return (
-    <div className="flex flex-col gap-2 sm:flex-row">
-      <input
-        value={domain}
-        onChange={(e) => setDomain(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && void submit()}
-        placeholder="acme.com"
-        autoComplete="off"
-        aria-label="Supplier domain"
-        className="field flex-1 text-sm"
-      />
-      <input
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => e.key === "Enter" && void submit()}
-        placeholder="Acme Ltd (optional)"
-        autoComplete="off"
-        aria-label="Supplier name"
-        className="field flex-1 text-sm"
-      />
-      <Button variant="accent" disabled={busy} onClick={() => void submit()}>
+    <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <input
+          value={domain}
+          onChange={(e) => setDomain(e.target.value)}
+          onKeyDown={enter}
+          placeholder="acme.com"
+          autoComplete="off"
+          aria-label="Supplier domain"
+          className="field flex-1 text-sm"
+        />
+        <input
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={enter}
+          placeholder="Acme Ltd (optional)"
+          autoComplete="off"
+          aria-label="Supplier name"
+          className="field flex-1 text-sm"
+        />
+      </div>
+      <div className="flex flex-col gap-2 sm:flex-row">
+        <select
+          value={scheme}
+          onChange={(e) => setScheme(e.target.value as BankRecord["scheme"])}
+          aria-label="Account type"
+          className="field text-sm sm:w-40"
+        >
+          {SCHEMES.map((sc) => (
+            <option key={sc.id} value={sc.id}>
+              {sc.label}
+            </option>
+          ))}
+        </select>
+        <input
+          value={identifier}
+          onChange={(e) => setIdentifier(e.target.value)}
+          onKeyDown={enter}
+          placeholder={`${SCHEMES.find((sc) => sc.id === scheme)?.hint ?? ""} (optional)`}
+          autoComplete="off"
+          aria-label="Account they are paid into"
+          className="field flex-1 text-sm"
+        />
+        <input
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          onKeyDown={enter}
+          placeholder="+44 20 7946 0000 (optional)"
+          autoComplete="off"
+          inputMode="tel"
+          aria-label="Number to ring to check"
+          className="field flex-1 text-sm"
+        />
+      </div>
+      {/* Says why the two optional fields are worth filling in now. */}
+      <p className="fg-3 text-xs leading-relaxed">
+        The account and the number are what a changed bank detail gets checked
+        against. Without them we still flag the change — your team just has
+        nothing trustworthy to verify it against. You can add them later.
+      </p>
+      <Button
+        variant="accent"
+        className="self-start"
+        disabled={busy}
+        onClick={() => void submit()}
+      >
         {busy ? (
           <Loader2 size={14} className="animate-spin" aria-hidden />
         ) : (

@@ -50,6 +50,12 @@ RULES: dict[str, Rule] = {
     "auth.mfa": Rule(10, 300),
     "auth.refresh": Rule(30, 300),
     "auth.recovery": Rule(5, 3600),
+    # The contact form sends TWO emails per submission (us, and the
+    # acknowledgement to an address the caller names) so it has the same
+    # bombing shape as password reset. Low enough that it cannot be used to
+    # mail-bomb a third party, high enough that someone who mistypes their
+    # address and retries a few times is not locked out.
+    "contact": Rule(5, 3600),
     # Password reset and change. Tighter than the default (which this used to
     # fall through to at 120/min, making the reset endpoint an email bomb), but
     # not as tight as `auth.recovery`: a person fumbling a new-password form

@@ -16,6 +16,7 @@ from envelock.api import (
     auth,
     billing,
     channels,
+    contact,
     governance,
     health,
     redirect,
@@ -408,6 +409,9 @@ def create_app() -> FastAPI:
     #: Confirming a bank-detail change with the supplier (panel + public page).
     app.include_router(verification.router)
     app.include_router(verification.public)
+    #: The public contact form. Unauthenticated, so rate-limited by prefix in
+    #: security/middleware and CAPTCHA-checked in the route itself.
+    app.include_router(contact.router)
     #: Xero / QuickBooks Online — the vendor master, live.
     app.include_router(accounting.router)
 
