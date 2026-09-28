@@ -52,6 +52,12 @@ class DetectionContext:
     event: Event
     tenant_id: str
     capabilities: frozenset[Capability]
+    #: The tenant's effective plan. Decides which detections run at all —
+    #: Channel 2 (the "C" suite: sign-in anomalies, silent access, mailbox
+    #: tampering) is what Complete sells over Essential. `None` means "do not
+    #: gate", used by tests and by the coverage endpoints that describe what a
+    #: CONNECTION can do rather than what a tenant has bought.
+    plan: str | None = None
     #: Domains the tenant owns — used to tell inbound from internal.
     owned_domains: frozenset[str] = frozenset()
     #: Counterparty domains seen before, for A3 similarity comparison.
@@ -154,19 +160,58 @@ def registry() -> dict[str, Detection]:
     return dict(_REGISTRY)
 
 
-def active_for(capabilities: frozenset[Capability]) -> list[Detection]:
+def active_for(
+    capabilities: frozenset[Capability], plan: str | None = None
+) -> list[Detection]:
+    """Detections that both the connection CAN run and the plan INCLUDES.
+
+    `plan` defaults to None meaning "no plan gating", which is what the
+    coverage endpoints want when they are describing what a connection is
+    capable of. The pipeline passes the real plan, because that is where the
+    work actually happens and a gate that only hides a button is not a gate.
+    """
+    from envelock.billing.features import detection_included
+
     ensure_loaded()
-    return [d for d in _REGISTRY.values() if d.requires <= capabilities]
+    return [
+        d
+        for d in _REGISTRY.values()
+        if d.requires <= capabilities
+        and (plan is None or detection_included(d.service, plan))
+    ]
 
 
 def inactive_for(capabilities: frozenset[Capability]) -> list[str]:
-    """Named, not hidden. This list is shown to the customer (E7)."""
+    """Named, not hidden. This list is shown to the customer (E7).
+
+    Deliberately NOT plan-aware: this list means "your connection cannot do
+    this". Folding the plan in here would tell someone their mailbox was
+    incapable of something they had simply not bought — see
+    `plan_locked_detections` for the other, separate list.
+    """
     ensure_loaded()
     return sorted(d.service for d in _REGISTRY.values() if not d.requires <= capabilities)
 
 
+def plan_locked_detections(capabilities: frozenset[Capability], plan: str) -> list[str]:
+    """Detections this connection COULD run, that the plan does not include.
+
+    The honest complement of `inactive_for`: these are not broken and not
+    unsupported — they are bought separately, and saying so is what turns a
+    silent gap into an upgrade prompt.
+    """
+    from envelock.billing.features import detection_included
+
+    ensure_loaded()
+    return sorted(
+        d.service
+        for d in _REGISTRY.values()
+        if d.requires <= capabilities and not detection_included(d.service, plan)
+    )
+
+
 def run_all(ctx: DetectionContext) -> list[FindingResult]:
     findings: list[FindingResult] = []
-    for detection in active_for(ctx.capabilities):
+    for detection in active_for(ctx.capabilities, ctx.plan):
         findings.extend(detection.evaluate(ctx))
     return findings

@@ -94,7 +94,14 @@ async def _seed(session, *, mfa: bool, slug: str = "geoco") -> tuple:  # noqa: A
     cases seeding the same address collide.
     """
     tenant_id, mailbox_id = uuid4(), uuid4()
-    session.add(Tenant(id=tenant_id, name="GeoCo"))
+    # Complete, with a live trial: Channel 2 — every "C" detection, including
+    # the impossible-travel case below — is what Complete sells over Essential,
+    # so a tenant left on the default plan runs none of them. That gate is
+    # correct (test_plan_features pins it); it just means a test exercising C7
+    # has to seed the plan a real C7 tenant would be on.
+    tenant = Tenant(id=tenant_id, name="GeoCo", plan="complete")
+    tenant.payment_method_ok = True
+    session.add(tenant)
     await session.flush()
     session.add(
         Domain(

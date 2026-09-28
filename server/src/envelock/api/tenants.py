@@ -26,6 +26,7 @@ from envelock.auth.security import (
     verify_password,
     verify_totp,
 )
+from envelock.billing import features as plan_features
 from envelock.billing.pricing import extra_mailbox_cents, included_mailbox_seats
 from envelock.channels.mail.ingest import ingest_address, new_ingest_token, onboarding_instructions
 from envelock.core.capabilities import (
@@ -462,6 +463,15 @@ async def current_tenant(principal: ActiveUser, session: Session) -> dict:
             "subscription": bool(tenant and tenant.stripe_subscription_id),
             "extra_mailbox_cents": extra_mailbox_cents(subscribed_plan)
             or extra_mailbox_cents("complete"),
+        },
+        # What this plan actually includes, so the dashboard can say "included
+        # in Complete" where a control would otherwise silently do nothing —
+        # which is how a customer concludes the product is broken rather than
+        # that they are on a smaller plan.
+        "features": {
+            "ai_on_links": plan_features.ai_on_links(tenant),
+            "auto_remediation": plan_features.auto_remediation(tenant),
+            "identity_detections": plan_features.is_complete(tenant),
         },
         "mailboxes": {
             "used": mailbox_used,

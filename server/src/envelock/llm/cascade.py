@@ -154,6 +154,25 @@ async def refine(
     if not should_escalate(assessment):
         return assessment, None
 
+    # "AI analyst on phishing links too" is what Complete adds. Essential buys
+    # the analyst on PAYMENT mail — the A-series — which is that plan's entire
+    # subject ("protects your mail from invoice fraud"). Credential phishing is
+    # takeover, which is Complete's. Checked here rather than at the call site
+    # because this is the only door into the judge.
+    from envelock.billing.features import ai_on_links
+    from envelock.models import Tenant as _Tenant
+
+    tenant_row = await session.get(_Tenant, tenant_id)
+    if not ai_on_links(tenant_row):
+        services = [str(x) for x in (assessment.services if assessment else [])]
+        if not any(sv.upper().startswith("A") for sv in services):
+            logger.info(
+                "llm cascade: skipped, phishing judgement is Complete-only "
+                "(services=%s)",
+                services,
+            )
+            return assessment, None
+
     mailbox_id = getattr(event, "mailbox_id", None)
     period = datetime.now(UTC).strftime("%Y-%m")
     from envelock.obs.metrics import observe_llm

@@ -37,6 +37,7 @@ from envelock.models import (
 from envelock.obs.metrics import observe_analysis
 from envelock.platform.alerts import raise_alert
 from envelock.platform.graph import GRAPH
+from envelock.platform.remediation import can_remediate as _can_remediate
 from envelock.risk.engine import RiskAssessment, assess
 from envelock.util.domains import registrable_domain
 from envelock.util.payments import (
@@ -366,10 +367,20 @@ async def build_context(
             )
 
     caps = capabilities_for(frozenset(sources))
+    # The plan decides which detections run at all — Channel 2 is what Complete
+    # sells over Essential. Read here, where the work happens, rather than left
+    # to the dashboard: a gate that only hides a button is not a gate.
+    from envelock.billing.entitlement import effective_plan
+    from envelock.models import Tenant as _Tenant
+
+    tenant_row = await session.get(_Tenant, tenant_id)
+    plan = effective_plan(tenant_row) if tenant_row is not None else None
+
     return DetectionContext(
         event=event,
         tenant_id=str(tenant_id),
         capabilities=caps,
+        plan=plan,
         owned_domains=owned_domains,
         known_counterparties=frozenset(known),
         internal_names=frozenset(internal_names),
@@ -775,6 +786,61 @@ async def analyse_event(
             amount_currency=amount_currency,
         )
         alert_id = alert.id
+
+        # "Remove dangerous mail automatically" — Complete only. Essential
+        # raises the same alert and a human can still quarantine it with one
+        # click; what Complete buys is not having to. Nobody is left less safe
+        # by not having this, which is what makes it fair to charge for.
+        #
+        # Requesting rather than acting: this process may be the API, which
+        # seals credentials but cannot decrypt them (split custody). The worker
+        # holds the other half and drains this queue on its next cycle — the
+        # same path the manual button uses, so there is one implementation of
+        # "actually move the message", not two.
+        if (
+            assessment is not None
+            and assessment.tier is AlertTier.CRITICAL
+            and message_id is not None
+            and _can_remediate(ctx.capabilities)
+        ):
+            from envelock.billing.features import auto_remediation
+            from envelock.core.enums import MailboxClass as _MailboxClass
+            from envelock.models import Mailbox as _Mailbox
+            from envelock.models import Message as _Message
+            from envelock.platform import alerts as _alert_svc
+
+            # A MONITORED mailbox is observe-only: we read it and alert on it,
+            # and we never write to it. That is a promise about the customer's
+            # mailbox, not a capability question — a monitored mailbox can still
+            # be connected over a writable IMAP session, so `can_remediate`
+            # above says yes and is not the check that matters here.
+            mailbox_row = (
+                await session.get(_Mailbox, getattr(event, "mailbox_id", None))
+                if getattr(event, "mailbox_id", None)
+                else None
+            )
+            writable = (
+                mailbox_row is not None
+                and mailbox_row.mailbox_class == _MailboxClass.PROTECTED.value
+            )
+
+            if writable and auto_remediation(tenant_row):
+                stored = await session.get(_Message, message_id)
+                if stored is not None and stored.quarantined_at is None:
+                    stored.quarantine_requested_at = datetime.now(UTC)
+                    await _alert_svc.record_audit(
+                        session,
+                        tenant_id=tenant_id,
+                        actor_id=None,
+                        action=_alert_svc.AuditAction.MESSAGE_QUARANTINED,
+                        target_type="message",
+                        target_id=message_id,
+                        detail={
+                            "alert_id": str(alert_id),
+                            "automatic": True,
+                            "plan": "complete",
+                        },
+                    )
 
     if persist and ai_verdict is not None:
         # Every judge call leaves an audit row — flagged or not — so "why did the
