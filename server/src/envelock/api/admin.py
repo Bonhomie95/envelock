@@ -759,3 +759,58 @@ async def system_status(actor: PlatformReader) -> dict:
         "version": getattr(__import__("envelock"), "__version__", "unknown"),
         "checks": checks,
     }
+
+
+# ── Live operator notifications (Server-Sent Events) ─────────────────────────
+@router.get("/events")
+async def operator_events(operator: PlatformReader, request: Request):  # noqa: ANN201
+    """Push console-worthy events to a connected operator as they happen.
+
+    Replaces "load once and never again" — a signup that happened while someone
+    was looking at the tenant list stayed invisible until they reloaded — without
+    the alternative of polling, which spends a request per operator per interval
+    forever to discover that nothing changed.
+
+    SSE rather than a WebSocket: this is one-directional and infrequent, it is
+    plain HTTP so it needs no protocol upgrade through nginx or Cloudflare, and
+    the browser reconnects on its own when the connection drops.
+    """
+    import asyncio
+    import json
+
+    from starlette.responses import StreamingResponse
+
+    from envelock.platform import events
+
+    async def stream():  # noqa: ANN202
+        async with events.subscribe() as queue:
+            # Primes the stream: until the first byte arrives some proxies hold
+            # the response open without handing anything to the browser, and
+            # EventSource's `onopen` never fires.
+            yield ": connected\n\n"
+            while True:
+                if await request.is_disconnected():
+                    return
+                try:
+                    payload = await asyncio.wait_for(queue.get(), timeout=25)
+                except TimeoutError:
+                    # A comment line, not an event. Anything idle for 60s is
+                    # liable to be closed by nginx or Cloudflare, and this keeps
+                    # the connection honest without the client seeing anything.
+                    yield ": keepalive\n\n"
+                    continue
+                yield (
+                    f"event: {payload['event']}\n"
+                    f"data: {json.dumps(payload['data'])}\n\n"
+                )
+
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            # nginx honours this per-response, so the stream is not buffered
+            # into silence — and no nginx config change is needed to deploy it.
+            "X-Accel-Buffering": "no",
+        },
+    )

@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { ChevronRight, Search } from "lucide-react";
 import { ApiError, api, type TenantRow } from "../lib/api";
 import { Badge, Button } from "../components/ui";
+import { subscribeToEvents } from "../lib/events";
 
 const LIMIT = 100; // must match the server default (api/admin.tenants)
 
@@ -13,6 +14,31 @@ export default function Tenants() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
+  /* Bumped when the server says a tenant registered, which re-runs the fetch
+     below. Event-driven rather than on a timer: nothing is requested while
+     nothing is happening, and a signup appears in seconds instead of on the
+     operator's next reload. */
+  const [revision, setRevision] = useState(0);
+  const [justArrived, setJustArrived] = useState(false);
+
+  useEffect(() => {
+    const stop = subscribeToEvents((event) => {
+      // `stale` means the server dropped events for this connection, so the
+      // safe response is the same one: refetch everything.
+      if (event === "tenant.registered" || event === "stale") {
+        setRevision((n) => n + 1);
+        setJustArrived(true);
+      }
+    });
+    return stop;
+  }, []);
+
+  // Clear the "new" flash a few seconds after it appears.
+  useEffect(() => {
+    if (!justArrived) return;
+    const t = setTimeout(() => setJustArrived(false), 6000);
+    return () => clearTimeout(t);
+  }, [justArrived]);
 
   useEffect(() => {
     let live = true;
@@ -42,12 +68,23 @@ export default function Tenants() {
       live = false;
       clearTimeout(t);
     };
-  }, [query, offset]);
+  }, [query, offset, revision]);
 
   return (
     <div className="shell py-8">
       <div className="flex flex-wrap items-baseline justify-between gap-3">
         <h1 className="text-2xl font-bold tracking-tight">Tenants</h1>
+        {/* Confirms the list is live. Without it an operator cannot tell a
+            quiet platform from a broken connection — and would go back to
+            reloading, which is the habit this replaces. */}
+        {justArrived && (
+          <span
+            className="mono rounded-full bg-emerald-500/15 px-2.5 py-1 text-xs font-semibold text-emerald-500"
+            aria-live="polite"
+          >
+            NEW SIGNUP
+          </span>
+        )}
         <span className="fg-3 mono text-xs">
           {total > rows.length
             ? `${offset + 1}–${offset + rows.length} of ${total}`

@@ -512,6 +512,17 @@ async def register(req: RegisterRequest, request: Request, session: Session) -> 
             "this email is already registered — sign in instead.",
         ) from exc
 
+    # Tell any operator watching the console, now rather than on their next
+    # reload. After the commit, so nothing is announced that did not land, and
+    # on the success path only. `publish` cannot raise — a signup must never
+    # fail because the console's plumbing did.
+    from envelock.platform import events
+
+    events.publish(
+        "tenant.registered",
+        {"email_domain": email.rsplit("@", 1)[-1]},
+    )
+
     response = {
         "status": "registration_received",
         "mfa_required": True,
