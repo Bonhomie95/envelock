@@ -95,31 +95,39 @@ def test_member_login_requires_protection_pool(client: TestClient) -> None:
 
 
 def test_seat_cap_limits_active_logins(client: TestClient) -> None:
-    """Active non-owner logins can't exceed the number of protected mailboxes,
-    regardless of role."""
+    """Active non-owner logins are capped at the PLAN'S allowance (5 on the
+    trial), not at the number of mailboxes connected so far.
+
+    The old rule tied the cap to connected mailboxes, so a tenant on day one saw
+    "0/0 seats" and could invite nobody — exactly when a team gets set up. The
+    allowance is what was paid for (or trialled), so it is what may be spent."""
     h = _owner(client, "seatco.example")  # entitled (trial active), 0 protected
 
-    # No protected mailboxes yet → no seats.
-    blocked = client.post(
-        "/api/v1/members", json={"email": "a@seatco.example", "role": "member"}, headers=h
-    )
-    assert blocked.status_code == 402
-
-    _add_protected(client, h, "cfo@seatco.example")  # cap 1
-
-    # The owner spends the single seat on an admin (admins are exempt from the
-    # pool rule but still consume a seat).
-    admin = client.post(
+    # Day one, no mailboxes connected: the trial's seats are already spendable.
+    # Admins are exempt from the protected-mailbox pool rule but still take a seat.
+    first = client.post(
         "/api/v1/members", json={"email": "ops@seatco.example", "role": "admin"}, headers=h
     )
-    assert admin.status_code == 201
+    assert first.status_code == 201
 
     seats = client.get("/api/v1/members", headers=h).json()["seats"]
-    assert seats == {"used": 1, "cap": 1, "entitled": True, "protected_mailboxes": 1}
+    assert seats == {"used": 1, "cap": 5, "entitled": True, "protected_mailboxes": 0}
 
-    # Seat is full → even the valid pool member cfo@ is refused for lack of a seat.
+    # Fill the remaining four.
+    for i in range(4):
+        more = client.post(
+            "/api/v1/members",
+            json={"email": f"ops{i}@seatco.example", "role": "admin"},
+            headers=h,
+        )
+        assert more.status_code == 201, more.text
+
+    seats = client.get("/api/v1/members", headers=h).json()["seats"]
+    assert seats["used"] == 5 and seats["cap"] == 5
+
+    # The sixth needs a purchased seat, trial or not.
     full = client.post(
-        "/api/v1/members", json={"email": "cfo@seatco.example", "role": "member"}, headers=h
+        "/api/v1/members", json={"email": "sixth@seatco.example", "role": "admin"}, headers=h
     )
     assert full.status_code == 402
 

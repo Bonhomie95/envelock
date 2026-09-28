@@ -127,7 +127,7 @@ function CreateMember({
       {full && seats && (
         <p className="callout mb-3 px-3 py-2 text-xs leading-relaxed">
           {seats.entitled
-            ? `All ${seats.cap} team seats are in use. Add a protected mailbox to open another login.`
+            ? `All ${seats.cap} team seats on your plan are in use. Buy an extra seat in Billing to add another login.`
             : "Team logins need an active trial or a paid plan — Guard is owner-only."}
         </p>
       )}
@@ -302,7 +302,7 @@ export default function Team() {
         <p className="fg-3 max-w-sm text-xs leading-relaxed">
           {seats && !seats.entitled
             ? "Guard is owner-only. Start a trial or add billing to invite your team."
-            : "One login per protected mailbox. Add protected mailboxes on the dashboard to open more seats."}
+            : "Your plan includes these seats — the trial included. Extra seats beyond them are charged monthly and can be added in Billing."}
         </p>
       </div>
 

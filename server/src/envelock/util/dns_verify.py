@@ -22,6 +22,83 @@ logger = logging.getLogger("envelock.dnsverify")
 _TXT_PREFIX = "envelock-verify="
 _VERIFY_HOST = "verify.envelock.org"
 
+#: Queried directly rather than through whatever the host's /etc/resolv.conf
+#: points at. Three independent operators, so one being slow or wrong does not
+#: decide the answer.
+_PUBLIC_RESOLVERS = ("1.1.1.1", "8.8.8.8", "9.9.9.9")
+
+#: Per-resolver budget. The old single 8s lifetime meant one unreachable
+#: resolver cost 8s for TXT and 8s again for CNAME — 16s before we could say
+#: "not yet". Several short attempts beat one long one.
+_LOOKUP_TIMEOUT = 2.5
+
+
+def _authoritative_nameservers(domain: str) -> list[str]:
+    """IPs of the domain's own nameservers.
+
+    Asking them directly is the whole point: a recursive resolver that has
+    already been asked for `_envelock.<domain>` caches the NXDOMAIN for the
+    zone's negative TTL — often 5 to 60 minutes — so it keeps answering "not
+    there" long after the customer has added the record. The authoritative
+    servers have no such cache, so a record shows up the moment it is saved.
+    """
+    try:
+        import dns.resolver
+
+        reg = registrable_domain(domain) or domain
+        probe = dns.resolver.Resolver(configure=False)
+        probe.nameservers = list(_PUBLIC_RESOLVERS)
+        probe.lifetime = _LOOKUP_TIMEOUT
+        ips: list[str] = []
+        for ns in probe.resolve(reg, "NS"):
+            name = str(getattr(ns, "target", ns)).rstrip(".")
+            try:
+                ips.extend(str(a) for a in probe.resolve(name, "A"))
+            except Exception as exc:  # noqa: BLE001 — one unresolvable NS is not fatal
+                logger.debug("nameserver %s did not resolve: %s", name, exc)
+                continue
+            if len(ips) >= 3:  # three is plenty; don't walk a 10-NS delegation
+                break
+        return ips
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("could not find authoritative nameservers for %s: %s", domain, exc)
+        return []
+
+
+def _resolver_chain(host: str) -> list:
+    """Resolvers to try, in order: the zone's own nameservers (never stale),
+    then the public recursives, then whatever the host is configured with."""
+    import dns.resolver
+
+    chain = []
+    for ips in (_authoritative_nameservers(host), list(_PUBLIC_RESOLVERS)):
+        if not ips:
+            continue
+        r = dns.resolver.Resolver(configure=False)
+        r.nameservers = ips
+        r.lifetime = _LOOKUP_TIMEOUT
+        chain.append(r)
+    try:
+        system = dns.resolver.Resolver()  # reads /etc/resolv.conf
+        system.lifetime = _LOOKUP_TIMEOUT
+        chain.append(system)
+    except Exception as exc:  # noqa: BLE001 — a host with no resolv.conf still has the above
+        logger.debug("no system resolver available: %s", exc)
+    return chain
+
+
+def _rdata_values(answers, rdtype: str) -> list[str]:
+    out: list[str] = []
+    for rdata in answers:
+        if rdtype == "TXT":
+            # TXT rdata is one or more quoted chunks; join them.
+            out.append(b"".join(rdata.strings).decode("utf-8", "ignore"))
+        elif hasattr(rdata, "target"):
+            out.append(str(rdata.target).rstrip("."))
+        else:
+            out.append(str(rdata))
+    return out
+
 
 def txt_record_value(token: str) -> str:
     return f"{_TXT_PREFIX}{token}"
@@ -38,25 +115,7 @@ def cname_target(token: str) -> str:
 def _resolve(host: str, rdtype: str) -> list[str]:
     """Resolve a DNS record. Returns [] on any failure (NXDOMAIN, timeout, no
     resolver) rather than raising — an unverifiable domain is simply not verified."""
-    try:
-        import dns.resolver
-
-        resolver = dns.resolver.Resolver()
-        resolver.lifetime = 8.0
-        answers = resolver.resolve(host, rdtype)
-        out: list[str] = []
-        for rdata in answers:
-            if rdtype == "TXT":
-                # TXT rdata is one or more quoted chunks; join them.
-                out.append(b"".join(rdata.strings).decode("utf-8", "ignore"))
-            elif hasattr(rdata, "target"):
-                out.append(str(rdata.target).rstrip("."))
-            else:
-                out.append(str(rdata))
-        return out
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("dns resolve %s/%s failed: %s", host, rdtype, exc)
-        return []
+    return _resolve_status(host, rdtype)[1]
 
 
 def verify_txt(domain: str, token: str) -> bool:
@@ -85,31 +144,32 @@ def _resolve_status(host: str, rdtype: str) -> tuple[str, list[str]]:
     (timeout, no resolver, network down). Returns ('ok'|'absent'|'unknown', values).
 
     This distinction is the whole safety of re-verification: a transient DNS blip
-    must never be read as 'the customer deleted their record' and used to revoke."""
-    try:
-        import dns.resolver
+    must never be read as 'the customer deleted their record' and used to revoke.
 
-        resolver = dns.resolver.Resolver()
-        resolver.lifetime = 8.0
-        answers = resolver.resolve(host, rdtype)
-        out: list[str] = []
-        for rdata in answers:
-            if rdtype == "TXT":
-                out.append(b"".join(rdata.strings).decode("utf-8", "ignore"))
-            elif hasattr(rdata, "target"):
-                out.append(str(rdata.target).rstrip("."))
+    Walks `_resolver_chain`: the first resolver that returns records wins, so the
+    usual path is one fast authoritative answer. A definitive 'not there' is only
+    reported once a resolver has said so without any other resolver contradicting
+    it — a timeout never downgrades to 'absent'."""
+    conclusive = False
+    for resolver in _resolver_chain(host):
+        try:
+            answers = resolver.resolve(host, rdtype)
+        except Exception as exc:  # noqa: BLE001
+            name = type(exc).__name__
+            # NXDOMAIN (no such name) and NoAnswer (name exists, no such record)
+            # are authoritative "it's not there". Everything else — Timeout,
+            # NoNameservers, a missing dnspython — is inconclusive and must NOT
+            # trigger revocation, so keep trying the rest of the chain.
+            if name in {"NXDOMAIN", "NoAnswer"}:
+                conclusive = True
             else:
-                out.append(str(rdata))
-        return ("ok", out)
-    except Exception as exc:  # noqa: BLE001
-        name = type(exc).__name__
-        # NXDOMAIN (no such name) and NoAnswer (name exists, no such record) are
-        # authoritative "it's not there". Everything else — Timeout, NoNameservers,
-        # a missing dnspython — is inconclusive and must NOT trigger revocation.
-        if name in {"NXDOMAIN", "NoAnswer"}:
-            return ("absent", [])
-        logger.debug("dns resolve %s/%s inconclusive: %s", host, rdtype, exc)
-        return ("unknown", [])
+                logger.debug("dns %s/%s via %r inconclusive: %s", host, rdtype, resolver, exc)
+            continue
+        values = _rdata_values(answers, rdtype)
+        if values:
+            return ("ok", values)
+        conclusive = True
+    return ("absent", []) if conclusive else ("unknown", [])
 
 
 def verification_status(domain: str, token: str, *, method: str = "txt") -> str:

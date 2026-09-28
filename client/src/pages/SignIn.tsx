@@ -5,6 +5,8 @@ import {
   Check,
   Copy,
   Download,
+  Eye,
+  EyeOff,
   KeyRound,
   Loader2,
   Lock,
@@ -45,7 +47,12 @@ export default function SignIn() {
   const notice = (location.state as { notice?: string } | null)?.notice ?? null;
   // Where the user was headed when RequireAuth bounced them here.
   const from = (location.state as { from?: string } | null)?.from ?? null;
-  const [mode, setMode] = useState<"signin" | "signup">("signin");
+  /* "Get started free" has to land on the CREATE ACCOUNT form, not the sign-in
+     one — a new visitor who lands on a password prompt reads it as "you already
+     need an account" and leaves. /signup is the same component in signup mode. */
+  const [mode, setMode] = useState<"signin" | "signup">(
+    location.pathname === "/signup" ? "signup" : "signin",
+  );
   // A success-shaped message from this flow (e.g. "check your inbox") — not an
   // error, and distinct from the router-state `notice` above.
   const [flowNotice, setFlowNotice] = useState<string | null>(null);
@@ -67,6 +74,13 @@ export default function SignIn() {
     }
   });
   const [password, setPassword] = useState("");
+  /* A 16-character passphrase typed blind, twice-over on signup, is the most
+     common way someone locks themselves out of a brand-new account: the
+     mismatch only surfaces at the next sign-in, by which point they no longer
+     know which of the two they meant. Reveal + confirm catches it here. */
+  const [showPassword, setShowPassword] = useState(false);
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const passwordsMatch = mode !== "signup" || password === confirmPassword;
   const [domain, setDomain] = useState("");
   const [code, setCode] = useState("");
 
@@ -102,6 +116,10 @@ export default function SignIn() {
     // we create the account — not with a silent failure after registration.
     if (mode === "signup" && domain && !looksLikeDomain(domain)) {
       setError("Enter your company's domain, like yourcompany.com — not its name.");
+      return;
+    }
+    if (mode === "signup" && !passwordsMatch) {
+      setError("The two passphrases don't match.");
       return;
     }
     if (mode === "signup" && isConsumerEmail(email)) {
@@ -423,18 +441,33 @@ export default function SignIn() {
                 <label htmlFor="password" className="block text-sm font-semibold">
                   {mode === "signup" ? "Passphrase" : "Password"}
                 </label>
-                <input
-                  id="password"
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  autoComplete={
-                    mode === "signin" ? "current-password" : "new-password"
-                  }
-                  minLength={12}
-                  required
-                  className="field mt-2"
-                />
+                <div className="relative mt-2">
+                  <input
+                    id="password"
+                    type={showPassword ? "text" : "password"}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    autoComplete={
+                      mode === "signin" ? "current-password" : "new-password"
+                    }
+                    minLength={12}
+                    required
+                    className="field pr-11"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    aria-pressed={showPassword}
+                    className="fg-2 absolute inset-y-0 right-0 flex cursor-pointer items-center px-3 hover:text-[var(--fg)]"
+                  >
+                    {showPassword ? (
+                      <EyeOff size={16} aria-hidden />
+                    ) : (
+                      <Eye size={16} aria-hidden />
+                    )}
+                  </button>
+                </div>
                 {mode === "signup" &&
                   (() => {
                     const s = checkPassphrase(password);
@@ -473,6 +506,41 @@ export default function SignIn() {
                   })()}
               </div>
 
+              {mode === "signup" && (
+                <div>
+                  <label
+                    htmlFor="confirm-password"
+                    className="block text-sm font-semibold"
+                  >
+                    Confirm passphrase
+                  </label>
+                  <input
+                    id="confirm-password"
+                    type={showPassword ? "text" : "password"}
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    autoComplete="new-password"
+                    required
+                    className="field mt-2"
+                  />
+                  {/* Only once they've typed enough to mean it — flagging a
+                      mismatch on the first keystroke is noise, not help. */}
+                  {confirmPassword && !passwordsMatch && (
+                    <p className="mt-2 text-xs text-red-500" aria-live="polite">
+                      The two passphrases don't match.
+                    </p>
+                  )}
+                  {confirmPassword && passwordsMatch && (
+                    <p
+                      className="mt-2 flex items-center gap-1 text-xs text-emerald-500"
+                      aria-live="polite"
+                    >
+                      <Check size={12} aria-hidden /> Passphrases match
+                    </p>
+                  )}
+                </div>
+              )}
+
               <Button
                 type="submit"
                 variant="accent"
@@ -482,6 +550,8 @@ export default function SignIn() {
                   busy ||
                   (mode === "signup" &&
                     (!checkPassphrase(password).ok ||
+                      !passwordsMatch ||
+                      !confirmPassword ||
                       isLikelyDisposableEmail(email)))
                 }
               >
@@ -515,6 +585,7 @@ export default function SignIn() {
               <button
                 onClick={() => {
                   setMode(mode === "signin" ? "signup" : "signin");
+                  setConfirmPassword("");
                   setError(null);
                   setFlowNotice(null);
                   window.scrollTo({ top: 0, behavior: "smooth" });

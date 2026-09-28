@@ -395,7 +395,7 @@ export default function Landing() {
             </p>
 
             <div className="mt-10 flex flex-col gap-px sm:flex-row">
-              <Link to="/signin">
+              <Link to="/signup">
                 <Button variant="accent" size="lg" className="w-full sm:w-auto">
                   GET STARTED FREE
                   <ArrowRight size={14} aria-hidden />
@@ -632,7 +632,7 @@ export default function Landing() {
                     </li>
                   ))}
                 </ul>
-                <Link to="/signin" className="mt-8">
+                <Link to="/signup" className="mt-8">
                   <Button variant={p.variant} className="w-full">
                     {p.cta.toUpperCase()}
                   </Button>
@@ -661,7 +661,7 @@ export default function Landing() {
             </p>
           </div>
           <div className="col-span-12 mt-8 lg:col-span-4 lg:col-start-9 lg:mt-0 lg:justify-self-end">
-            <Link to="/signin">
+            <Link to="/signup">
               <Button variant="accent" size="lg" className="w-full sm:w-auto">
                 GET STARTED FREE
                 <ArrowRight size={14} aria-hidden />

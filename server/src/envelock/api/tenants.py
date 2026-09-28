@@ -1416,8 +1416,13 @@ async def remove_mailbox(mailbox_id: UUID, principal: AdminUser, session: Sessio
 # ── Team / membership (PRD §15.1) ────────────────────────────────────────────
 async def _seat_usage(session: AsyncSession, tenant: Tenant) -> dict:
     """Guard (free) is owner-only. On a trial or paid plan, team logins (everyone
-    except the owner) are capped at the number of protected mailboxes — one login
-    per protected seat."""
+    except the owner) are capped at the plan's mailbox allowance plus any extra
+    seats purchased — five on Essential, Complete and the trial.
+
+    Not the count of mailboxes actually connected: that showed a brand-new tenant
+    "0/0 team seats", i.e. "you may not invite anyone", before they had connected
+    their first mailbox — which is precisely when a team is being set up. The
+    allowance is what was paid for (or trialled), so it is what may be spent."""
     protected = (
         await session.execute(
             select(func.count())
@@ -1442,7 +1447,7 @@ async def _seat_usage(session: AsyncSession, tenant: Tenant) -> dict:
         )
     ).scalar_one()
     entitled = _mailbox_entitled(tenant)
-    cap = protected if entitled else 0
+    cap = _mailbox_capacity(tenant) if entitled else 0
     return {"used": team_used, "cap": cap, "entitled": entitled, "protected_mailboxes": protected}
 
 

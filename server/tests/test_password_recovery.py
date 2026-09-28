@@ -31,8 +31,15 @@ def relay(monkeypatch):
 
     sent: list[dict] = []
 
-    async def _send(*, to: str, subject: str, body: str) -> mail.MailResult:
-        sent.append({"to": to, "subject": subject, "body": body})
+    # `html_body` mirrors the real `send_mail`, which has always accepted it:
+    # a stub narrower than the thing it stands in for turns "this caller now
+    # sends HTML too" into a TypeError in the test rather than a passing test.
+    async def _send(
+        *, to: str, subject: str, body: str, html_body: str | None = None
+    ) -> mail.MailResult:
+        sent.append(
+            {"to": to, "subject": subject, "body": body, "html_body": html_body}
+        )
         return mail.MailResult(True, "sent")
 
     monkeypatch.setattr(mail, "is_configured", lambda: True)

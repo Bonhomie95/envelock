@@ -50,6 +50,13 @@ class Tenant(Base, UUIDMixin, TimestampMixin):
     billing_term: Mapped[str] = mapped_column(String(16), default="monthly")
     trial_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: Smallest "days left" reminder already emailed for the CURRENT trial or
+    #: billing period (7, 3, 2, 1 or 0). The milestone is stored rather than a
+    #: timestamp so a job that runs twice in a day, or catches up after an
+    #: outage, cannot send the same warning twice — the only thing that matters
+    #: is how close to the deadline we have already warned them. Reset to NULL
+    #: when a new period starts.
+    trial_reminder_days: Mapped[int | None] = mapped_column(Integer)
     payment_method_ok: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     #: Stripe Customer id, captured from the first completed Checkout. Lets us open

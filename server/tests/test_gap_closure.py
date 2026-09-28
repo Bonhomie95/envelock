@@ -140,6 +140,42 @@ def test_verification_status_never_revokes_on_a_transient_dns_failure(monkeypatc
     assert dns_verify.verification_status("acme.com", "tok") == "unknown"
 
 
+def test_resolver_chain_falls_through_and_never_calls_a_timeout_absent(monkeypatch) -> None:
+    """Domain verification asks the zone's own nameservers first, then public
+    recursives, then the system resolver — and keeps going past a failure.
+
+    Why it matters: a recursive resolver caches the NXDOMAIN for `_envelock.<domain>`
+    for the zone's negative TTL, so it keeps saying 'not there' for minutes after
+    the customer saves the record. The authoritative servers have no such cache.
+    And a resolver that merely timed out must never be read as 'the record is gone'."""
+    from envelock.util import dns_verify
+
+    class Boom:
+        """Stands in for an unreachable resolver."""
+
+        def resolve(self, host, rdtype):
+            raise TimeoutError("no answer")
+
+    class Answers:
+        def __init__(self, value):
+            self.value = value
+
+        def resolve(self, host, rdtype):
+            return [type("R", (), {"strings": [self.value.encode()]})()]
+
+    want = dns_verify.txt_record_value("tok").encode().decode()
+
+    # First resolver dead, second answers → 'ok', not a failure.
+    monkeypatch.setattr(dns_verify, "_resolver_chain", lambda host: [Boom(), Answers(want)])
+    assert dns_verify._resolve_status("_envelock.acme.com", "TXT") == ("ok", [want])
+    assert dns_verify.verify_txt("acme.com", "tok") is True
+
+    # Every resolver timed out → 'unknown'. Reporting 'absent' here would revoke
+    # a perfectly good domain the moment our own network wobbled.
+    monkeypatch.setattr(dns_verify, "_resolver_chain", lambda host: [Boom(), Boom()])
+    assert dns_verify._resolve_status("_envelock.acme.com", "TXT") == ("unknown", [])
+
+
 def test_unverified_domain_blocks_mailbox_add(client: TestClient, monkeypatch) -> None:
     monkeypatch.setenv("ENVELOCK_REQUIRE_DOMAIN_VERIFICATION", "true")
     from envelock.config import get_settings
@@ -490,6 +526,68 @@ async def test_scheduler_jobs_run(db) -> None:
     esc = await scheduler.escalation_job()
     ret = await scheduler.retention_job()
     assert "escalated" in esc and "purged" in ret
+
+
+@pytest.mark.asyncio
+async def test_trial_reminder_picks_the_closest_mark_and_never_repeats(
+    session, monkeypatch
+) -> None:
+    """7/3/2/1/0-day warnings: the mark sent is the CLOSEST one reached, and the
+    same mark never goes twice however often the job runs.
+
+    Both halves are failure modes a customer sees. Picking the furthest mark
+    tells someone with two days left that they have a week. Re-sending on every
+    scheduler tick is how a courtesy becomes a reason to filter us."""
+    from datetime import UTC, datetime, timedelta
+
+    from envelock.models import Tenant, User
+    from envelock.workers import scheduler
+
+    sent: list[str] = []
+
+    async def fake_send(*, to, subject, body, html_body=None):  # noqa: ANN001, ANN202
+        sent.append(subject)
+        return type("R", (), {"sent": True, "reason": "ok"})()
+
+    monkeypatch.setattr("envelock.notify.mail.is_configured", lambda: True)
+    monkeypatch.setattr("envelock.notify.mail.send_mail", fake_send)
+
+    tenant = Tenant(name="TrialCo", plan="complete")
+    tenant.trial_ends_at = datetime.now(UTC) + timedelta(days=2, hours=1)
+    tenant.payment_method_ok = False
+    session.add(tenant)
+    await session.flush()
+    session.add(
+        User(
+            tenant_id=tenant.id,
+            email="owner@trialco.example",
+            password_hash="x",  # noqa: S106 — not a credential, just a NOT NULL
+            is_admin=True,
+            status="active",
+        )
+    )
+    await session.commit()
+    tid = tenant.id
+
+    first = await scheduler.trial_reminder_job()
+    assert first["trial_reminders"] == 1
+    assert "2 days" in sent[0], sent  # the closest mark, not "7 days"
+
+    row = await session.get(Tenant, tid)
+    await session.refresh(row)
+    assert row.trial_reminder_days == 2
+
+    # Same day, job runs again (restart, second leader, ordinary tick) → silence.
+    again = await scheduler.trial_reminder_job()
+    assert again["trial_reminders"] == 0
+    assert len(sent) == 1
+
+    # A card is added: the end of the trial is no longer an event worth an email.
+    row.trial_reminder_days = None
+    row.payment_method_ok = True
+    await session.commit()
+    paid = await scheduler.trial_reminder_job()
+    assert paid["trial_reminders"] == 0
 
 
 # ── Plain-English, client-facing detection copy (no jargon, no numbers) ──────

@@ -110,12 +110,25 @@ export function DomainVerify({
     [domain, onVerified],
   );
 
-  // Auto-check every 10s while the record is loaded and still unverified. Stops
-  // as soon as it verifies (the interval is torn down when `record.verified`
-  // flips) or the component unmounts.
+  /* A bare "re-checks every 10s" gives no sign the page is alive — people press
+     Verify repeatedly because nothing appears to be happening. A visible
+     countdown that turns into "Checking DNS…" and restarts on a miss shows the
+     work, so waiting feels like progress rather than a hang. */
+  const POLL_SECONDS = 10;
+  const [countdown, setCountdown] = useState(POLL_SECONDS);
+  const [autoChecking, setAutoChecking] = useState(false);
+
   useEffect(() => {
     if (!record || record.verified) return;
-    const id = setInterval(() => void verify(true), 10_000);
+    const id = setInterval(() => {
+      setCountdown((n) => {
+        if (n > 1) return n - 1;
+        // Hit zero: run the silent check, then start the countdown again.
+        setAutoChecking(true);
+        void verify(true).finally(() => setAutoChecking(false));
+        return POLL_SECONDS;
+      });
+    }, 1000);
     return () => clearInterval(id);
   }, [record, verify]);
 
@@ -149,12 +162,16 @@ export function DomainVerify({
       <p className="font-semibold text-amber-600 dark:text-amber-400">
         Verify control of {domain}
       </p>
+      {/* "Add this DNS record" next to a TXT/CNAME switch read as "add both" —
+          people were creating two records and waiting for the second to matter. */}
       <p className="mt-1 opacity-80">
-        Add this DNS record at your registrar. We check automatically every few
-        seconds.
+        Add <strong>one</strong> of these records at your registrar — TXT{" "}
+        <em>or</em> CNAME, whichever your registrar makes easier. You do not need
+        both. We check automatically.
       </p>
 
-      <div className="mt-3 flex gap-2 text-xs">
+      <div className="mt-3 flex items-center gap-2 text-xs">
+        <span className="opacity-60">Choose one:</span>
         <button
           type="button"
           aria-pressed={method === "txt"}
@@ -201,8 +218,18 @@ export function DomainVerify({
             Back
           </Button>
         )}
-        <span className="ml-auto text-xs opacity-60" aria-live="polite">
-          {busy ? "Checking ..." : "Re-checks automatically every 10s"}
+        <span className="ml-auto text-xs opacity-70" aria-live="polite">
+          {busy || autoChecking ? (
+            <span className="inline-flex items-center gap-1.5">
+              <span
+                className="inline-block size-2 animate-pulse rounded-full bg-amber-500"
+                aria-hidden
+              />
+              Checking DNS…
+            </span>
+          ) : (
+            `Checking again in ${countdown}s`
+          )}
         </span>
       </div>
     </div>

@@ -484,6 +484,67 @@ const APP_NAV = [
   { to: "/docs", label: "Documentation", icon: BookOpen, adminOnly: false },
 ];
 
+/* Domain-control gate, applied to every feature route rather than just the
+   dashboard.
+
+   It used to live inside Dashboard alone, so Suppliers, Team and the Sandbox
+   were fully usable before the tenant had proved it controls its domain — the
+   gate was one page deep, not a gate. Anything blocked here sends you to
+   /dashboard, which renders the verification screen.
+
+   Billing and Profile are deliberately NOT gated: someone who cannot finish
+   verification still has to be able to manage their account and payment, and
+   locking them out of both is how a stuck user becomes a churned one.
+
+   This is presentation only. The server independently refuses mailbox
+   connection on an unverified domain (services/domains.require_verified_domain),
+   so a hand-crafted request gains nothing. */
+/* Picks the console rail or the marketing header for the routes that serve both
+   audiences (sandbox, docs, status, legal).
+
+   This has to be a COMPONENT, not `element={auth.signedIn ? <A/> : <M/>}`
+   inline in the route table. That ternary is evaluated while `App` renders, and
+   `App` does not re-render on sign-in — only the `Routes` subtree does — so the
+   layout picked on first page load was captured forever. Someone who landed
+   signed-out and then signed in kept getting the marketing header on these
+   pages: clicking "Sandbox" in the console rail visibly threw them out of the
+   console. As a component it re-renders with the route, so it reads `signedIn`
+   fresh every time. */
+function ConsoleOrMarketingLayout() {
+  return auth.signedIn ? <AppLayout /> : <MarketingLayout />;
+}
+
+function RequireVerifiedDomain() {
+  const { pathname } = useLocation();
+  const [state, setState] = useState<"checking" | "open" | "gated">("checking");
+
+  useEffect(() => {
+    let live = true;
+    api
+      .tenant()
+      .then((t) => {
+        if (!live) return;
+        const verified =
+          !t.primary_domain ||
+          t.domains.some(
+            (d) => d.registrable_domain === t.primary_domain && d.verified,
+          );
+        setState(verified ? "open" : "gated");
+      })
+      // Fail OPEN on an API blip: the server is the real enforcement point, and
+      // a transient 500 must not lock a verified customer out of their console.
+      .catch(() => live && setState("open"));
+    return () => {
+      live = false;
+    };
+  }, [pathname]);
+
+  if (state === "checking") return <RouteFallback />;
+  if (state === "gated" && pathname !== "/dashboard")
+    return <Navigate to="/dashboard" replace />;
+  return <Outlet />;
+}
+
 function AppLayout() {
   const navigate = useNavigate();
   const { pathname } = useLocation();
@@ -636,6 +697,10 @@ export default function App() {
           <Route element={<MarketingLayout />}>
             <Route path="/" element={<Landing />} />
             <Route path="/signin" element={<SignIn />} />
+            {/* Same component, opened on the CREATE ACCOUNT tab. Every
+                "get started" CTA points here so a new visitor is never shown a
+                password prompt for an account they don't have yet. */}
+            <Route path="/signup" element={<SignIn />} />
             <Route path="/reset-password" element={<ResetPassword />} />
             <Route path="/verify-email" element={<VerifyEmail />} />
           </Route>
@@ -643,7 +708,7 @@ export default function App() {
           {/* The sandbox and the docs are public, but a signed-in person reaching
               them from the console rail should not be thrown back out to the
               marketing chrome. Same URLs, chrome chosen by who is asking. */}
-          <Route element={auth.signedIn ? <AppLayout /> : <MarketingLayout />}>
+          <Route element={<ConsoleOrMarketingLayout />}>
             <Route path="/analyse" element={<LazyAnalyse />} />
             <Route path="/docs" element={<LazyDocs />} />
             <Route path="/status" element={<LazyStatus />} />
@@ -654,30 +719,32 @@ export default function App() {
             <Route path="/subprocessors" element={<LazyLegal />} />
           </Route>
           <Route element={<AppLayout />}>
-            <Route
-              path="/dashboard"
-              element={
-                <RequireAuth>
-                  <LazyDashboard />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/suppliers"
-              element={
-                <RequireAuth>
-                  <LazySuppliers />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/team"
-              element={
-                <RequireAuth>
-                  <LazyTeam />
-                </RequireAuth>
-              }
-            />
+            <Route element={<RequireVerifiedDomain />}>
+              <Route
+                path="/dashboard"
+                element={
+                  <RequireAuth>
+                    <LazyDashboard />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/suppliers"
+                element={
+                  <RequireAuth>
+                    <LazySuppliers />
+                  </RequireAuth>
+                }
+              />
+              <Route
+                path="/team"
+                element={
+                  <RequireAuth>
+                    <LazyTeam />
+                  </RequireAuth>
+                }
+              />
+            </Route>
             <Route
               path="/billing"
               element={

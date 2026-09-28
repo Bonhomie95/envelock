@@ -701,6 +701,7 @@ async def _send_password_reset_email(to: str, link: str):  # noqa: ANN202 — Ma
     alert and hands back a truthful result.
     """
     from envelock.notify.mail import send_mail
+    from envelock.notify.templates import branded_email
 
     result = await send_mail(
         to=to,
@@ -710,6 +711,20 @@ async def _send_password_reset_email(to: str, link: str):  # noqa: ANN202 — Ma
             f"Reset it here (valid for 30 minutes):\n{link}\n\n"
             "The link works once. If you didn't ask for this you can ignore this "
             "email — your password has not changed."
+        ),
+        html_body=branded_email(
+            heading="Reset your password",
+            preheader="A link to set a new Envelock password. Valid for 30 minutes.",
+            paragraphs=[
+                "We received a request to reset your Envelock password.",
+                "This link is valid for 30 minutes and works once.",
+            ],
+            cta_label="Reset my password",
+            cta_url=link,
+            footnote=(
+                "If you didn't ask for this, you can ignore this email — your "
+                "password has not changed."
+            ),
         ),
     )
     # The link carries a live 30-minute account-takeover token, so it may only be
@@ -745,6 +760,8 @@ async def _send_verification_email(user: User) -> str | None:
         ttl=VERIFY_EMAIL_TTL,
     )
     link = f"{settings.web_base_url.rstrip('/')}/verify-email?token={token}"
+    from envelock.notify.templates import branded_email
+
     result = await send_mail(
         to=user.email,
         subject="Confirm your email for Envelock",
@@ -752,6 +769,20 @@ async def _send_verification_email(user: User) -> str | None:
             "Confirm this address to activate your Envelock workspace.\n\n"
             f"Verify here (valid for 24 hours):\n{link}\n\n"
             "If you didn't create an Envelock account, you can ignore this email."
+        ),
+        html_body=branded_email(
+            heading="Confirm your email address",
+            preheader="One click to activate your Envelock workspace.",
+            paragraphs=[
+                "Confirm this address to activate your Envelock workspace and start "
+                "your trial.",
+                "This link is valid for 24 hours.",
+            ],
+            cta_label="Confirm my email",
+            cta_url=link,
+            footnote=(
+                "If you didn't create an Envelock account, you can ignore this email."
+            ),
         ),
     )
     if settings.env == "development":

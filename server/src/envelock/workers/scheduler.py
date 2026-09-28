@@ -202,6 +202,135 @@ async def domain_reverify_job() -> dict:
         return await revalidate_verified_domains(session)
 
 
+#: Days-remaining marks we warn on. Descending: the job sends the SMALLEST
+#: milestone the tenant has reached but not yet been told about, so a server that
+#: was down for the 7- and 3-day marks sends "2 days left" once on the way back
+#: up — not a burst of three stale warnings.
+TRIAL_REMINDER_DAYS = (7, 3, 2, 1, 0)
+
+
+async def trial_reminder_job() -> dict:
+    """Warn a tenant before their trial ends, at 7, 3, 2 and 1 days and on the day.
+
+    Without this the first a customer knows about the end of their trial is the
+    day their protection drops to Guard — which reads as the product breaking,
+    not as a bill they chose not to pay. Every one of these is a paid-conversion
+    prompt and a courtesy at the same time.
+
+    Idempotent by construction: `trial_reminder_days` records the smallest mark
+    already sent, so re-running the job — on the same tick, after a restart, or
+    twice in a day — cannot send the same warning again.
+    """
+    from datetime import UTC, datetime
+
+    from sqlalchemy import select
+
+    from envelock.models import Tenant, User
+    from envelock.notify.mail import is_configured, send_mail
+    from envelock.notify.templates import branded_email
+
+    if not is_configured():
+        return {"trial_reminders": 0, "skipped": "no smtp relay"}
+
+    now = datetime.now(UTC)
+    sent = 0
+
+    async with get_sessionmaker()() as session:
+        tenants = (
+            (
+                await session.execute(
+                    select(Tenant).where(
+                        Tenant.is_active.is_(True),
+                        Tenant.trial_ends_at.is_not(None),
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for tenant in tenants:
+            ends = tenant.trial_ends_at
+            if ends is None:
+                continue
+            if ends.tzinfo is None:
+                ends = ends.replace(tzinfo=UTC)
+            # Already paying: the trial's end is a non-event, so say nothing.
+            if tenant.payment_method_ok:
+                continue
+
+            days_left = (ends - now).days
+            if days_left < 0:
+                continue  # already lapsed; the drop-to-Guard mail is a separate thing
+            # Ascending, so this is the SMALLEST mark the tenant has reached —
+            # 2 days left picks the "2 days" warning, not the "7 days" one it also
+            # technically satisfies.
+            due = next((d for d in sorted(TRIAL_REMINDER_DAYS) if days_left <= d), None)
+            if due is None:
+                continue  # more than a week out
+            already = tenant.trial_reminder_days
+            if already is not None and already <= due:
+                continue  # this mark, or a closer one, has already gone
+
+            recipients = (
+                (
+                    await session.execute(
+                        select(User.email).where(
+                            User.tenant_id == tenant.id,
+                            User.is_admin.is_(True),
+                            User.status == "active",
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+            tenant.trial_reminder_days = due
+            if not recipients:
+                continue
+
+            when = (
+                "today"
+                if due == 0
+                else "tomorrow"
+                if due == 1
+                else f"in {days_left if days_left > 0 else due} days"
+            )
+            subject = f"Your Envelock trial ends {when}"
+            billing_url = f"{get_settings().web_base_url.rstrip('/')}/billing"
+            text = (
+                f"Your Envelock trial ends {when}.\n\n"
+                "Add a payment method to keep your mailboxes protected:\n"
+                f"{billing_url}\n\n"
+                "If you don't, your workspace drops to Guard (free) — domain and "
+                "brand monitoring continue, mailbox protection stops. You are "
+                "never locked out, and you can add a card at any time."
+            )
+            html_body = branded_email(
+                heading=f"Your trial ends {when}",
+                preheader=f"Add a payment method to keep mailbox protection after {when}.",
+                paragraphs=[
+                    f"Your Envelock trial ends {when}.",
+                    "Add a payment method to keep your mailboxes protected.",
+                ],
+                cta_label="Add a payment method",
+                cta_url=billing_url,
+                footnote=(
+                    "If you don't, your workspace drops to Guard (free) — domain and "
+                    "brand monitoring continue, mailbox protection stops. You are never "
+                    "locked out, and you can add a card at any time."
+                ),
+            )
+            for address in recipients:
+                result = await send_mail(
+                    to=address, subject=subject, body=text, html_body=html_body
+                )
+                if result.sent:
+                    sent += 1
+        await session.commit()
+
+    return {"trial_reminders": sent}
+
+
 async def monthly_digest_job() -> dict:
     """Send each workspace its month, to the admins who run it.
 
@@ -447,6 +576,16 @@ def start(stop: asyncio.Event) -> list[asyncio.Task]:
         asyncio.create_task(
             _run_forever(
                 "monthly_digest", monthly_digest_job,
+                interval=settings.digest_cycle_seconds, stop=stop,
+            )
+        ),
+        # Trial-expiry warnings at 7/3/2/1/0 days. Shares the digest's cadence:
+        # both are "scan tenants, decide per row, send rarely", and the milestone
+        # column makes a duplicate run a no-op, so the interval only has to be
+        # comfortably shorter than a day.
+        asyncio.create_task(
+            _run_forever(
+                "trial_reminder", trial_reminder_job,
                 interval=settings.digest_cycle_seconds, stop=stop,
             )
         ),
