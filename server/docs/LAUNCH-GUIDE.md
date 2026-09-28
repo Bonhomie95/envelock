@@ -329,8 +329,8 @@ Until then: at most 100 test users you add by hand, and their connection
 expires every 7 days.
 
 1. Google Cloud console → **APIs & Services → OAuth consent screen**: app
-   name, logo, support email, links to `https://app.envelock.org/privacy` and
-   `/terms`, authorised domain `envelock.org`.
+   name, logo, support email, links to `https://envelock.org/privacy` and
+   `https://envelock.org/tos`, authorised domain `envelock.org`.
 2. **Credentials:** redirect URI exactly
    `https://api.envelock.org/api/v1/connect/oauth/google/callback`.
 3. **Publish app → Submit for verification.** Paste the scope justifications
@@ -904,7 +904,9 @@ information" (the mailbox address) and "Website activity" (webmail open /
 message opened); used only to provide the service; not sold; not transferred
 for unrelated purposes; not used for creditworthiness or lending.
 
-**Privacy policy URL:** `https://app.envelock.org/privacy`
+**Privacy policy URL:** `https://envelock.org/privacy`
+
+**Terms of service URL:** `https://envelock.org/tos`
 
 ---
 

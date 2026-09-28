@@ -14,7 +14,7 @@ import {
   Sparkles,
   UserCheck,
 } from "lucide-react";
-import { api, type NetworkStats, type ScanResult } from "../lib/api";
+import { api, auth, type NetworkStats, type ScanResult } from "../lib/api";
 import { Button, SectionHead, TierChip, cn } from "../components/primitives";
 
 /* Deliberately plain. Anything technical belongs in /docs — a landing page
@@ -371,6 +371,12 @@ const PLANS = [
 ];
 
 export default function Landing() {
+  /* Someone already signed in who presses "Get started free" wants their
+     dashboard, not a sign-up form telling them to create the account they are
+     currently using. Read inside the component, not at module scope, so it is
+     re-evaluated on every visit to the page rather than frozen at first load. */
+  const start = auth.signedIn ? "/dashboard" : "/signup";
+  const startLabel = auth.signedIn ? "GO TO DASHBOARD" : "GET STARTED FREE";
   return (
     <main>
       {/* Hero */}
@@ -395,9 +401,9 @@ export default function Landing() {
             </p>
 
             <div className="mt-10 flex flex-col gap-px sm:flex-row">
-              <Link to="/signup">
+              <Link to={start}>
                 <Button variant="accent" size="lg" className="w-full sm:w-auto">
-                  GET STARTED FREE
+                  {startLabel}
                   <ArrowRight size={14} aria-hidden />
                 </Button>
               </Link>
@@ -632,7 +638,7 @@ export default function Landing() {
                     </li>
                   ))}
                 </ul>
-                <Link to="/signup" className="mt-8">
+                <Link to={start} className="mt-8">
                   <Button variant={p.variant} className="w-full">
                     {p.cta.toUpperCase()}
                   </Button>
@@ -661,9 +667,9 @@ export default function Landing() {
             </p>
           </div>
           <div className="col-span-12 mt-8 lg:col-span-4 lg:col-start-9 lg:mt-0 lg:justify-self-end">
-            <Link to="/signup">
+            <Link to={start}>
               <Button variant="accent" size="lg" className="w-full sm:w-auto">
-                GET STARTED FREE
+                {startLabel}
                 <ArrowRight size={14} aria-hidden />
               </Button>
             </Link>

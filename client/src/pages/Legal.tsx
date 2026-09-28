@@ -508,11 +508,21 @@ const PAGES: Record<
   },
 };
 
+/* Alternative spellings that must resolve to the same page.
+   /tos is the URL given to Google and Microsoft during OAuth verification and
+   to app-store reviewers, because it is the one people expect; /terms is what
+   the site's own navigation uses. Aliases live here rather than in PAGES so
+   they do not each add a duplicate entry to the sidebar. */
+const ALIASES: Record<string, string> = { "/tos": "/terms" };
+
 const NAV = Object.entries(PAGES).map(([to, p]) => ({ to, label: p.title }));
 
 export default function Legal() {
   const { pathname } = useLocation();
-  const page = useMemo(() => PAGES[pathname] ?? PAGES["/terms"], [pathname]);
+  const page = useMemo(
+    () => PAGES[ALIASES[pathname] ?? pathname] ?? PAGES["/terms"],
+    [pathname],
+  );
   const Body = page.body;
 
   return (

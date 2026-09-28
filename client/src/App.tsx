@@ -717,6 +717,8 @@ export default function App() {
             <Route path="/contact" element={<LazyContact />} />
             {/* One component, four routes — it switches on the pathname. */}
             <Route path="/terms" element={<LazyLegal />} />
+            {/* Given to Google/Microsoft verification and app-store reviewers. */}
+            <Route path="/tos" element={<LazyLegal />} />
             <Route path="/privacy" element={<LazyLegal />} />
             <Route path="/dpa" element={<LazyLegal />} />
             <Route path="/subprocessors" element={<LazyLegal />} />
