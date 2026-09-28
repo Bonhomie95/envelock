@@ -17,6 +17,7 @@ vapid*.json
 czds-*.json
 /docs/
 .claude
+/brag-output
 
 # ── Python / server ──────────────────────────────────────────────────────────
 __pycache__/
