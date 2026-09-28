@@ -286,6 +286,31 @@ export default function Billing() {
             : "Add a payment method to keep full protection when your trial ends. You can change or cancel anytime — monthly, no penalty."}
         </p>
 
+        {/* What the current plan does NOT include, stated on the page where it
+            can be bought. Shown only on a plan that is missing something: a
+            Complete customer being told what they already have is noise, and a
+            Guard/lapsed tenant has a bigger message above this one. */}
+        {tenant?.features && !tenant.features.identity_detections && hasSub && (
+          <div className="panel mt-6 p-4">
+            <p className="text-sm font-semibold">Complete adds</p>
+            <ul className="fg-2 mt-2 space-y-1.5 text-xs leading-relaxed">
+              <li>
+                Unusual sign-in alerts and silent access detection — the signals
+                that show a mailbox has been broken into, not just written to.
+              </li>
+              <li>The AI analyst on phishing links, as well as payment email.</li>
+              <li>
+                Dangerous mail removed automatically, instead of you pressing
+                quarantine.
+              </li>
+            </ul>
+            <p className="fg-3 mt-3 text-xs">
+              Two of these need the Envelock sensor installed on the device —
+              your plan alone does not turn them on.
+            </p>
+          </div>
+        )}
+
         {/* Already have a card → self-service portal (update card, invoices, cancel). */}
         {tenant?.trial.payment_method_ok && (
           <div className="panel mt-6 flex flex-wrap items-center gap-3 p-4">

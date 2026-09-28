@@ -512,6 +512,48 @@ starts off; turn it on per provider once you've seen it come out right:
 4. If anything is off, set the line back to `false`, restart the worker, and
    send me the email — nothing else changes.
 
+## 19B. 👤 Forwarding connections (Tier 4)
+
+**Skip this unless you need it.** Forwarding is the fallback for a customer
+whose provider you cannot connect to directly — no Microsoft/Google OAuth, and
+IMAP refused or blocked by their IT. It is the weakest tier: the copy arrives
+*after* delivery, so it can alert but never pull a message back. The dashboard
+says so on the mailbox, and the pricing page says so in the table.
+
+The code is complete and tested. What is missing is deployment, and it is the
+one part of Envelock that needs a port other than 80/443.
+
+**What has to be true, all four:**
+
+| | |
+|---|---|
+| **1. An MX record** | `in.envelock.org  MX  10  <your server>`. Without it no mail can reach the listener at all. |
+| **2. Port 25 reachable** | `sudo ufw allow 25/tcp`, **and** open it at your provider. The listener binds **2525**, so also redirect: `sudo iptables -t nat -A PREROUTING -p tcp --dport 25 -j REDIRECT --to-port 2525` (persist it with `iptables-persistent`). |
+| **3. `ENVELOCK_INGEST_SMTP_IN_APP=true`** | Starts the listener inside the API process. |
+| **4. `ENVELOCK_INGEST_ALLOWED_IPS=`** | Your customers' mail providers' egress ranges, comma-separated. **Production refuses to boot with the listener on and this empty** — and that refusal is correct: the per-tenant token in the address proves *which* tenant a copy is for, not that the sender is their real gateway. Anyone who learns a token could otherwise inject mail and fabricate alerts. |
+
+```bash
+sudo ufw allow 25/tcp && grep -E 'INGEST_SMTP_IN_APP|INGEST_ALLOWED_IPS' ~/apps/server/.env
+```
+
+Then restart and confirm it is listening:
+
+```bash
+sudo systemctl restart envelock-api && sleep 3 && sudo ss -lntp | grep -E ':(25|2525)'
+```
+
+**On AWS specifically:** EC2 throttles inbound port 25 and blocks outbound by
+default, and lifting it needs a support request. On IONOS this is just the
+firewall. If you are testing on EC2, use the **HTTP ingest** (`POST
+/api/v1/ingest`) instead — it works over 443 today and exercises the same
+pipeline.
+
+The address each tenant forwards to is `t-<token>@in.envelock.org`, shown in
+the connect flow along with the rule to create. Tell customers to **forward a
+copy, not redirect** — the original must still be delivered.
+
+---
+
 ## 20. 👤 Xero and QuickBooks apps
 
 **Why:** customers connect their books once and Envelock reads every supplier,

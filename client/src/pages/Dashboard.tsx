@@ -890,10 +890,15 @@ function MailboxRow({
   mailbox: m,
   onChanged,
   onRemove,
+  planIncludesIdentity = true,
 }: {
   mailbox: MailboxRecord;
   onChanged: () => Promise<void>;
   onRemove: (id: string) => void | Promise<void>;
+  /** False on Essential, where Channel 2 — sign-in anomalies, silent access,
+   *  mailbox tampering — is not included. Defaults true so an older server that
+   *  sends no `features` block behaves exactly as before. */
+  planIncludesIdentity?: boolean;
 }) {
   const connected = m.sources.some((s) => MAIL_SOURCES.has(s));
   const isImap = m.sources.some((s) => IMAP_SOURCES.has(s));
@@ -1091,6 +1096,24 @@ function MailboxRow({
           {m.inactive_detections.length}{" "}
           {m.inactive_detections.length === 1 ? "check isn't" : "checks aren't"}{" "}
           possible over this kind of connection.
+        </p>
+      )}
+
+      {/* A separate line from the one above, deliberately. "Your connection
+          can't do this" and "you haven't bought this" are different facts, and
+          a customer who is told the first when the second is true goes looking
+          for a technical fault that does not exist. */}
+      {connected && !planIncludesIdentity && (
+        <p className="fg-3 mt-2 text-xs">
+          Break-in detection — unusual sign-ins, silent access, mailbox
+          tampering — is{" "}
+          <Link
+            to="/billing"
+            className="accent underline underline-offset-4"
+          >
+            included in Complete
+          </Link>
+          .
         </p>
       )}
 
@@ -3667,6 +3690,9 @@ export default function Dashboard() {
                         mailbox={m}
                         onChanged={load}
                         onRemove={removeMailbox}
+                        planIncludesIdentity={
+                          tenant?.features?.identity_detections ?? true
+                        }
                       />
                     ))}
                 </ul>

@@ -397,6 +397,16 @@ export interface TenantInfo {
   plan: string;
   subscribed_plan?: string;
   trial_ended?: boolean;
+  /** What this plan includes. Sent by the server so the dashboard can say
+   *  "included in Complete" where a control would otherwise silently do
+   *  nothing — which is how someone concludes the product is broken rather
+   *  than that they are on a smaller plan. Optional: an older server omits it. */
+  features?: {
+    ai_on_links: boolean;
+    auto_remediation: boolean;
+    /** Channel 2 — unusual sign-in, silent access, mailbox tampering. */
+    identity_detections: boolean;
+  };
   billing?: {
     /** A live Stripe subscription — plan and seat changes update it in place. */
     subscription: boolean;
