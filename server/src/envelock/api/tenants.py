@@ -1635,6 +1635,30 @@ async def create_member(req: CreateMemberRequest, principal: AdminUser, session:
         detail={"email": email, "role": req.role},
     )
     await session.commit()
+    # A new login on the company's workspace is a change to who can see the
+    # company's mail. The admins are told because it is their platform; the
+    # person is NOT emailed the temporary password — it is handed over in
+    # person or on a trusted channel, which is the point of it being temporary.
+    from envelock.notify.account import app_url, notify_admins
+
+    await notify_admins(
+        session,
+        tenant.id,
+        subject=f"A login was created for {email}",
+        heading="Someone was added to your workspace",
+        preheader=f"{email} can now sign in as {req.role}.",
+        paragraphs=[
+            f"A login was created for {email} with the role {req.role}.",
+            "If you did not expect this, remove it from Team & access and change "
+            "your own password.",
+        ],
+        text=(
+            f"A login was created for {email} with the role {req.role}.\n\n"
+            f"Review your team:\n{app_url('/team')}"
+        ),
+        cta_label="Review my team",
+        cta_url=app_url("/team"),
+    )
     return {
         "id": str(user.id),
         "email": user.email,
@@ -1733,6 +1757,27 @@ async def reject_member(user_id: UUID, principal: AdminUser, session: Session) -
         detail={"email": email},
     )
     await session.commit()
+    from envelock.notify.account import app_url, notify_admins
+
+    await notify_admins(
+        session,
+        principal.tenant_id,
+        subject=f"{email} was removed from your workspace",
+        heading="Someone was removed from your workspace",
+        preheader=f"{email} can no longer sign in.",
+        paragraphs=[
+            f"The login for {email} was removed. They can no longer sign in or "
+            "see anything in your workspace.",
+            "If you did not expect this, change your own password immediately — "
+            "removing people is something only an owner or admin can do.",
+        ],
+        text=(
+            f"The login for {email} was removed.\n\n"
+            f"Review your team:\n{app_url('/team')}"
+        ),
+        cta_label="Review my team",
+        cta_url=app_url("/team"),
+    )
     return {"removed": True, "email": email}
 
 

@@ -127,6 +127,12 @@ class User(Base, UUIDMixin, TimestampMixin):
     #: SHA-256 hashes of single-use recovery codes; the codes themselves are
     #: shown exactly once at enrolment and never stored.
     recovery_hashes: Mapped[list[str]] = mapped_column(StringList, default=list)
+    #: Fingerprints of the devices this login has been used from, so a sign-in
+    #: from a new one can be reported. Browser family + OS family, hashed — NOT
+    #: the raw user-agent, which is a tracking identifier we have no reason to
+    #: keep, and not the IP, which changes constantly enough to make the alert
+    #: meaningless. Capped and oldest-first, so it cannot grow unbounded.
+    known_devices: Mapped[list[str]] = mapped_column(StringList, default=list)
     #: PRD §8.2 — alerts must reach somewhere the attacker does not control.
     out_of_band_email: Mapped[str | None] = mapped_column(String(320))
     phone: Mapped[str | None] = mapped_column(String(32))

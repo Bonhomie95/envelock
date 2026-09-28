@@ -90,6 +90,48 @@ async def revalidate_verified_domains(session: AsyncSession) -> dict:
         )
     if revoked:
         await session.commit()
+        # Tell them. A revoked domain silently blocks connecting any mailbox on
+        # it, and the cause — a DNS record that was deleted, very often by an
+        # unrelated change at the registrar — is invisible from inside the app.
+        # Without this the customer's next experience of us is a feature that
+        # stopped working for no stated reason.
+        from envelock.notify.account import app_url, notify_admins
+
+        for row in rows:
+            if row.registrable_domain not in revoked:
+                continue
+            await notify_admins(
+                session,
+                row.tenant_id,
+                subject=f"Action needed: {row.registrable_domain} is no longer verified",
+                heading="Your domain is no longer verified",
+                preheader=(
+                    f"The DNS record proving you control {row.registrable_domain} "
+                    "has gone."
+                ),
+                paragraphs=[
+                    f"The DNS record proving you control {row.registrable_domain} "
+                    "is no longer there, so we have stopped treating the domain as "
+                    "verified.",
+                    "Existing protection continues. You cannot connect any NEW "
+                    "mailbox on this domain until it is verified again.",
+                ],
+                text=(
+                    f"The DNS record proving you control {row.registrable_domain} "
+                    "is no longer there, so we have stopped treating the domain as "
+                    "verified.\n\n"
+                    "Existing protection continues. You cannot connect any new "
+                    "mailbox on this domain until it is verified again.\n\n"
+                    f"Put the record back:\n{app_url('/dashboard')}"
+                ),
+                cta_label="Verify my domain again",
+                cta_url=app_url("/dashboard"),
+                footnote=(
+                    "If you did not remove it, check whether anything else changed "
+                    "at your DNS provider recently — this is usually an unrelated "
+                    "edit that took the record with it."
+                ),
+            )
     return {"revoked": revoked}
 
 

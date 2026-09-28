@@ -110,6 +110,10 @@ const NAV = [
   { to: "/#pricing", label: "Pricing", end: false },
   { to: "/docs", label: "Documentation", end: false },
   { to: "/analyse", label: "Sandbox", end: false },
+  // In the top nav, not only the footer: someone with a billing problem or a
+  // bug to report should not have to scroll to the bottom of the page to find
+  // out how to reach us.
+  { to: "/contact", label: "Contact", end: false },
 ];
 
 /** Whether a main-nav item is the page you are on. NavLink compares only the

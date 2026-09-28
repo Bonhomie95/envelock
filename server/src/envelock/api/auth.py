@@ -11,6 +11,7 @@ recovery-code hashes are durable.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import secrets
 import time
@@ -587,6 +588,9 @@ async def login(req: LoginRequest, request: Request, session: Session) -> dict:
             "Use 'resend verification' if it expired.",
         )
 
+    await _note_sign_in_device(user, request)
+    await session.commit()
+
     return {
         "mfa_setup_required": not user.mfa_enabled,
         "mfa_required": user.mfa_enabled,
@@ -780,6 +784,122 @@ async def _send_password_reset_email(to: str, link: str):  # noqa: ANN202 — Ma
     else:
         logger.info("password reset issued for %s (%s)", to, result.reason)
     return result
+
+
+#: How many device fingerprints to remember per login. Enough to cover a work
+#: laptop, a phone, a home machine and a browser someone tries once, without
+#: letting the list grow forever on a shared account.
+_KNOWN_DEVICE_LIMIT = 10
+
+
+def _device_fingerprint(user_agent: str | None) -> str | None:
+    """A stable hash of browser family + OS family, or None if we cannot tell.
+
+    Deliberately coarse. The raw user-agent changes on every browser update, so
+    fingerprinting it would email the customer every few weeks and train them to
+    ignore the one that matters. The IP is worse — it changes on every DHCP
+    lease. Family-level is what a person means by "a new device".
+
+    Hashed because the value is stored: we have no reason to keep a tracking
+    identifier, only to recognise one we have seen before.
+    """
+    if not user_agent:
+        return None
+    try:
+        from user_agents import parse
+
+        ua = parse(user_agent)
+        parts = f"{ua.browser.family}|{ua.os.family}|{ua.is_mobile}"
+    except Exception:  # noqa: BLE001 — an unparseable UA is not a login failure
+        return None
+    # An unrecognised OS means we cannot describe it: the notice says "Chrome on
+    # macOS", and "curl on Other" is gibberish to the person reading it. Better
+    # to say nothing than to raise a security alert nobody can act on — a false
+    # one is worse than a missing one, because it is the alert people learn to
+    # dismiss.
+    if ua.os.family == "Other":
+        return None
+    return hashlib.sha256(parts.encode()).hexdigest()[:32]
+
+
+async def _note_sign_in_device(user: User, request: Request) -> None:
+    """Record the device this sign-in came from, and say so if it is new.
+
+    Skipped for the very first sign-in on an account: the person is standing
+    there having just created it, and "we noticed a new device" as the opening
+    message reads as a fault rather than care.
+
+    Never raises — the sign-in has already succeeded.
+    """
+    try:
+        fingerprint = _device_fingerprint(request.headers.get("user-agent"))
+        if fingerprint is None:
+            return
+        known = list(user.known_devices or [])
+        if fingerprint in known:
+            return
+        first_ever = not known
+        user.known_devices = (known + [fingerprint])[-_KNOWN_DEVICE_LIMIT:]
+        if first_ever:
+            return
+        from user_agents import parse
+
+        ua = parse(request.headers.get("user-agent") or "")
+        described = f"{ua.browser.family} on {ua.os.family}"
+        await _notify_security_change(
+            user,
+            heading="A new device signed in",
+            what=(
+                f"Your Envelock account was just signed into from {described}, "
+                "which we have not seen before."
+            ),
+            reassure=(
+                "If that was you — a new laptop, a reinstalled browser — there "
+                "is nothing to do."
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        logger.warning("device notice for %s failed: %s", user.email, exc)
+
+
+async def _notify_security_change(
+    user: User, *, heading: str, what: str, reassure: str
+) -> None:
+    """Tell the account holder that a security setting on their login changed.
+
+    These matter most when the recipient did NOT do it: a password changed, or
+    two-factor switched off, is exactly what account takeover looks like from
+    the victim's side, and the window in which they can still act is short.
+
+    Goes to the address on the account, not to the tenant's admins — it is about
+    that login. Never raises: the change has already been committed, and a dead
+    mail relay must not turn it into a 500 that invites the caller to retry.
+    """
+    from envelock.config import get_settings
+    from envelock.notify.mail import send_mail
+    from envelock.notify.templates import branded_email
+
+    settings = get_settings()
+    url = f"{settings.web_base_url.rstrip('/')}/signin"
+    try:
+        await send_mail(
+            to=user.email,
+            subject=f"Envelock security alert: {heading.lower()}",
+            body=f"{what}\n\n{reassure}\n\nIf this wasn't you, act now:\n{url}",
+            html_body=branded_email(
+                heading=heading,
+                preheader="If this wasn't you, act now.",
+                paragraphs=[what, reassure],
+                cta_label="This wasn't me — secure my account",
+                cta_url=url,
+                footnote=(
+                    "If you made this change, nothing further is needed and you "
+                    "can ignore this message."
+                ),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        logger.warning("security-change email to %s failed: %s", user.email, exc)
 
 
 async def _notify_password_changed(user: User, *, how: str) -> None:
@@ -1212,6 +1332,18 @@ async def mfa_activate(
     user.recovery_hashes = [hash_recovery_code(c) for c in codes]
     await active_lockout().arecord_success(f"mfa:{user.email}")
     await session.commit()
+    await _notify_security_change(
+        user,
+        heading="Two-factor authentication was turned on",
+        what=(
+            "Two-factor authentication is now on for your Envelock account. "
+            "You'll need your authenticator app each time you sign in."
+        ),
+        reassure=(
+            "Keep your recovery codes somewhere safe — they are the way back in "
+            "if you lose the device."
+        ),
+    )
     return {"mfa_enabled": True, "recovery_codes": codes}
 
 
@@ -1311,6 +1443,15 @@ async def mfa_disable(
     user.totp_secret = None
     user.recovery_hashes = []
     await session.commit()
+    await _notify_security_change(
+        user,
+        heading="Two-factor authentication was turned off",
+        what=(
+            "Two-factor authentication has been turned off for your Envelock "
+            "account. Your password is now the only thing protecting it."
+        ),
+        reassure="You can turn it back on at any time from your profile.",
+    )
     return {"mfa_enabled": False}
 
 
