@@ -82,10 +82,43 @@ async def refresh_one(
         # (an unverified app in "Testing" gets 7-day refresh tokens), or the
         # password changed. Retrying never fixes it; say so on the mailbox.
         if "invalid_grant" in str(exc):
+            was_healthy = not mailbox.needs_reconnect
             mailbox.needs_reconnect = True
             mailbox.connection_error = (
                 "the mailbox owner's permission has expired or been withdrawn — reconnect"
             )
+            # Flagging the mailbox only helps someone already looking at the
+            # dashboard. Until this, a mailbox could stop being checked and the
+            # customer would never be told — the protection they are paying for
+            # ends quietly. Sent once, on the transition, not on every retry.
+            if was_healthy:
+                from envelock.notify.account import app_url, notify_admins
+
+                await notify_admins(
+                    session,
+                    mailbox.tenant_id,
+                    subject=f"Envelock lost access to {mailbox.address}",
+                    heading="A mailbox needs reconnecting",
+                    preheader=f"{mailbox.address} is no longer being checked.",
+                    paragraphs=[
+                        f"Envelock can no longer read {mailbox.address}: the "
+                        "permission it was given has expired or been withdrawn.",
+                        "That mailbox is not being checked until it is reconnected. "
+                        "Your other mailboxes are unaffected.",
+                    ],
+                    text=(
+                        f"Envelock can no longer read {mailbox.address}: the "
+                        "permission it was given has expired or been withdrawn.\n\n"
+                        "That mailbox is not being checked until it is "
+                        f"reconnected.\n\n{app_url('/dashboard')}"
+                    ),
+                    cta_label="Reconnect the mailbox",
+                    cta_url=app_url("/dashboard"),
+                    footnote=(
+                        "Reconnecting takes one click and keeps the mailbox's "
+                        "history — nothing is lost."
+                    ),
+                )
         return False
 
     _reseal(

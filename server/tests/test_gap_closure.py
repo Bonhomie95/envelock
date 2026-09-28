@@ -529,7 +529,7 @@ async def test_scheduler_jobs_run(db) -> None:
 
 
 @pytest.mark.asyncio
-async def test_trial_reminder_picks_the_closest_mark_and_never_repeats(
+async def test_renewal_reminder_picks_the_closest_mark_and_never_repeats(
     session, monkeypatch
 ) -> None:
     """7/3/2/1/0-day warnings: the mark sent is the CLOSEST one reached, and the
@@ -569,25 +569,87 @@ async def test_trial_reminder_picks_the_closest_mark_and_never_repeats(
     await session.commit()
     tid = tenant.id
 
-    first = await scheduler.trial_reminder_job()
-    assert first["trial_reminders"] == 1
+    first = await scheduler.renewal_reminder_job()
+    assert first["renewal_reminders"] == 1
     assert "2 days" in sent[0], sent  # the closest mark, not "7 days"
 
     row = await session.get(Tenant, tid)
     await session.refresh(row)
-    assert row.trial_reminder_days == 2
+    assert row.renewal_reminder_days == 2
 
     # Same day, job runs again (restart, second leader, ordinary tick) → silence.
-    again = await scheduler.trial_reminder_job()
-    assert again["trial_reminders"] == 0
+    again = await scheduler.renewal_reminder_job()
+    assert again["renewal_reminders"] == 0
     assert len(sent) == 1
 
     # A card is added: the end of the trial is no longer an event worth an email.
-    row.trial_reminder_days = None
+    row.renewal_reminder_days = None
     row.payment_method_ok = True
     await session.commit()
-    paid = await scheduler.trial_reminder_job()
-    assert paid["trial_reminders"] == 0
+    paid = await scheduler.renewal_reminder_job()
+    assert paid["renewal_reminders"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_renewing_plan_gets_one_notice_a_cancelling_one_gets_a_countdown(
+    session, monkeypatch
+) -> None:
+    """A paid plan that will simply renew is told once; one that is set to cancel
+    counts down like a trial.
+
+    The distinction is the point. A card that is going to be charged on Tuesday
+    is not an emergency, and escalating warnings about it teach people to ignore
+    the ones that are — while a plan that is actually about to stop protecting
+    mail deserves every one of them."""
+    from datetime import UTC, datetime, timedelta
+
+    from envelock.models import Tenant, User
+    from envelock.workers import scheduler
+
+    sent: list[str] = []
+
+    async def fake_send(*, to, subject, body, html_body=None):  # noqa: ANN001, ANN202
+        sent.append(subject)
+        return type("R", (), {"sent": True, "reason": "ok"})()
+
+    monkeypatch.setattr("envelock.notify.mail.is_configured", lambda: True)
+    monkeypatch.setattr("envelock.notify.mail.send_mail", fake_send)
+
+    tenant = Tenant(name="PaidCo", plan="complete")
+    tenant.payment_method_ok = True
+    tenant.subscription_period_end = datetime.now(UTC) + timedelta(days=6, hours=1)
+    tenant.subscription_cancel_at_period_end = False
+    session.add(tenant)
+    await session.flush()
+    session.add(
+        User(
+            tenant_id=tenant.id,
+            email="owner@paidco.example",
+            password_hash="x",  # noqa: S106 — not a credential, just a NOT NULL
+            is_admin=True,
+            status="active",
+        )
+    )
+    await session.commit()
+
+    # Renewing normally: one calm notice…
+    first = await scheduler.renewal_reminder_job()
+    assert first["renewal_reminders"] == 1
+    assert "renews" in sent[0], sent
+
+    # …and then silence, even as the date marches closer.
+    tenant.subscription_period_end = datetime.now(UTC) + timedelta(days=1, hours=1)
+    await session.commit()
+    assert (await scheduler.renewal_reminder_job())["renewal_reminders"] == 0
+    assert len(sent) == 1
+
+    # Now they cancel. The same tenant, the same date, becomes a countdown.
+    tenant.subscription_cancel_at_period_end = True
+    tenant.renewal_reminder_days = None
+    await session.commit()
+    ending = await scheduler.renewal_reminder_job()
+    assert ending["renewal_reminders"] == 1
+    assert "ends tomorrow" in sent[1], sent
 
 
 # ── Plain-English, client-facing detection copy (no jargon, no numbers) ──────

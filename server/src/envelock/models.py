@@ -50,13 +50,27 @@ class Tenant(Base, UUIDMixin, TimestampMixin):
     billing_term: Mapped[str] = mapped_column(String(16), default="monthly")
     trial_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     trial_ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-    #: Smallest "days left" reminder already emailed for the CURRENT trial or
-    #: billing period (7, 3, 2, 1 or 0). The milestone is stored rather than a
+    #: Smallest "days left" reminder already emailed for the CURRENT period,
+    #: trial or paid (7, 3, 2, 1 or 0). The milestone is stored rather than a
     #: timestamp so a job that runs twice in a day, or catches up after an
     #: outage, cannot send the same warning twice — the only thing that matters
     #: is how close to the deadline we have already warned them. Reset to NULL
-    #: when a new period starts.
-    trial_reminder_days: Mapped[int | None] = mapped_column(Integer)
+    #: whenever a new period starts (activation, renewal, downgrade).
+    renewal_reminder_days: Mapped[int | None] = mapped_column(Integer)
+    #: Mirrored from Stripe. `current_period_end` is when the subscription next
+    #: renews or, if it is set to cancel, when protection actually stops — the
+    #: date the expiry warnings count down to. Nothing here is authoritative;
+    #: Stripe is, and these are refreshed from every subscription webhook.
+    subscription_period_end: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    #: `server_default` as well as `default`: the Python-side default only
+    #: applies to ORM inserts, and a NOT NULL column without a database default
+    #: breaks every raw-SQL insert (the RLS suite does exactly that). It also
+    #: keeps this in step with the migration, which declares the same default.
+    subscription_cancel_at_period_end: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false(), nullable=False
+    )
     payment_method_ok: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     #: Stripe Customer id, captured from the first completed Checkout. Lets us open

@@ -325,6 +325,14 @@ def _apply_subscription(tenant: Tenant, sub: dict) -> None:
     if plan:
         tenant.plan = plan
     tenant.extra_mailbox_seats = extra
+    # Mirror when this period ends and whether it will renew, so the expiry
+    # warnings have a date without calling Stripe on every scheduler tick.
+    # `cancel_at_period_end` is what turns a calm "renews on the 14th" notice
+    # into a countdown: it is the difference between a charge and a cut-off.
+    period_end = sub.get("current_period_end")
+    if isinstance(period_end, int):
+        tenant.subscription_period_end = datetime.fromtimestamp(period_end, UTC)
+    tenant.subscription_cancel_at_period_end = bool(sub.get("cancel_at_period_end"))
 
 
 async def _stripe_call[T](call: Awaitable[T], what: str) -> T:
@@ -481,6 +489,9 @@ async def _activate_paid_plan(
     if tenant is None:
         return False
 
+    # Read before the flag is set: Stripe retries webhooks, and without this
+    # every retry would look like a fresh activation and send the email again.
+    newly_paid = not tenant.payment_method_ok
     tenant.payment_method_ok = True
     if plan in _PAID_PLANS:
         tenant.plan = plan
@@ -507,8 +518,33 @@ async def _activate_paid_plan(
     if tenant.trial_started_at is None:
         tenant.trial_started_at = now
         tenant.trial_ends_at = now + timedelta(days=get_settings().trial_days)
+    # A new paid period starts here, so the previous period's "expires soon"
+    # warnings are spent. Clearing the mark is what lets the next period warn.
+    tenant.renewal_reminder_days = None
 
     await session.commit()
+    if newly_paid:
+        from envelock.notify.account import app_url, notify_admins
+
+        named = (tenant.plan or "your plan").capitalize()
+        await notify_admins(
+            session,
+            tenant.id,
+            subject=f"Envelock {named} is active",
+            heading=f"{named} is active",
+            preheader="Your payment went through — mailbox protection is on.",
+            paragraphs=[
+                f"Your payment went through and {named} is now active.",
+                "Mailbox protection stays on for as long as the plan is.",
+            ],
+            text=(
+                f"Your payment went through and {named} is now active.\n\n"
+                f"Open your dashboard:\n{app_url('/dashboard')}"
+            ),
+            cta_label="Open my dashboard",
+            cta_url=app_url("/dashboard"),
+            footnote="You can change plan, seats or card at any time in Billing.",
+        )
     return True
 
 
@@ -585,6 +621,30 @@ async def stripe_webhook(request: Request, session: Session) -> dict:
             if tenant is not None and tenant.stripe_subscription_id in (None, obj.get("id")):
                 _apply_subscription(tenant, obj)
                 await session.commit()
+    elif etype in ("invoice.paid", "invoice.payment_succeeded"):
+        # A renewal charge settled. Nothing to change — the subscription events
+        # already carry plan and seats — but the customer gets told what came off
+        # their card, which is the difference between a receipt and a surprise.
+        # `billing_reason` filters out the first invoice, whose "plan is active"
+        # email `_activate_paid_plan` has already sent.
+        if obj.get("billing_reason") == "subscription_cycle":
+            tenant = await _tenant_for_event(
+                session, tenant_id=meta.get("tenant_id"), customer_id=obj.get("customer")
+            )
+            if tenant is not None:
+                # A new period has begun, so the last one's warnings are spent.
+                tenant.renewal_reminder_days = None
+                await session.commit()
+                await _notify_renewal_paid(session, tenant, obj)
+    elif etype == "invoice.payment_failed":
+        # The card was declined. Stripe will retry on its own schedule, and the
+        # plan stays live meanwhile — but if nobody tells the customer, the first
+        # they hear of it is protection stopping, which reads as us breaking.
+        tenant = await _tenant_for_event(
+            session, tenant_id=meta.get("tenant_id"), customer_id=obj.get("customer")
+        )
+        if tenant is not None:
+            await _notify_payment_failed(session, tenant, obj)
     elif etype == "customer.subscription.deleted":
         # Subscription ended (canceled or lapsed) → fall back to Guard (free).
         # Never locked out — Guard keeps domain/brand monitoring on.
@@ -596,6 +656,87 @@ async def stripe_webhook(request: Request, session: Session) -> dict:
         )
 
     return {"received": True}
+
+
+def _invoice_amount(invoice: dict) -> str:
+    """"$49.00" from Stripe's integer cents, or "" when the payload is odd.
+
+    Stripe reports zero-decimal currencies (JPY, KRW) in whole units, so
+    dividing by 100 there would understate the charge a hundredfold. Rather
+    than carry that table, an unrecognised shape yields an empty string and the
+    email simply omits the amount — a receipt with no figure is recoverable, a
+    receipt with the wrong figure is not.
+    """
+    cents = invoice.get("amount_paid")
+    if cents is None:
+        cents = invoice.get("amount_due")
+    currency = (invoice.get("currency") or "").upper()
+    if not isinstance(cents, int) or not currency:
+        return ""
+    if currency in {"JPY", "KRW", "VND", "CLP", "ISK"}:
+        return f"{cents:,} {currency}"
+    symbol = {"USD": "$", "EUR": "€", "GBP": "£"}.get(currency, "")
+    body = f"{cents / 100:,.2f}"
+    return f"{symbol}{body}" if symbol else f"{body} {currency}"
+
+
+async def _notify_renewal_paid(session: AsyncSession, tenant: Tenant, invoice: dict) -> None:
+    from envelock.notify.account import app_url, notify_admins
+
+    amount = _invoice_amount(invoice)
+    named = (tenant.plan or "your plan").capitalize()
+    charged = f"{amount} " if amount else ""
+    await notify_admins(
+        session,
+        tenant.id,
+        subject=f"Envelock renewed — {amount}" if amount else "Your Envelock plan renewed",
+        heading="Your plan renewed",
+        preheader=f"{charged}charged. Protection continues uninterrupted.",
+        paragraphs=[
+            f"{named} renewed and {charged}was charged to your card."
+            if amount
+            else f"{named} renewed successfully.",
+            "Protection continues uninterrupted. Nothing for you to do.",
+        ],
+        text=(
+            f"{named} renewed and {charged}was charged to your card.\n\n"
+            f"Invoices and receipts:\n{app_url('/billing')}"
+        ),
+        cta_label="View invoices",
+        cta_url=app_url("/billing"),
+        footnote="Change plan, seats or card at any time in Billing.",
+    )
+
+
+async def _notify_payment_failed(session: AsyncSession, tenant: Tenant, invoice: dict) -> None:
+    from envelock.notify.account import app_url, notify_admins
+
+    amount = _invoice_amount(invoice)
+    of = f" of {amount}" if amount else ""
+    await notify_admins(
+        session,
+        tenant.id,
+        subject="Your Envelock payment failed — action needed",
+        heading="Your payment failed",
+        preheader="Update your card to keep mailbox protection on.",
+        paragraphs=[
+            f"We couldn't take your Envelock payment{of}. Your card may have "
+            "expired, been replaced, or been declined.",
+            "Protection is still on. We'll retry automatically — but if the "
+            "payment keeps failing, your workspace drops to Guard (free) and "
+            "mailbox protection stops.",
+        ],
+        text=(
+            f"We couldn't take your Envelock payment{of}.\n\n"
+            "Protection is still on and we'll retry automatically. If the payment "
+            "keeps failing, your workspace drops to Guard (free) and mailbox "
+            "protection stops.\n\n"
+            f"Update your card:\n{app_url('/billing')}"
+        ),
+        cta_label="Update my card",
+        cta_url=app_url("/billing"),
+        footnote="You are never locked out — your data and settings are kept either way.",
+    )
 
 
 async def _tenant_for_event(
@@ -636,11 +777,42 @@ async def _downgrade_to_guard(
     ):
         # An old subscription ending must not cancel the one they pay for now.
         return False
+    was_paid = tenant.payment_method_ok
     tenant.plan = "guard"
     tenant.payment_method_ok = False
     tenant.stripe_subscription_id = None
     tenant.extra_mailbox_seats = 0
+    tenant.renewal_reminder_days = None
     await session.commit()
+    if was_paid:
+        from envelock.notify.account import app_url, notify_admins
+
+        await notify_admins(
+            session,
+            tenant.id,
+            subject="Your Envelock plan has ended — mailbox protection is off",
+            heading="Your plan has ended",
+            preheader="Mailbox protection has stopped. Domain monitoring continues.",
+            paragraphs=[
+                "Your subscription has ended, so your workspace has dropped to "
+                "Guard (free).",
+                "Domain and brand monitoring continue. Mailbox protection has "
+                "stopped — new mail is no longer being checked.",
+            ],
+            text=(
+                "Your Envelock subscription has ended, so your workspace has "
+                "dropped to Guard (free).\n\n"
+                "Domain and brand monitoring continue. Mailbox protection has "
+                "stopped.\n\n"
+                f"Restart a plan:\n{app_url('/billing')}"
+            ),
+            cta_label="Restart my plan",
+            cta_url=app_url("/billing"),
+            footnote=(
+                "Your data and settings are kept — restarting a plan turns "
+                "protection back on without reconnecting anything."
+            ),
+        )
     return True
 
 

@@ -742,6 +742,53 @@ async def _send_password_reset_email(to: str, link: str):  # noqa: ANN202 — Ma
     return result
 
 
+async def _notify_password_changed(user: User, *, how: str) -> None:
+    """Tell the account holder their password just changed.
+
+    This is the one email that matters even — especially — when the person did
+    not ask for it: a silent password change is what account takeover looks
+    like from the victim's side. It goes to the address on the account, not to
+    the admins, because it is about that login.
+
+    Never raises. The password has already changed and the sessions are already
+    revoked; a dead mail relay must not turn that into a 500 that invites the
+    caller to retry.
+    """
+    from envelock.config import get_settings
+    from envelock.notify.mail import send_mail
+    from envelock.notify.templates import branded_email
+
+    settings = get_settings()
+    reset_url = f"{settings.web_base_url.rstrip('/')}/signin"
+    try:
+        await send_mail(
+            to=user.email,
+            subject="Your Envelock password was changed",
+            body=(
+                f"Your Envelock password was changed ({how}).\n\n"
+                "Every other session was signed out.\n\n"
+                "If this wasn't you, reset your password immediately and contact "
+                f"us:\n{reset_url}"
+            ),
+            html_body=branded_email(
+                heading="Your password was changed",
+                preheader="If this wasn't you, act now — every session was signed out.",
+                paragraphs=[
+                    f"Your Envelock password was changed ({how}).",
+                    "As a precaution, every other session was signed out.",
+                ],
+                cta_label="This wasn't me — secure my account",
+                cta_url=reset_url,
+                footnote=(
+                    "If you made this change, nothing further is needed and you can "
+                    "ignore this message."
+                ),
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        logger.warning("password-changed email to %s failed: %s", user.email, exc)
+
+
 VERIFY_EMAIL_TTL = timedelta(hours=24)
 
 
@@ -1009,6 +1056,7 @@ async def reset_password_with_code(
         str(user.id), until=time.time() + REFRESH_TTL.total_seconds()
     )
     await session.commit()
+    await _notify_password_changed(user, how="using a reset code")
     return {
         "ok": True,
         "sessions_revoked": True,
@@ -1074,6 +1122,7 @@ async def reset_password(req: ResetPasswordRequest, session: Session) -> dict:
         str(user.id), until=time.time() + REFRESH_TTL.total_seconds()
     )
     await session.commit()
+    await _notify_password_changed(user, how="using a reset link")
     return {
         "ok": True,
         "sessions_revoked": True,
@@ -1167,6 +1216,7 @@ async def change_password(
         str(user.id), until=time.time() + REFRESH_TTL.total_seconds()
     )
     await session.commit()
+    await _notify_password_changed(user, how="from your account settings")
     return {"status": "password_changed", "sessions_revoked": True}
 
 

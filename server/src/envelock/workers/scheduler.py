@@ -202,35 +202,49 @@ async def domain_reverify_job() -> dict:
         return await revalidate_verified_domains(session)
 
 
-#: Days-remaining marks we warn on. Descending: the job sends the SMALLEST
-#: milestone the tenant has reached but not yet been told about, so a server that
-#: was down for the 7- and 3-day marks sends "2 days left" once on the way back
-#: up — not a burst of three stale warnings.
-TRIAL_REMINDER_DAYS = (7, 3, 2, 1, 0)
+#: Days-remaining marks we warn on. The job sends the SMALLEST milestone the
+#: tenant has reached but not yet been told about, so a server that was down for
+#: the 7- and 3-day marks sends "2 days left" once on the way back up — not a
+#: burst of three stale warnings.
+RENEWAL_REMINDER_DAYS = (7, 3, 2, 1, 0)
 
 
-async def trial_reminder_job() -> dict:
-    """Warn a tenant before their trial ends, at 7, 3, 2 and 1 days and on the day.
+def _due_mark(days_left: int) -> int | None:
+    """The closest mark `days_left` has reached, or None if it is still further
+    out than the first warning. Ascending, so two days left picks the "2 days"
+    warning rather than the "7 days" one it also technically satisfies."""
+    return next((d for d in sorted(RENEWAL_REMINDER_DAYS) if days_left <= d), None)
 
-    Without this the first a customer knows about the end of their trial is the
-    day their protection drops to Guard — which reads as the product breaking,
-    not as a bill they chose not to pay. Every one of these is a paid-conversion
-    prompt and a courtesy at the same time.
 
-    Idempotent by construction: `trial_reminder_days` records the smallest mark
-    already sent, so re-running the job — on the same tick, after a restart, or
-    twice in a day — cannot send the same warning again.
+async def renewal_reminder_job() -> dict:
+    """Warn before access changes — at 7, 3, 2 and 1 days, and on the day.
+
+    Three different deadlines, one mechanism, because to the customer they are
+    the same event ("when does my protection change?"):
+
+    * **Trial ending, no card.** Counts down; protection drops to Guard.
+    * **Paid plan set to cancel.** Counts down; same outcome, and the more
+      important of the two because they are already a paying customer.
+    * **Paid plan renewing normally.** ONE notice at the first mark, not a
+      countdown. A card that is simply going to be charged is not an emergency,
+      and four escalating warnings about it would train people to ignore the
+      ones that are.
+
+    Idempotent by construction: `renewal_reminder_days` holds the smallest mark
+    already sent for the current period, so re-running the job — on the same
+    tick, after a restart, or twice in a day — cannot repeat a warning. Every
+    place that starts a new period (activation, renewal, downgrade) clears it.
     """
     from datetime import UTC, datetime
 
-    from sqlalchemy import select
+    from sqlalchemy import or_, select
 
-    from envelock.models import Tenant, User
-    from envelock.notify.mail import is_configured, send_mail
-    from envelock.notify.templates import branded_email
+    from envelock.models import Tenant
+    from envelock.notify.account import app_url, notify_admins
+    from envelock.notify.mail import is_configured
 
     if not is_configured():
-        return {"trial_reminders": 0, "skipped": "no smtp relay"}
+        return {"renewal_reminders": 0, "skipped": "no smtp relay"}
 
     now = datetime.now(UTC)
     sent = 0
@@ -241,7 +255,10 @@ async def trial_reminder_job() -> dict:
                 await session.execute(
                     select(Tenant).where(
                         Tenant.is_active.is_(True),
-                        Tenant.trial_ends_at.is_not(None),
+                        or_(
+                            Tenant.trial_ends_at.is_not(None),
+                            Tenant.subscription_period_end.is_not(None),
+                        ),
                     )
                 )
             )
@@ -249,86 +266,95 @@ async def trial_reminder_job() -> dict:
             .all()
         )
         for tenant in tenants:
-            ends = tenant.trial_ends_at
-            if ends is None:
+            paid = bool(tenant.payment_method_ok)
+            deadline = tenant.subscription_period_end if paid else tenant.trial_ends_at
+            if deadline is None:
                 continue
-            if ends.tzinfo is None:
-                ends = ends.replace(tzinfo=UTC)
-            # Already paying: the trial's end is a non-event, so say nothing.
-            if tenant.payment_method_ok:
-                continue
+            if deadline.tzinfo is None:
+                deadline = deadline.replace(tzinfo=UTC)
 
-            days_left = (ends - now).days
+            days_left = (deadline - now).days
             if days_left < 0:
-                continue  # already lapsed; the drop-to-Guard mail is a separate thing
-            # Ascending, so this is the SMALLEST mark the tenant has reached —
-            # 2 days left picks the "2 days" warning, not the "7 days" one it also
-            # technically satisfies.
-            due = next((d for d in sorted(TRIAL_REMINDER_DAYS) if days_left <= d), None)
+                continue  # already past; the webhook's own email covers the drop
+            due = _due_mark(days_left)
             if due is None:
-                continue  # more than a week out
-            already = tenant.trial_reminder_days
+                continue  # further out than the first warning
+            already = tenant.renewal_reminder_days
             if already is not None and already <= due:
                 continue  # this mark, or a closer one, has already gone
 
-            recipients = (
-                (
-                    await session.execute(
-                        select(User.email).where(
-                            User.tenant_id == tenant.id,
-                            User.is_admin.is_(True),
-                            User.status == "active",
-                        )
-                    )
-                )
-                .scalars()
-                .all()
-            )
-            tenant.trial_reminder_days = due
-            if not recipients:
+            ending = (not paid) or tenant.subscription_cancel_at_period_end
+            # A plan that will simply renew gets its one notice and then goes
+            # quiet: the mark is set straight to 0 so no later tick fires again.
+            if not ending and already is not None:
                 continue
 
             when = (
                 "today"
-                if due == 0
+                if days_left <= 0
                 else "tomorrow"
-                if due == 1
-                else f"in {days_left if days_left > 0 else due} days"
+                if days_left == 1
+                else f"in {days_left} days"
             )
-            subject = f"Your Envelock trial ends {when}"
-            billing_url = f"{get_settings().web_base_url.rstrip('/')}/billing"
-            text = (
-                f"Your Envelock trial ends {when}.\n\n"
-                "Add a payment method to keep your mailboxes protected:\n"
-                f"{billing_url}\n\n"
-                "If you don't, your workspace drops to Guard (free) — domain and "
-                "brand monitoring continue, mailbox protection stops. You are "
-                "never locked out, and you can add a card at any time."
-            )
-            html_body = branded_email(
-                heading=f"Your trial ends {when}",
-                preheader=f"Add a payment method to keep mailbox protection after {when}.",
-                paragraphs=[
+            tenant.renewal_reminder_days = due if ending else 0
+
+            if ending and not paid:
+                subject = f"Your Envelock trial ends {when}"
+                heading = f"Your trial ends {when}"
+                paragraphs = [
                     f"Your Envelock trial ends {when}.",
                     "Add a payment method to keep your mailboxes protected.",
-                ],
-                cta_label="Add a payment method",
-                cta_url=billing_url,
-                footnote=(
+                ]
+                cta_label = "Add a payment method"
+                footnote = (
                     "If you don't, your workspace drops to Guard (free) — domain and "
                     "brand monitoring continue, mailbox protection stops. You are never "
                     "locked out, and you can add a card at any time."
-                ),
-            )
-            for address in recipients:
-                result = await send_mail(
-                    to=address, subject=subject, body=text, html_body=html_body
                 )
-                if result.sent:
-                    sent += 1
+            elif ending:
+                subject = f"Your Envelock plan ends {when}"
+                heading = f"Your plan ends {when}"
+                paragraphs = [
+                    f"Your Envelock plan is set to cancel and ends {when}.",
+                    "Resume it to keep your mailboxes protected.",
+                ]
+                cta_label = "Resume my plan"
+                footnote = (
+                    "When it ends, your workspace drops to Guard (free) — domain and "
+                    "brand monitoring continue, mailbox protection stops. Your data "
+                    "and settings are kept."
+                )
+            else:
+                named = (tenant.plan or "your plan").capitalize()
+                subject = f"Envelock renews {when}"
+                heading = f"{named} renews {when}"
+                paragraphs = [
+                    f"{named} renews {when} and your card will be charged "
+                    "automatically.",
+                    "Nothing for you to do — this is just so the charge isn't a "
+                    "surprise.",
+                ]
+                cta_label = "Review my billing"
+                footnote = (
+                    "Change plan, seats or card at any time before then in Billing."
+                )
+
+            body = "\n\n".join(paragraphs)
+            sent += await notify_admins(
+                session,
+                tenant.id,
+                subject=subject,
+                heading=heading,
+                preheader=paragraphs[0],
+                paragraphs=paragraphs,
+                text=f"{body}\n\n{app_url('/billing')}",
+                cta_label=cta_label,
+                cta_url=app_url("/billing"),
+                footnote=footnote,
+            )
         await session.commit()
 
-    return {"trial_reminders": sent}
+    return {"renewal_reminders": sent}
 
 
 async def monthly_digest_job() -> dict:
@@ -579,13 +605,13 @@ def start(stop: asyncio.Event) -> list[asyncio.Task]:
                 interval=settings.digest_cycle_seconds, stop=stop,
             )
         ),
-        # Trial-expiry warnings at 7/3/2/1/0 days. Shares the digest's cadence:
+        # Trial and plan expiry warnings at 7/3/2/1/0 days. Shares the digest cadence:
         # both are "scan tenants, decide per row, send rarely", and the milestone
         # column makes a duplicate run a no-op, so the interval only has to be
         # comfortably shorter than a day.
         asyncio.create_task(
             _run_forever(
-                "trial_reminder", trial_reminder_job,
+                "renewal_reminder", renewal_reminder_job,
                 interval=settings.digest_cycle_seconds, stop=stop,
             )
         ),
