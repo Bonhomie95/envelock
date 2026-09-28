@@ -6,17 +6,23 @@ requires-python = ">=3.12,<3.15"
 
 dependencies = [
     # API
-    "fastapi>=0.115",
+    # ── Pinned to a tested minor, not ">=", for the five that decide whether
+    # the app boots at all. These floated, so the dev venv sat on SQLAlchemy
+    # 2.0.51 while CI and the server both resolved 2.1.1 — a type error that
+    # only existed in one of the three, and ORM behaviour differences nobody
+    # was testing. Bump these deliberately, with the suite, not by chance on
+    # whichever day a machine happened to install.
+    "fastapi>=0.141,<0.142",
     "uvicorn[standard]>=0.32",
-    "pydantic>=2.9",
+    "pydantic>=2.13,<2.14",
     "pydantic-settings>=2.6",
     "email-validator>=2.2",       # EmailStr validation on signup
 
     # Storage
-    "sqlalchemy>=2.0",
+    "sqlalchemy>=2.1,<2.2",
     "greenlet>=3.0",              # required by SQLAlchemy's async engine
-    "alembic>=1.14",
-    "asyncpg>=0.30",
+    "alembic>=1.20,<1.21",
+    "asyncpg>=0.31,<0.32",
     "redis>=5.2",
     "clickhouse-connect>=0.8",
 

@@ -345,9 +345,10 @@ const SECTIONS: Section[] = [
         <Table
           head={["You read mail in", "Install", "What it can see"]}
           rows={[
-            ["Outlook (Microsoft 365, Exchange, Outlook.com)", "The Outlook add-in — pin its pane", "The exact message you open, while the pane is pinned"],
+            ["The Outlook desktop app (Windows or Mac)", "The Outlook add-in — pin its pane", "The exact message you open, while the pane is pinned"],
             ["Thunderbird", "The Thunderbird add-on", "The exact message you open, whenever Thunderbird runs"],
-            ["Gmail or Outlook on the web", "The browser extension", "That your webmail is open, and that you are reading"],
+            ["Outlook on the web", "The Outlook add-in, or the browser extension", "The exact message you open, while the pane is pinned"],
+            ["Gmail in a browser", "The browser extension", "That your webmail is open, and that you are reading"],
             ["Your provider's webmail (Roundcube and similar)", "The browser extension", "The exact message you open, on most providers"],
           ]}
         />

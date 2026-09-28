@@ -97,10 +97,17 @@ function InstallSteps() {
   return (
     <ol className="mt-4 space-y-4 text-xs leading-relaxed" role="list">
       <li>
-        <p className="font-semibold">Outlook — Microsoft 365, Exchange or Outlook.com</p>
+        {/* Headed by the APP, not the account type. "Microsoft 365, Exchange or
+            Outlook.com" listed which accounts it works with, and people read
+            that as "web only" and went looking for desktop instructions that
+            were already right here. */}
+        <p className="font-semibold">
+          Outlook desktop app — Windows, Mac, and Outlook on the web
+        </p>
         <p className="fg-2 mt-1">
-          In Outlook, <b>Get Add-ins → My add-ins → Add a custom add-in → From URL</b>,
-          and paste this. IT can deploy it to everyone from the Microsoft 365 admin
+          Works with a Microsoft 365, Exchange or Outlook.com account. In Outlook,{" "}
+          <b>Get Add-ins → My add-ins → Add a custom add-in → From URL</b>, and
+          paste this. IT can deploy it to everyone from the Microsoft 365 admin
           centre with the same address.
         </p>
         <div className="mt-2 flex items-center gap-2">
