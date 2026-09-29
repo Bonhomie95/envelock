@@ -6,9 +6,15 @@
   --font-sans:
     ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
     sans-serif;
+  /* A real monospace stack. This was left identical to --font-sans, which
+     silently rendered every account number, sort code, IBAN, pairing code and
+     DNS token in a proportional face — and made the `tnum` tabular-figure
+     classes used in 184 places do nothing. Comparing two IBANs digit by digit
+     is the entire job of these fields. System fonts only, so it stays
+     webfont-free like the rest of the refurbished stack. */
   --font-mono:
-    ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
-    sans-serif;
+    ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+    "Liberation Mono", monospace;
 
   /* One accent shared across public and signed-in surfaces. */
   --color-signal: #64d8bb;
