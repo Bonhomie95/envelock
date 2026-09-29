@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
-import { Check, CreditCard, Loader2, Lock, Plus, ShieldCheck } from "lucide-react";
+import {
+  Check,
+  CreditCard,
+  Loader2,
+  Lock,
+  Plus,
+  ShieldCheck,
+} from "lucide-react";
 import { ApiError, api, auth, type TenantInfo } from "../lib/api";
 import { PLAN_TIERS, planTier } from "../lib/plans";
 import { Button, cn } from "../components/primitives";
@@ -73,7 +80,9 @@ export default function Billing() {
   const targetExtra = seatTarget ?? currentExtra;
   // Stripe only defers the first charge when the trial has 48h+ left (the
   // server uses 49h); inside that window checkout charges today.
-  const trialEndsAt = tenant?.trial.ends_at ? new Date(tenant.trial.ends_at) : null;
+  const trialEndsAt = tenant?.trial.ends_at
+    ? new Date(tenant.trial.ends_at)
+    : null;
   const chargeDeferred =
     Boolean(tenant?.trial.active) &&
     trialEndsAt !== null &&
@@ -164,7 +173,9 @@ export default function Billing() {
       );
       await load();
     } catch (e) {
-      setError(e instanceof ApiError ? e.message : "Could not change plan. Try again.");
+      setError(
+        e instanceof ApiError ? e.message : "Could not change plan. Try again.",
+      );
     } finally {
       setBusy(false);
     }
@@ -179,7 +190,9 @@ export default function Billing() {
     } catch (e) {
       setBusy(false);
       setError(
-        e instanceof ApiError ? e.message : "Could not open the billing portal.",
+        e instanceof ApiError
+          ? e.message
+          : "Could not open the billing portal.",
       );
     }
   }
@@ -193,7 +206,9 @@ export default function Billing() {
     } catch (e) {
       setBusy(false);
       setError(
-        e instanceof ApiError ? e.message : "Could not start checkout. Try again.",
+        e instanceof ApiError
+          ? e.message
+          : "Could not start checkout. Try again.",
       );
     }
   }
@@ -255,8 +270,8 @@ export default function Billing() {
           <ShieldCheck size={30} className="accent mx-auto" aria-hidden />
           <h1 className="headline mt-5">You're on {tier?.name ?? selected}.</h1>
           <p className="lede mx-auto mt-4 text-base">
-            Payment method saved and your plan is active. Full protection stays on
-            when your trial ends.
+            Payment method saved and your plan is active. Your selected plan
+            continues when your trial ends.
           </p>
           <Button
             variant="accent"
@@ -283,7 +298,7 @@ export default function Billing() {
         <p className="lede mt-4 text-base">
           {hasSub
             ? "Change your plan or mailbox seats below. Changes apply to your existing subscription, prorated, so you're never billed twice."
-            : "Add a payment method to keep full protection when your trial ends. You can change or cancel anytime — monthly, no penalty."}
+            : "Add a payment method to continue your selected plan when your trial ends. You can change or cancel anytime — monthly, no penalty."}
         </p>
 
         {/* What the current plan does NOT include, stated on the page where it
@@ -294,19 +309,16 @@ export default function Billing() {
           <div className="panel mt-6 p-4">
             <p className="text-sm font-semibold">Complete adds</p>
             <ul className="fg-2 mt-2 space-y-1.5 text-xs leading-relaxed">
+              <li>Account-takeover alerts with supported integrations.</li>
               <li>
-                Unusual sign-in alerts and silent access detection — the signals
-                that show a mailbox has been broken into, not just written to.
+                The AI analyst on phishing links, as well as payment email.
               </li>
-              <li>The AI analyst on phishing links, as well as payment email.</li>
-              <li>
-                Dangerous mail removed automatically, instead of you pressing
-                quarantine.
-              </li>
+              <li>Automatic quarantine where your connection supports it.</li>
             </ul>
             <p className="fg-3 mt-3 text-xs">
-              Two of these need the Envelock sensor installed on the device —
-              your plan alone does not turn them on.
+              Identity alerts need supported provider access or the Envelock
+              sensor. Quarantine needs mailbox permissions. Check your coverage
+              after connecting.
             </p>
           </div>
         )}
@@ -316,7 +328,9 @@ export default function Billing() {
           <div className="panel mt-6 flex flex-wrap items-center gap-3 p-4">
             <ShieldCheck size={18} className="accent shrink-0" aria-hidden />
             <div className="min-w-0 flex-1">
-              <p className="text-sm font-semibold">A payment method is on file</p>
+              <p className="text-sm font-semibold">
+                A payment method is on file
+              </p>
               <p className="fg-3 text-xs">
                 Update your card, download invoices, or cancel anytime.
               </p>
@@ -371,7 +385,9 @@ export default function Billing() {
                   {p.name}
                 </span>
                 <span className="tnum">
-                  <span className="font-mono text-base font-semibold">{p.price}</span>
+                  <span className="font-mono text-base font-semibold">
+                    {p.price}
+                  </span>
                   <span className="fg-3 text-[11px]">{p.per}</span>
                 </span>
               </div>
@@ -392,7 +408,9 @@ export default function Billing() {
               disabled={busy || selected === subscribedPlan}
               onClick={switchPlan}
             >
-              {busy && <Loader2 size={13} className="animate-spin" aria-hidden />}
+              {busy && (
+                <Loader2 size={13} className="animate-spin" aria-hidden />
+              )}
               {selected === subscribedPlan
                 ? `YOU'RE ON ${(tier?.name ?? selected).toUpperCase()}`
                 : `SWITCH TO ${(tier?.name ?? selected).toUpperCase()}`}
@@ -417,13 +435,18 @@ export default function Billing() {
             <p className="fg-3 mt-3 text-sm">Loading…</p>
           ) : providers.length === 0 ? (
             <p className="callout mt-3 p-4 text-sm">
-              Billing isn't enabled on this deployment yet — no payment provider is
-              configured. Your trial and Guard (free) protection are unaffected.
+              Billing isn't enabled on this deployment yet — no payment provider
+              is configured. Your trial and Guard (free) protection are
+              unaffected.
             </p>
           ) : (
             <div className="mt-3 space-y-3">
               {providers.length > 1 && (
-                <div className="flex flex-wrap gap-2" role="group" aria-label="Provider">
+                <div
+                  className="flex flex-wrap gap-2"
+                  role="group"
+                  aria-label="Provider"
+                >
                   {providers.map((p) => (
                     <button
                       key={p}
@@ -445,8 +468,8 @@ export default function Billing() {
 
               {status === "cancel" && (
                 <p className="fg-3 text-xs">
-                  Checkout was canceled — you haven't been charged. Pick up where you
-                  left off below.
+                  Checkout was canceled — you haven't been charged. Pick up
+                  where you left off below.
                 </p>
               )}
 
@@ -466,7 +489,13 @@ export default function Billing() {
                       value={checkoutExtra}
                       onChange={(e) =>
                         setExtraAtCheckout(
-                          Math.max(0, Math.min(500, Math.floor(Number(e.target.value) || 0))),
+                          Math.max(
+                            0,
+                            Math.min(
+                              500,
+                              Math.floor(Number(e.target.value) || 0),
+                            ),
+                          ),
                         )
                       }
                       className="field w-20 text-sm"
@@ -490,8 +519,8 @@ export default function Billing() {
                     CONTINUE TO SECURE CHECKOUT
                   </Button>
                   <p className="fg-3 text-[11px] leading-relaxed">
-                    You'll enter your card on Stripe's secure page and come straight
-                    back. We never see or store your card number.
+                    You'll enter your card on Stripe's secure page and come
+                    straight back. We never see or store your card number.
                   </p>
                 </>
               ) : (
@@ -510,7 +539,9 @@ export default function Billing() {
                       value={reference}
                       onChange={(e) => setReference(e.target.value)}
                       placeholder={
-                        isSandbox ? "4242 4242 4242 4242" : "pm_… (from your card provider)"
+                        isSandbox
+                          ? "4242 4242 4242 4242"
+                          : "pm_… (from your card provider)"
                       }
                       autoComplete="off"
                       className="field w-full pl-10 text-sm"
@@ -521,7 +552,12 @@ export default function Billing() {
                       ? "Development sandbox — no real charge. Any value works; it stands in for the token a real card provider returns."
                       : "We never see your card number. Your provider's secure form returns a token (a payment-method reference), and that is all we store."}
                   </p>
-                  <Button variant="accent" disabled={busy} onClick={submit} className="mt-1">
+                  <Button
+                    variant="accent"
+                    disabled={busy}
+                    onClick={submit}
+                    className="mt-1"
+                  >
                     {busy ? (
                       <Loader2 size={13} className="animate-spin" aria-hidden />
                     ) : (
@@ -553,11 +589,17 @@ export default function Billing() {
                 <span className="text-sm font-semibold">{tier.name}</span>
                 <div className="tnum mt-0.5 font-mono text-lg font-semibold">
                   {tier.price}
-                  <span className="fg-3 ml-1 text-[11px] font-normal">{tier.per}</span>
+                  <span className="fg-3 ml-1 text-[11px] font-normal">
+                    {tier.per}
+                  </span>
                 </div>
               </div>
               {(() => {
-                const extra = hasSub ? currentExtra : isStripe ? checkoutExtra : 0;
+                const extra = hasSub
+                  ? currentExtra
+                  : isStripe
+                    ? checkoutExtra
+                    : 0;
                 if (!extra) return null;
                 const base = Number(tier.price.replace("$", ""));
                 const total = base + (extra * tier.extraCents) / 100;
@@ -565,7 +607,8 @@ export default function Billing() {
                   <div className="fg-2 mt-2 space-y-1 text-xs">
                     <div className="flex justify-between gap-2">
                       <span>
-                        {extra} extra mailbox{extra === 1 ? "" : "es"} × {tier.extra}
+                        {extra} extra mailbox{extra === 1 ? "" : "es"} ×{" "}
+                        {tier.extra}
                       </span>
                       <span className="tnum font-mono">
                         ${((extra * tier.extraCents) / 100).toFixed(2)}
@@ -573,7 +616,9 @@ export default function Billing() {
                     </div>
                     <div className="flex justify-between gap-2 border-t pt-1 font-semibold text-[var(--fg)]">
                       <span>Total per month</span>
-                      <span className="tnum font-mono">${total.toFixed(2)}</span>
+                      <span className="tnum font-mono">
+                        ${total.toFixed(2)}
+                      </span>
                     </div>
                   </div>
                 );
@@ -581,7 +626,11 @@ export default function Billing() {
               <ul className="fg-2 mt-4 space-y-1.5" role="list">
                 {tier.features.map((f) => (
                   <li key={f} className="flex items-start gap-1.5 text-xs">
-                    <Check size={12} className="accent mt-0.5 shrink-0" aria-hidden />
+                    <Check
+                      size={12}
+                      className="accent mt-0.5 shrink-0"
+                      aria-hidden
+                    />
                     {f}
                   </li>
                 ))}
@@ -594,10 +643,13 @@ export default function Billing() {
               <span
                 className={cn(
                   "font-mono tnum text-sm font-semibold",
-                  tenant.trial.days_left <= 3 ? "text-[var(--danger)]" : "accent",
+                  tenant.trial.days_left <= 3
+                    ? "text-[var(--danger)]"
+                    : "accent",
                 )}
               >
-                {tenant.trial.days_left} day{tenant.trial.days_left === 1 ? "" : "s"}
+                {tenant.trial.days_left} day
+                {tenant.trial.days_left === 1 ? "" : "s"}
               </span>
             </div>
           )}
@@ -627,8 +679,8 @@ export default function Billing() {
               </span>
             </div>
             <p className="fg-3 mt-2 text-[11px] leading-relaxed">
-              Your plan includes {tenant.mailboxes.included}. Each extra mailbox is{" "}
-              {planTier(subscribedPlan)?.extra ?? "$3.50"}/mo.
+              Your plan includes {tenant.mailboxes.included}. Each extra mailbox
+              is {planTier(subscribedPlan)?.extra ?? "$3.50"}/mo.
             </p>
             {hasSub ? (
               /* Live subscription: set the total number of extra seats. */
@@ -645,7 +697,13 @@ export default function Billing() {
                     value={targetExtra}
                     onChange={(e) =>
                       setSeatTarget(
-                        Math.max(0, Math.min(500, Math.floor(Number(e.target.value) || 0))),
+                        Math.max(
+                          0,
+                          Math.min(
+                            500,
+                            Math.floor(Number(e.target.value) || 0),
+                          ),
+                        ),
                       )
                     }
                     className="field w-20 text-sm"
@@ -656,7 +714,9 @@ export default function Billing() {
                     disabled={seatBusy || targetExtra === currentExtra}
                     onClick={updateSeats}
                   >
-                    {seatBusy && <Loader2 size={12} className="animate-spin" aria-hidden />}
+                    {seatBusy && (
+                      <Loader2 size={12} className="animate-spin" aria-hidden />
+                    )}
                     UPDATE
                   </Button>
                 </div>
@@ -670,8 +730,8 @@ export default function Billing() {
               </>
             ) : isStripe ? (
               <p className="fg-2 mt-3 text-xs leading-relaxed">
-                Add extra mailboxes at checkout. Once your plan is active you can
-                change the number here anytime.
+                Add extra mailboxes at checkout. Once your plan is active you
+                can change the number here anytime.
               </p>
             ) : (
               <div className="mt-3 flex items-center gap-2">
@@ -681,7 +741,9 @@ export default function Billing() {
                   max={500}
                   value={seatCount}
                   onChange={(e) =>
-                    setSeatCount(Math.max(1, Math.min(500, Number(e.target.value) || 1)))
+                    setSeatCount(
+                      Math.max(1, Math.min(500, Number(e.target.value) || 1)),
+                    )
                   }
                   aria-label="Seats to buy"
                   className="field w-20 text-sm"
@@ -702,7 +764,10 @@ export default function Billing() {
               </div>
             )}
             {seatMsg && (
-              <p className="fg-2 mt-2 text-[11px] leading-relaxed" role="status">
+              <p
+                className="fg-2 mt-2 text-[11px] leading-relaxed"
+                role="status"
+              >
                 {seatMsg}
               </p>
             )}

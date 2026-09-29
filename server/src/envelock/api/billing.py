@@ -917,7 +917,13 @@ async def change_subscription_plan(session: AsyncSession, tenant: Tenant, target
         pid = _item_price(item)
         if _plan_for_price(pid):
             ops.append({"id": item["id"], "price": new_price})
-        elif _is_extra_price(pid) and (seat_price := _extra_price_for(target)):
+        elif _is_extra_price(pid):
+            seat_price = _extra_price_for(target)
+            if not seat_price:
+                raise HTTPException(
+                    503, "Additional mailbox pricing for this plan is unavailable. "
+                    "Your subscription has not changed. Contact support.",
+                )
             ops.append({"id": item["id"], "price": seat_price})
     if not ops:
         raise HTTPException(

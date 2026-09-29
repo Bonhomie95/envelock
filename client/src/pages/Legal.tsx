@@ -42,7 +42,10 @@ function P({ children }: { children: React.ReactNode }) {
 
 function UL({ items }: { items: React.ReactNode[] }) {
   return (
-    <ul className="fg-2 mt-4 space-y-2.5 text-[15px] leading-relaxed" role="list">
+    <ul
+      className="fg-2 mt-4 space-y-2.5 text-[15px] leading-relaxed"
+      role="list"
+    >
       {items.map((item, i) => (
         <li key={i} className="flex gap-3">
           <span className="accent mt-[0.45rem] size-1 shrink-0 rounded-full bg-current" />
@@ -70,7 +73,13 @@ function Table({ head, rows }: { head: string[]; rows: React.ReactNode[][] }) {
           {rows.map((r, i) => (
             <tr key={i}>
               {r.map((cell, j) => (
-                <td key={j} className={cn("py-3 pr-4 align-top", j === 0 && "font-medium")}>
+                <td
+                  key={j}
+                  className={cn(
+                    "py-3 pr-4 align-top",
+                    j === 0 && "font-medium",
+                  )}
+                >
                   {cell}
                 </td>
               ))}
@@ -96,16 +105,17 @@ function Terms() {
   return (
     <>
       <P>
-        These terms govern your use of Envelock. By creating an account you agree
-        to them on behalf of the organisation you are signing up.
+        These terms govern your use of Envelock. By creating an account you
+        agree to them on behalf of the organisation you are signing up.
       </P>
 
       <H2>1. What the service does</H2>
       <P>
         Envelock analyses mail in the mailboxes you connect, in order to detect
         payment fraud, impersonation, account takeover and malicious links, and
-        alerts the people you nominate. It sits alongside your mail system and is
-        never in the delivery path, so nothing we do can delay or lose a message.
+        alerts the people you nominate. It sits alongside your mail system and
+        is never in the delivery path, so nothing we do can delay or lose a
+        message.
       </P>
 
       <H2>2. What it does not do</H2>
@@ -180,8 +190,8 @@ function Terms() {
 
       <H2>8. Liability</H2>
       <P>
-        To the fullest extent permitted by law, our total liability arising out of
-        or relating to the service is limited to the fees you paid us in the
+        To the fullest extent permitted by law, our total liability arising out
+        of or relating to the service is limited to the fees you paid us in the
         twelve months before the claim. We are not liable for indirect or
         consequential loss, including money you transferred to a fraudulent
         account, whether or not we alerted you to it.
@@ -189,21 +199,27 @@ function Terms() {
 
       <H2>9. Ending the agreement</H2>
       <P>
-        You may stop using Envelock at any time and delete your workspace from the
-        dashboard. We may end the agreement for non-payment or a breach of section
-        4, with notice where the circumstances allow. On termination you may
-        export your data; deletion completes within 60 days.
+        You may stop using Envelock at any time and delete your workspace from
+        the dashboard. We may end the agreement for non-payment or a breach of
+        section 4, with notice where the circumstances allow. On termination you
+        may export your data; deletion completes within 60 days.
       </P>
 
       <H2>10. Changes</H2>
       <P>
-        We may update these terms. Material changes are announced at least 30 days
-        in advance to workspace admins by email.
+        We may update these terms. Material changes are announced at least 30
+        days in advance to workspace admins by email.
       </P>
 
       <H2>11. Contact</H2>
       <P>
-        {COMPANY} — <a href={`mailto:${CONTACT}`} className="accent underline underline-offset-4">{CONTACT}</a>
+        {COMPANY} —{" "}
+        <a
+          href={`mailto:${CONTACT}`}
+          className="accent underline underline-offset-4"
+        >
+          {CONTACT}
+        </a>
       </P>
 
       <DraftNotice>
@@ -234,19 +250,43 @@ function Privacy() {
       <Table
         head={["Data", "Why", "Kept for"]}
         rows={[
-          ["Names and email addresses", "Accounts, alerts, and identifying senders", "12 months after the account closes"],
-          ["Message metadata — subject, headers, authentication results", "The detections themselves", "12 months"],
-          ["Message bodies", "Detecting payment fraud and malicious content", "30 days, or never in metadata-only mode"],
+          [
+            "Names and email addresses",
+            "Accounts, alerts, and identifying senders",
+            "12 months after the account closes",
+          ],
+          [
+            "Message metadata — subject, headers, authentication results",
+            "The detections themselves",
+            "12 months",
+          ],
+          [
+            "Message bodies",
+            "Detecting payment fraud and malicious content",
+            "30 days, or never in metadata-only mode",
+          ],
           ["Attachments", "Malware and lure analysis", "30 days"],
-          ["Supplier bank identifiers and phone numbers", "Recognising when payment details change, and telling you who to call", "For the term"],
-          ["Sign-in IP, approximate location, device fingerprint", "Detecting account takeover", "12 months"],
-          ["IP and user agent of a click on a protected link", "Checking the link at the moment it is clicked", "30 days"],
+          [
+            "Supplier bank identifiers and phone numbers",
+            "Recognising when payment details change, and telling you who to call",
+            "For the term",
+          ],
+          [
+            "Sign-in IP, approximate location, device fingerprint",
+            "Detecting account takeover",
+            "12 months",
+          ],
+          [
+            "IP and user agent of a click on a protected link",
+            "Checking the link at the moment it is clicked",
+            "30 days",
+          ],
           ["Alerts", "Your incident record", "24 months"],
         ]}
       />
       <P>
-        We do not intentionally process special-category data. A message body may
-        incidentally contain it; that is what the 30-day retention and the
+        We do not intentionally process special-category data. A message body
+        may incidentally contain it; that is what the 30-day retention and the
         metadata-only mode are for.
       </P>
 
@@ -254,20 +294,23 @@ function Privacy() {
       <UL
         items={[
           <>
-            <strong>We do not train models on your mail.</strong> Not our models,
-            not a vendor's. Where the AI analyst is consulted, the provider is
-            contractually bound not to train on the content either.
+            <strong>We do not train models on your mail.</strong> Not our
+            models, not a vendor's. Where the AI analyst is consulted, the
+            provider is contractually bound not to train on the content either.
           </>,
           "We do not sell personal data, and we do not share it for advertising.",
           "We do not read your mail for any purpose other than detecting fraud against you.",
-          "We do not put personal data in the cross-tenant fraud graph — it holds registrable domain names, a verdict and a count, and nothing else.",
+          "Shared threat reports contain domain-level information, not your message contents, mailbox addresses, or your organization’s identity.",
         ]}
       />
 
       <H2>Who else sees it</H2>
       <P>
         Only the sub-processors listed on the{" "}
-        <Link to="/subprocessors" className="accent underline underline-offset-4">
+        <Link
+          to="/subprocessors"
+          className="accent underline underline-offset-4"
+        >
           sub-processors page
         </Link>
         , and several of those are engaged only when you turn the relevant
@@ -278,10 +321,11 @@ function Privacy() {
 
       <H2>Where it lives</H2>
       <P>
-        Envelock currently runs in a single region, and we will tell you which one
-        before you connect a mailbox. Customer-selectable regions and separate EU
-        infrastructure are on the roadmap and are not in place — if you have a
-        data-residency requirement, raise it before you buy rather than after.
+        Envelock currently runs in a single region, and we will tell you which
+        one before you connect a mailbox. Customer-selectable regions and
+        separate EU infrastructure are on the roadmap and are not in place — if
+        you have a data-residency requirement, raise it before you buy rather
+        than after.
       </P>
 
       <H2>Your rights</H2>
@@ -295,10 +339,13 @@ function Privacy() {
 
       <H2>Security</H2>
       <P>
-        Mailbox credentials are sealed with envelope encryption. Sessions are
-        short-lived. Every alert and every operator action is written to an audit
-        trail the customer can read. Report a vulnerability to{" "}
-        <a href={`mailto:${SECURITY_CONTACT}`} className="accent underline underline-offset-4">
+        Mailbox credentials are encrypted. Every alert and every operator action
+        is written to an audit trail the customer can read. Report a
+        vulnerability to{" "}
+        <a
+          href={`mailto:${SECURITY_CONTACT}`}
+          className="accent underline underline-offset-4"
+        >
           {SECURITY_CONTACT}
         </a>{" "}
         — we will not pursue anyone acting in good faith.
@@ -306,14 +353,20 @@ function Privacy() {
 
       <H2>Contact</H2>
       <P>
-        {COMPANY} — <a href={`mailto:${CONTACT}`} className="accent underline underline-offset-4">{CONTACT}</a>
+        {COMPANY} —{" "}
+        <a
+          href={`mailto:${CONTACT}`}
+          className="accent underline underline-offset-4"
+        >
+          {CONTACT}
+        </a>
       </P>
 
       <DraftNotice>
         The factual content of this notice is accurate against the code. The
         formal wording has not yet been through counsel — if you need a
-        lawyer-reviewed notice for a procurement process, ask and we will provide
-        one.
+        lawyer-reviewed notice for a procurement process, ask and we will
+        provide one.
       </DraftNotice>
     </>
   );
@@ -354,8 +407,8 @@ function Dpa() {
 
       <H2>3. Duration and deletion</H2>
       <P>
-        Processing lasts for the term. Retention is per class and is enforced by a
-        scheduled job, not by policy alone. On termination you may export your
+        Processing lasts for the term. Retention is per class and is enforced by
+        a scheduled job, not by policy alone. On termination you may export your
         data; deletion completes within 60 days.
       </P>
       <H3>Retained after workspace deletion</H3>
@@ -370,7 +423,10 @@ function Dpa() {
       <H2>4. Sub-processors</H2>
       <P>
         Listed on the{" "}
-        <Link to="/subprocessors" className="accent underline underline-offset-4">
+        <Link
+          to="/subprocessors"
+          className="accent underline underline-offset-4"
+        >
           sub-processors page
         </Link>
         . You consent to those listed. We give 30 days' notice before adding one
@@ -381,16 +437,16 @@ function Dpa() {
       <P>
         We will not materially decrease the security of the service during the
         term. We respond to reasonable security questionnaires.{" "}
-        <strong>We do not currently hold a SOC 2 or ISO 27001 report</strong> — if
-        your procurement requires one, tell us before you buy.
+        <strong>We do not currently hold a SOC 2 or ISO 27001 report</strong> —
+        if your procurement requires one, tell us before you buy.
       </P>
 
       <H2>6. Personal data breach</H2>
       <P>
-        We notify you without undue delay and within <strong>72 hours</strong> of
-        becoming aware of a personal data breach affecting your data, with the
-        nature of the breach, the categories and approximate number of records,
-        likely consequences, and the measures taken.
+        We notify you without undue delay and within <strong>72 hours</strong>{" "}
+        of becoming aware of a personal data breach affecting your data, with
+        the nature of the breach, the categories and approximate number of
+        records, likely consequences, and the measures taken.
       </P>
 
       <H2>7. International transfers</H2>
@@ -409,7 +465,13 @@ function Dpa() {
 
       <H2>Contact</H2>
       <P>
-        {COMPANY} — <a href={`mailto:${CONTACT}`} className="accent underline underline-offset-4">{CONTACT}</a>
+        {COMPANY} —{" "}
+        <a
+          href={`mailto:${CONTACT}`}
+          className="accent underline underline-offset-4"
+        >
+          {CONTACT}
+        </a>
       </P>
     </>
   );
@@ -420,26 +482,36 @@ function Subprocessors() {
   return (
     <>
       <P>
-        A sub-processor is any third party that may process customer personal data
-        on our behalf. This list forms part of the{" "}
+        A sub-processor is any third party that may process customer personal
+        data on our behalf. This list forms part of the{" "}
         <Link to="/dpa" className="accent underline underline-offset-4">
           DPA
         </Link>
         .
       </P>
       <P>
-        Several entries are <strong>conditional</strong> — they process data only
-        when you or the deployment enables that feature. A deployment with no AI
-        provider, no SMS provider and no external reputation keys sends customer
-        data to nobody here except the hosting and payment providers.
+        Several entries are <strong>conditional</strong> — they process data
+        only when you or the deployment enables that feature. A deployment with
+        no AI provider, no SMS provider and no external reputation keys sends
+        customer data to nobody here except the hosting and payment providers.
       </P>
 
       <H2>Always in scope</H2>
       <Table
         head={["Sub-processor", "Purpose", "Data", "Location"]}
         rows={[
-          ["Hosting provider", "Application and database hosting", "All stored data", "Named before you connect a mailbox"],
-          ["Stripe, Inc.", "Payments and billing", "Billing contact email and payment metadata. Never mailbox content.", "US / global"],
+          [
+            "Hosting provider",
+            "Application and database hosting",
+            "All stored data",
+            "Named before you connect a mailbox",
+          ],
+          [
+            "Stripe, Inc.",
+            "Payments and billing",
+            "Billing contact email and payment metadata. Never mailbox content.",
+            "US / global",
+          ],
         ]}
       />
 
@@ -447,17 +519,37 @@ function Subprocessors() {
       <Table
         head={["Sub-processor", "Enabled by", "Data"]}
         rows={[
-          ["Microsoft (Graph API)", "You connecting a Microsoft 365 mailbox", "Mailbox content, via your own tenant"],
-          ["Google (Gmail API)", "You connecting a Google Workspace mailbox", "Mailbox content, via your own tenant"],
+          [
+            "Microsoft (Graph API)",
+            "You connecting a Microsoft 365 mailbox",
+            "Mailbox content, via your own tenant",
+          ],
+          [
+            "Google (Gmail API)",
+            "You connecting a Google Workspace mailbox",
+            "Mailbox content, via your own tenant",
+          ],
           [
             "Anthropic or OpenAI",
             "The AI analyst being configured",
-            "Sender, subject and up to 4,000 characters of body — only for messages the deterministic rules already flagged as ambiguous. Not used for training. A self-hosted model keeps this on your own infrastructure.",
+            "Sender, subject and an excerpt of the message body for AI-assisted review. Not used for training. The applicable provider depends on your service configuration.",
           ],
-          ["Google Safe Browsing", "A Safe Browsing key being set", "URL hashes only"],
-          ["SMS provider", "SMS escalation being enabled", "Recipient phone number and alert title"],
+          [
+            "Google Safe Browsing",
+            "A Safe Browsing key being set",
+            "URL hashes only",
+          ],
+          [
+            "SMS provider",
+            "SMS escalation being enabled",
+            "Recipient phone number and alert title",
+          ],
           ["Geo-IP provider", "Geo-IP keys being set", "Sign-in IP addresses"],
-          ["SMTP relay", "Outbound mail being configured", "Alert recipient address and alert content"],
+          [
+            "SMTP relay",
+            "Outbound mail being configured",
+            "Alert recipient address and alert content",
+          ],
         ]}
       />
 
@@ -473,7 +565,10 @@ function Subprocessors() {
       <P>
         We give 30 days' notice before adding a sub-processor that processes
         mailbox content. Write to{" "}
-        <a href={`mailto:${SECURITY_CONTACT}`} className="accent underline underline-offset-4">
+        <a
+          href={`mailto:${SECURITY_CONTACT}`}
+          className="accent underline underline-offset-4"
+        >
           {SECURITY_CONTACT}
         </a>{" "}
         to subscribe to notifications.
@@ -537,7 +632,9 @@ export default function Legal() {
                   to={item.to}
                   className={cn(
                     "text-sm transition-colors",
-                    pathname === item.to ? "accent font-medium" : "fg-2 hover:text-[var(--fg)]",
+                    pathname === item.to
+                      ? "accent font-medium"
+                      : "fg-2 hover:text-[var(--fg)]",
                   )}
                 >
                   {item.label}

@@ -49,7 +49,7 @@ def _phish(msg_id: str) -> bytes:
 
 async def _mailbox(session) -> Mailbox:
     tid = uuid4()
-    session.add(Tenant(id=tid, name="Acme"))
+    session.add(Tenant(id=tid, name="Acme", plan="complete", payment_method_ok=True))
     await session.flush()
     session.add(Domain(tenant_id=tid, name="acme.com", registrable_domain="acme.com"))
     mb = Mailbox(

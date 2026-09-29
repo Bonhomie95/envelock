@@ -1,3 +1,4 @@
+import { useModalFocus } from "../lib/useModalFocus";
 import { useEffect, useState, type ReactNode } from "react";
 import { Link, NavLink, useLocation } from "react-router-dom";
 import { LogOut, Menu, X, type LucideIcon } from "lucide-react";
@@ -32,7 +33,13 @@ function RailLinks({
   return (
     <nav className="flex flex-col gap-0.5 px-2" aria-label="Console">
       {items.map(({ to, label, icon: Icon, badge, end }) => (
-        <NavLink key={to} to={to} end={end} onClick={onNavigate} className="rail-link">
+        <NavLink
+          key={to}
+          to={to}
+          end={end}
+          onClick={onNavigate}
+          className="rail-link"
+        >
           <Icon size={17} aria-hidden className="shrink-0" />
           <span className="truncate">{label}</span>
           {badge !== undefined && badge > 0 && (
@@ -75,17 +82,7 @@ export default function ConsoleShell({
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => setOpen(false), [pathname]);
 
-  useEffect(() => {
-    if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
-    document.addEventListener("keydown", onKey);
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = previous;
-    };
-  }, [open]);
+  const drawerRef = useModalFocus<HTMLElement>(open, () => setOpen(false));
 
   const brand = (
     <Link
@@ -114,7 +111,9 @@ export default function ConsoleShell({
         <span className="block truncate text-[13px] font-bold tracking-[0.12em] uppercase">
           Envelock
         </span>
-        <span className="mono-xs fg-3 block truncate">{subtitle ?? "Console"}</span>
+        <span className="mono-xs fg-3 block truncate">
+          {subtitle ?? "Console"}
+        </span>
       </span>
     </Link>
   );
@@ -141,18 +140,22 @@ export default function ConsoleShell({
   return (
     <div className="flex min-h-dvh">
       {/* Desktop rail */}
-      <aside className="rail sticky top-0 hidden h-dvh lg:flex">{railBody()}</aside>
+      <aside className="rail sticky top-0 hidden h-dvh lg:flex">
+        {railBody()}
+      </aside>
 
       {/* Mobile drawer */}
       {open && (
         <div className="fixed inset-0 z-60 lg:hidden">
           <div
-            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            className="motion-backdrop absolute inset-0 bg-black/60 backdrop-blur-sm"
             onClick={() => setOpen(false)}
             aria-hidden
           />
           <aside
-            className="rail rise absolute inset-y-0 left-0 h-full"
+            className="rail motion-drawer absolute inset-y-0 left-0 h-full"
+            ref={drawerRef}
+            tabIndex={-1}
             role="dialog"
             aria-modal="true"
             aria-label="Console navigation"
@@ -179,8 +182,8 @@ export default function ConsoleShell({
           >
             <Menu size={19} aria-hidden />
           </button>
-          <span className="mono-xs fg-3 truncate tracking-[0.14em] uppercase lg:hidden">
-            Envelock
+          <span className="fg-2 truncate text-sm font-medium">
+            {items.find((item) => pathname === item.to)?.label ?? "Workspace"}
           </span>
           <div className="ml-auto flex items-center gap-1.5">{actions}</div>
         </header>
@@ -191,9 +194,14 @@ export default function ConsoleShell({
 
         <footer className="border-t px-5 py-3.5">
           <div className="flex items-center gap-4">
-            <p className="fg-3 mono-xs">© {new Date().getFullYear()} ENVELOCK</p>
+            <p className="fg-3 mono-xs">
+              © {new Date().getFullYear()} ENVELOCK
+            </p>
             <span className="fg-3 mono-xs ml-auto flex items-center gap-1.5">
-              <span className="size-1.5 rounded-full bg-[var(--ok)]" aria-hidden />
+              <span
+                className="size-1.5 rounded-full bg-[var(--ok)]"
+                aria-hidden
+              />
               SIGNED IN
             </span>
           </div>

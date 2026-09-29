@@ -56,6 +56,10 @@ def detection_included(service: str, plan: str) -> bool:
     which knows nothing about billing — can be filtered without importing the
     ORM into it.
     """
+    if plan == Plan.GUARD.value:
+        return service.upper().startswith("D")
+    if plan not in {Plan.ESSENTIAL.value, Plan.COMPLETE.value, Plan.SOLO.value}:
+        return False
     if not service.upper().startswith(_COMPLETE_ONLY_PREFIX):
         return True
     return plan == Plan.COMPLETE.value

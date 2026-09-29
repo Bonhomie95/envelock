@@ -70,7 +70,14 @@ class Outcome:
 async def _run_case(session, case: Case) -> Outcome:
     """Replay a case's messages in order; the verdict is on the last one."""
     tenant_id = uuid4()
-    session.add(Tenant(id=tenant_id, name=f"Corpus {case.id}"))
+    session.add(
+        Tenant(
+            id=tenant_id,
+            name=f"Corpus {case.id}",
+            plan="essential",
+            payment_method_ok=True,
+        )
+    )
     await session.flush()
     mailbox = Mailbox(
         tenant_id=tenant_id,

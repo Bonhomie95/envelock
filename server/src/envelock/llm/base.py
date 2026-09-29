@@ -55,11 +55,20 @@ class HttpxTransport:
     async def post_json(self, url: str, *, headers: dict, body: dict) -> dict:
         import httpx
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(url, headers=headers, json=body)
-        if resp.status_code >= 400:
-            raise LlmError(f"{url} returned {resp.status_code}: {resp.text[:300]}")
-        return resp.json()
+        try:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(url, headers=headers, json=body)
+            if resp.status_code >= 400:
+                # Provider errors may echo prompts, credentials or private mail.
+                raise LlmError(f"provider returned HTTP {resp.status_code}")
+            data = resp.json()
+        except httpx.HTTPError:
+            raise LlmError("provider request failed") from None
+        except ValueError:
+            raise LlmError("provider returned invalid JSON") from None
+        if not isinstance(data, dict):
+            raise LlmError("provider returned a non-object response")
+        return data
 
 
 class LlmProvider(Protocol):

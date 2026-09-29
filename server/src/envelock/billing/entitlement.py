@@ -18,6 +18,8 @@ from envelock.models import Mailbox, Tenant
 def mailbox_entitled(tenant: Tenant) -> bool:
     """Content mailboxes (Channel 1/2) need a paid plan or an active trial. Guard
     is Channel-3-only and free — it protects domains, not mailboxes (PRD §12.3)."""
+    if tenant.plan not in {Plan.ESSENTIAL.value, Plan.COMPLETE.value, Plan.SOLO.value}:
+        return False
     ends = tenant.trial_ends_at
     if ends is not None and ends.tzinfo is None:
         ends = ends.replace(tzinfo=UTC)

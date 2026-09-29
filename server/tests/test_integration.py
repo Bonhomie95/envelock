@@ -313,6 +313,7 @@ async def test_public_endpoints_need_no_session(client: TestClient) -> None:
 async def test_status_reports_unconfigured_providers_honestly(client: TestClient) -> None:
     h = auth(sign_in(client))
     status = client.get("/api/v1/status/channels", headers=h).json()
+    assert set(status) == {"mail_providers", "notification_rungs"}
     sources = {p["source"]: p for p in status["mail_providers"]}
     # Forwarding needs no credentials at all, so it is always available.
     assert sources["forward_ingest"]["configured"] is True
@@ -350,3 +351,13 @@ async def test_quarantine_on_an_unconnected_mailbox_says_so(client: TestClient) 
     assert not result["succeeded"]
     assert "isn't connected" in result["reason"]
     assert "forwarding" not in result["reason"]
+
+
+async def test_customer_ai_usage_excludes_internal_metrics(client: TestClient) -> None:
+    h = auth(sign_in(client))
+    response = client.get("/api/v1/status/cost", headers=h)
+    assert response.status_code == 200
+    assert set(response.json()) == {"ai_cascade"}
+    assert set(response.json()["ai_cascade"]) == {
+        "configured", "cap_per_mailbox_month", "calls_this_month",
+    }

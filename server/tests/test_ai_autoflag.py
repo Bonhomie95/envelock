@@ -28,7 +28,7 @@ async def _persisted_event(session):
     """A real tenant + mailbox (the pipeline persists rows with FKs) carrying the
     same ambiguous High-band message the cascade tests use."""
     tid = uuid4()
-    session.add(Tenant(id=tid, name="Acme"))
+    session.add(Tenant(id=tid, name="Acme", plan="essential", payment_method_ok=True))
     await session.flush()
     mb = Mailbox(tenant_id=tid, address="pay@acme.com", sources=[SourceMechanism.IMAP_IDLE.value])
     session.add(mb)
@@ -72,6 +72,15 @@ async def test_confident_fraud_autoflags_alert_and_persists_verdict(
     assert row.final_tier == alert.tier
     assert row.message_id == result.message_id
     assert row.human_disposition is None  # not labeled yet
+
+    from types import SimpleNamespace
+
+    from envelock.api.tenants import alert_ai_verdict
+    public = await alert_ai_verdict(alert.id, SimpleNamespace(tenant_id=tid), session)
+    assert set(public["verdicts"][0]) == {
+        "verdict", "confidence", "rationale", "final_tier", "human_disposition", "created_at",
+    }
+
 
 
 @pytest.mark.asyncio
@@ -120,3 +129,18 @@ async def test_benign_verdict_annotates_but_never_flags(session, monkeypatch) ->
     ).scalar_one()
     assert row.verdict == "benign" and row.escalated is False
     assert row.rule_tier == row.final_tier == alert.tier  # untouched by the AI
+
+
+@pytest.mark.asyncio
+async def test_guard_does_not_run_paid_mailbox_analysis(session, monkeypatch) -> None:
+    _arm(monkeypatch, {"verdict": "fraud", "confidence": 0.95, "rationale": "test"})
+    tid, event = await _persisted_event(session)
+    tenant = await session.get(Tenant, tid)
+    tenant.plan = "guard"
+    tenant.payment_method_ok = False
+    await session.flush()
+    result = await analyse_event(
+        session, event, tenant_id=tid, owned_domains=frozenset({"acme.com"})
+    )
+    assert result.alert_id is None
+    assert result.findings == []

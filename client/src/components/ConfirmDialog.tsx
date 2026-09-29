@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useModalFocus } from "../lib/useModalFocus";
 import { AlertTriangle } from "lucide-react";
 import { Button } from "./primitives";
 
@@ -29,45 +29,34 @@ export default function ConfirmDialog({
   onConfirm: () => void;
   onCancel: () => void;
 }) {
-  const confirmRef = useRef<HTMLButtonElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    // Focus the *cancel*-adjacent confirm only after mount, and let Escape out:
-    // a dialog you cannot dismiss with the keyboard is a trap.
-    confirmRef.current?.focus();
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
-    };
-    document.addEventListener("keydown", onKey);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [open, onCancel]);
+  const dialogRef = useModalFocus<HTMLDivElement>(open, onCancel, busy);
 
   if (!open) return null;
 
   return (
     <div
-      className="fixed inset-0 z-[90] flex items-end justify-center bg-black/60 p-3 backdrop-blur-sm sm:items-center"
+      className="motion-backdrop fixed inset-0 z-[90] flex items-end justify-center bg-black/60 p-3 backdrop-blur-sm sm:items-center"
       onClick={(e) => {
-        if (e.target === e.currentTarget) onCancel();
+        if (!busy && e.target === e.currentTarget) onCancel();
       }}
     >
       <div
+        ref={dialogRef}
+        tabIndex={-1}
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="confirm-title"
         aria-describedby="confirm-body"
-        className="w-full max-w-md border bg-[var(--bg-raised)] p-5 shadow-xl"
+        className="motion-dialog w-full max-w-md rounded-xl border bg-[var(--bg-raised)] p-5 shadow-xl"
       >
         <div className="flex items-start gap-3">
           <AlertTriangle
             size={18}
-            className={destructive ? "mt-0.5 shrink-0 text-[var(--danger)]" : "mt-0.5 shrink-0"}
+            className={
+              destructive
+                ? "mt-0.5 shrink-0 text-[var(--danger)]"
+                : "mt-0.5 shrink-0"
+            }
             aria-hidden
           />
           <div className="min-w-0">
@@ -80,15 +69,21 @@ export default function ConfirmDialog({
           </div>
         </div>
         <div className="mt-5 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-          <Button variant="quiet" onClick={onCancel} disabled={busy}>
+          <Button
+            data-initial-focus
+            variant="quiet"
+            onClick={onCancel}
+            disabled={busy}
+          >
             CANCEL
           </Button>
           <Button
-            ref={confirmRef}
             variant={destructive ? "solid" : "accent"}
             onClick={onConfirm}
             disabled={busy}
-            className={destructive ? "!bg-[var(--danger)] !text-white" : undefined}
+            className={
+              destructive ? "!bg-[var(--danger)] !text-white" : undefined
+            }
           >
             {busy ? "WORKING…" : confirmLabel}
           </Button>

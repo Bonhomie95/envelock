@@ -32,7 +32,6 @@ from envelock.core.enums import (
 from envelock.core.events import DeviceContext, IdentityEvent, NetworkContext
 from envelock.db import get_session
 from envelock.detections.base import CounterpartyState, DetectionContext, inactive_for, run_all
-from envelock.detections.cascade import get_attachment_cascade, get_url_cascade
 from envelock.models import (
     Domain,
     LookalikeDomain,
@@ -46,7 +45,7 @@ from envelock.models import (
 from envelock.notify.dispatch import deliver_pending
 from envelock.notify.ladder import Recipient
 from envelock.notify.senders import Dispatcher
-from envelock.platform.graph import GRAPH, SimulationRun, plan_backfill, simulations
+from envelock.platform.graph import SimulationRun, plan_backfill, simulations
 from envelock.platform.pipeline import analyse_event
 from envelock.security.crypto import seal
 from envelock.security.limits import valid_domain
@@ -1241,30 +1240,16 @@ async def job_status(job_id: UUID, principal: ActiveUser) -> dict:
 # ── Operational status ───────────────────────────────────────────────────────
 @router.get("/status/channels")
 async def channel_status(principal: ActiveUser) -> dict:
-    # Honest sources only. This endpoint used to render three permanently-zero
-    # stat blocks from singletons nothing ever drove (a per-request cascade, a
-    # never-started broker, a second CT watcher that wasn't the one running) —
-    # live-looking numbers that could never move.
-    from envelock.detections.cascade import get_attachment_cascade
-    from envelock.workers import scheduler as sched
-    from envelock.workers.imap_fetch import worker_health
-
-    ct = sched.LIVE_CT_WATCHER
+    # Customer-facing availability only; platform internals belong in staff tools.
     return {
         "mail_providers": provider_status(),
-        "imap_worker": worker_health(),
         "notification_rungs": Dispatcher().status(),
-        "attachments": get_attachment_cascade().metrics.payload(),
-        "cert_transparency": (
-            ct.stats.payload() if ct is not None else {"running": False}
-        ),
-        "counterparty_graph": {"domains": len(GRAPH), "actionable": len(GRAPH.known_bad())},
     }
 
 
 @router.get("/status/cost")
 async def cost_status(principal: AdminUser, session: Session) -> dict:
-    """Fall-through is the number that predicts COGS (PRD §12.12D)."""
+    """Customer AI availability and usage; no internal costs or pipeline metrics."""
     from datetime import UTC, datetime
 
     from sqlalchemy import func
@@ -1275,25 +1260,18 @@ async def cost_status(principal: AdminUser, session: Session) -> dict:
 
     settings = get_settings()
     period = datetime.now(UTC).strftime("%Y-%m")
-    calls, cost = (
+    calls = (
         await session.execute(
             select(
                 func.coalesce(func.sum(LlmUsage.calls), 0),
-                func.coalesce(func.sum(LlmUsage.cost_micros), 0),
             ).where(LlmUsage.tenant_id == principal.tenant_id, LlmUsage.period == period)
         )
-    ).one()
+    ).scalar_one()
     prov = get_provider()
     return {
-        "attachments": get_attachment_cascade().metrics.payload(),
-        "urls": get_url_cascade().metrics.payload(),
-        "detonation_enabled": get_attachment_cascade().detonation_enabled,
         "ai_cascade": {
-            "provider": settings.llm_provider,
             "configured": bool(prov and prov.configured),
-            "model": getattr(prov, "model", None),
             "cap_per_mailbox_month": settings.llm_max_calls_per_mailbox_month,
             "calls_this_month": int(calls),
-            "cost_micros_this_month": int(cost),
         },
     }

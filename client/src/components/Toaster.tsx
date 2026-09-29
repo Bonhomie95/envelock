@@ -32,7 +32,7 @@ export default function Toaster() {
           <div
             key={t.id}
             className={cn(
-              "pointer-events-auto flex w-full max-w-sm items-start gap-2.5 border bg-[var(--bg-raised)] px-3.5 py-3 shadow-lg",
+              "motion-toast rounded-xl pointer-events-auto flex w-full max-w-sm items-start gap-2.5 border bg-[var(--bg-raised)] px-3.5 py-3 shadow-lg",
               TONE[t.kind],
             )}
           >

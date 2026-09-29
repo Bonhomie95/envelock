@@ -41,12 +41,18 @@ def _extract_json(text: str) -> dict:
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
     try:
-        return json.loads(text)
+        result = json.loads(text)
     except json.JSONDecodeError:
         match = re.search(r"\{.*\}", text, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-        raise LlmError(f"model did not return JSON: {text[:200]}") from None
+        if not match:
+            raise LlmError("model did not return a JSON object") from None
+        try:
+            result = json.loads(match.group(0))
+        except json.JSONDecodeError:
+            raise LlmError("model returned invalid JSON") from None
+    if not isinstance(result, dict):
+        raise LlmError("model returned a non-object verdict")
+    return result
 
 
 # ── Anthropic (Messages API) ──────────────────────────────────────────────────
@@ -141,7 +147,7 @@ class OpenAIProvider:
         )
         choices = data.get("choices") or []
         if not choices:
-            raise LlmError(f"{self.name} returned no choices: {str(data)[:200]}")
+            raise LlmError(f"{self.name} returned no choices")
         text = (choices[0].get("message") or {}).get("content") or ""
         usage = data.get("usage") or {}
         tin, tout = int(usage.get("prompt_tokens", 0)), int(usage.get("completion_tokens", 0))

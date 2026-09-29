@@ -16,7 +16,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from envelock.auth.deps import ActiveUser, OptionalUser
+from envelock.api.staff_auth import requires
+from envelock.auth.deps import OptionalUser
+from envelock.auth.staff import Operator, Permission
 from envelock.billing import pricing, trial
 from envelock.channels.external.lookalike import permutations, score_candidate
 from envelock.channels.mail.parser import parse_message_async
@@ -415,9 +417,8 @@ class AnalyseRequest(BaseModel):
 async def analyse(req: AnalyseRequest, principal: OptionalUser) -> dict:
     """Run the detection suite over a raw RFC822 message.
 
-    The public sandbox shows the plain-English finding and severity; the internal
-    detection code and per-signal evidence are returned only to a signed-in
-    session (PRD §16).
+    The lab shows plain-English findings and severity. Internal detector
+    identifiers, scores and diagnostic evidence are withheld from all customers.
     """
     tenant_id, mailbox_id = uuid4(), uuid4()
     owned = frozenset(registrable_domain(d) for d in req.owned_domains)
@@ -458,46 +459,31 @@ async def analyse(req: AnalyseRequest, principal: OptionalUser) -> dict:
 
     findings = run_all(ctx)
     assessment = assess(findings)
-    authed = principal is not None
-
-    if authed:
-        findings_out = [
-            {
-                "service": f.service,
-                "category": _public_category(f.service),
-                "tier": f.tier,
-                "score": f.score,
-                "summary": f.summary,
-                "evidence": f.evidence,
-            }
-            for f in findings
-        ]
-    else:
-        # Redacted: outcome language only. No code, no score, no evidence — the
-        # score and evidence would leak thresholds and the signals we weigh.
-        findings_out = [
-            {
-                "service": None,
-                "category": _public_category(f.service),
-                "tier": f.tier,
-                "summary": f.summary,
-            }
-            for f in findings
-        ]
+    # The lab is a customer preview, including when signed in. Keep scoring,
+    # detector identifiers and raw implementation evidence out of its response.
+    findings_out = [
+        {
+            "service": None,
+            "category": _public_category(f.service),
+            "tier": f.tier,
+            "summary": f.summary,
+        }
+        for f in findings
+    ]
 
     assessment_out = None
     if assessment is not None:
         assessment_out = {
             "tier": assessment.tier,
-            "score": assessment.score,
+            "score": None,
             "title": assessment.title,
             "body": assessment.body,
             "requires_callback": assessment.requires_callback,
             "callback_phone": assessment.callback_phone,
             "rationale": list(assessment.rationale),
             "alertable": assessment.is_alertable,
-            # The service list is the taxonomy; expose it only to a session.
-            "services": list(assessment.services) if authed else None,
+            # The customer lab does not expose the internal taxonomy.
+            "services": None,
         }
 
     return {
@@ -516,11 +502,12 @@ async def analyse(req: AnalyseRequest, principal: OptionalUser) -> dict:
 
 
 @router.get("/catalogue")
-async def catalogue(principal: ActiveUser) -> dict:
+async def catalogue(
+    principal: Annotated[Operator, Depends(requires(Permission.PLATFORM_READ))],
+) -> dict:
     """Every registered detection and what it needs to run.
 
-    This is the raw taxonomy, so it sits behind a session (PRD §16) — anonymous
-    callers would otherwise scrape the full detection map.
+    Raw taxonomy is restricted to authorized Envelock operators.
     """
     return {
         "services": sorted(

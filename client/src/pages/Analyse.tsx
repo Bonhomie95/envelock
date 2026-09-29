@@ -1,5 +1,13 @@
-import { useState } from "react";
-import { Loader2, PhoneCall, Play, ShieldOff } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import {
+  ArrowRight,
+  FlaskConical,
+  Loader2,
+  PhoneCall,
+  Play,
+  ShieldCheck,
+  ShieldOff,
+} from "lucide-react";
 import { api, type AnalyseResult } from "../lib/api";
 import { Button, SectionHead, TierChip, cn } from "../components/primitives";
 
@@ -84,12 +92,17 @@ interface Ctx {
 }
 
 export default function Analyse() {
+  const resultsRef = useRef<HTMLDivElement>(null);
   const [raw, setRaw] = useState(SAMPLES.bankChange.body);
   const [ctx, setCtx] = useState<Partial<Ctx>>(SAMPLES.bankChange.ctx);
   const [active, setActive] = useState("bankChange");
   const [result, setResult] = useState<AnalyseResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (result || error) resultsRef.current?.focus();
+  }, [result, error]);
 
   function pick(key: string) {
     setActive(key);
@@ -100,8 +113,10 @@ export default function Analyse() {
   }
 
   async function run() {
+    if (loading || !raw.trim()) return;
     setLoading(true);
     setError(null);
+    setResult(null);
     try {
       setResult(
         await api.analyse({
@@ -113,27 +128,46 @@ export default function Analyse() {
         }),
       );
     } catch {
-      setError("We couldn't run the scan just now. Please try again in a moment.");
+      setError(
+        "We couldn't run the scan just now. Please try again in a moment.",
+      );
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <main className="shell py-12 md:py-16">
-      <SectionHead
-        label="Detection sandbox"
-        title="Run the detection suite on a real message"
-        lede="Paste any raw email, or pick one of the scenarios below. The engine runs exactly as it does in production."
-      />
+    <main className="shell detection-lab py-10 md:py-14">
+      <div className="lab-heading">
+        <span className="lab-icon">
+          <FlaskConical size={25} />
+        </span>
+        <SectionHead
+          as="h1"
+          label="The detection lab"
+          title="Put a suspicious email to the test."
+          lede="Explore a sample attack or paste a raw email. Get the evidence, the risk assessment, and a practical next step."
+        />
+      </div>
+      <div className="lab-notice">
+        <ShieldCheck size={19} />
+        <p>
+          <strong>A limited preview of email analysis.</strong> This lab does
+          not include AI review, live threat lookups, or your connected
+          mailbox’s history. Sample supplier records are illustrative. Use
+          synthetic or redacted messages.
+        </p>
+      </div>
 
       <div className="mt-8 flex flex-wrap gap-2">
         {Object.entries(SAMPLES).map(([key, s]) => (
           <button
             key={key}
             onClick={() => pick(key)}
+            disabled={loading}
+            aria-pressed={active === key}
             className={cn(
-              "cursor-pointer border px-3.5 py-2.5 text-left text-sm transition-colors",
+              "lab-scenario flex-1 cursor-pointer rounded-lg border px-4 py-3 text-left text-sm transition-colors disabled:opacity-60",
               active === key
                 ? "border-[var(--accent)] accent"
                 : "fg-2 hover:bg-[var(--bg-hover)]",
@@ -157,10 +191,16 @@ export default function Analyse() {
               </label>
               <span className="fg-3 ml-2 text-xs">to pay@acme.com</span>
             </div>
-            <Button onClick={run} disabled={loading} variant="accent" size="sm">
+            <Button
+              onClick={run}
+              disabled={loading || !raw.trim()}
+              variant="accent"
+              size="sm"
+            >
               {loading ? (
                 <>
-                  <Loader2 size={14} className="animate-spin" aria-hidden /> ANALYSING
+                  <Loader2 size={14} className="animate-spin" aria-hidden />{" "}
+                  ANALYSING
                 </>
               ) : (
                 <>
@@ -172,9 +212,16 @@ export default function Analyse() {
           <textarea
             id="raw"
             value={raw}
-            onChange={(e) => setRaw(e.target.value)}
+            onChange={(e) => {
+              setRaw(e.target.value);
+              setActive("custom");
+              setCtx({});
+              setResult(null);
+              setError(null);
+            }}
+            disabled={loading}
             spellCheck={false}
-            className="font-mono bg-base min-h-[20rem] flex-1 resize-y p-5 text-xs leading-relaxed outline-none"
+            className="font-mono bg-base min-h-[23rem] flex-1 resize-y p-5 text-xs leading-relaxed focus-visible:outline-2 focus-visible:outline-[var(--accent)]"
           />
           {ctx.counterparty_known_bank_ids && (
             <div className="border-t px-5 py-3">
@@ -185,7 +232,14 @@ export default function Analyse() {
           )}
         </div>
 
-        <div className="space-y-4">
+        <div
+          ref={resultsRef}
+          tabIndex={-1}
+          aria-label="Analysis results"
+          className="space-y-4 scroll-mt-24"
+          aria-live="polite"
+          aria-busy={loading}
+        >
           {error && (
             <div className="panel border-[var(--danger)] p-5">
               <p role="alert" className="text-sm text-[var(--danger)]">
@@ -195,12 +249,28 @@ export default function Analyse() {
           )}
 
           {!result && !error && (
-            <div className="panel p-8">
-              <p className="fg-3 text-sm">
-                Press Analyse to see the verdict. The box at the top is the alert
-                your team would get; below it are the individual checks that
-                led to it.
+            <div className="panel lab-empty p-8">
+              {loading ? (
+                <Loader2 size={30} className="accent animate-spin" />
+              ) : (
+                <ScanResultIcon />
+              )}
+              <h2>
+                {loading
+                  ? "Inspecting the message…"
+                  : "The evidence belongs here."}
+              </h2>
+              <p>
+                Run the scan to see the warning signs, why the message is
+                suspicious, and what to do next.
               </p>
+              <div>
+                <span>Message</span>
+                <ArrowRight size={14} />
+                <span>Signals</span>
+                <ArrowRight size={14} />
+                <span>Assessment</span>
+              </div>
             </div>
           )}
 
@@ -214,9 +284,6 @@ export default function Analyse() {
             >
               <div className="flex items-center justify-between gap-3">
                 <TierChip tier={result.assessment.tier} blink />
-                <span className="fg-3 tnum text-xs">
-                  score {result.assessment.score}/100
-                </span>
               </div>
               <h3 className="mt-4 text-lg font-bold text-balance">
                 {result.assessment.title}
@@ -305,8 +372,10 @@ export default function Analyse() {
             <div className="panel p-8">
               <p className="text-sm font-semibold">Nothing detected.</p>
               <p className="fg-2 mt-2 text-sm leading-relaxed">
-                An ordinary email produces no alert. Products that cry wolf get
-                muted, and a muted alert is worse than no alert.
+                No warning was found in this preview. This is not a guarantee
+                that the message or its links are safe. Connected-mailbox
+                history, reputation checks, and AI review can add evidence
+                outside this lab.
               </p>
             </div>
           )}
@@ -314,4 +383,8 @@ export default function Analyse() {
       </div>
     </main>
   );
+}
+
+function ScanResultIcon() {
+  return <ShieldCheck size={30} className="accent" aria-hidden />;
 }

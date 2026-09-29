@@ -81,10 +81,12 @@ def test_analyse_flags_bank_change_critical_for_authenticated_caller(
     ).json()
 
     assert body["assessment"]["tier"] == "critical"
-    assert "A1" in body["assessment"]["services"]
+    assert body["assessment"]["services"] is None
+    assert body["assessment"]["score"] is None
     assert body["assessment"]["requires_callback"] is True
     assert body["assessment"]["callback_phone"] == "+1 803 000 0000"
-    assert body["findings"][0]["service"] is not None
+    assert body["findings"][0]["service"] is None
+    assert "evidence" not in body["findings"][0]
 
 
 def test_analyse_redacts_detection_taxonomy_for_anonymous_caller(
@@ -97,6 +99,7 @@ def test_analyse_redacts_detection_taxonomy_for_anonymous_caller(
     assert body["assessment"]["tier"] == "critical"  # outcome still visible
     assert body["assessment"]["requires_callback"] is True
     assert body["assessment"]["services"] is None  # taxonomy withheld
+    assert body["assessment"]["score"] is None
     for finding in body["findings"]:
         assert finding["service"] is None
         assert "evidence" not in finding
@@ -577,3 +580,8 @@ def test_an_email_address_is_never_used_as_the_company_name(client: TestClient) 
     ).json()
     h = {"Authorization": f"Bearer {tokens['access_token']}"}
     assert client.get("/api/v1/tenant", headers=h).json()["name"] == "namefix-uniq.com"
+
+
+def test_customer_session_cannot_read_operator_detection_catalogue(client: TestClient) -> None:
+    response = client.get("/api/v1/catalogue", headers=_auth_header(client))
+    assert response.status_code == 404  # staff surfaces are hidden from customers

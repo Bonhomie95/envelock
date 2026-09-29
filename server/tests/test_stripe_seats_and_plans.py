@@ -319,3 +319,19 @@ def test_a_returning_customer_keeps_their_stripe_customer(
     form = [d for m, u, d in stripe.calls if "checkout/sessions" in u][-1]
     assert form["customer"] == "cus_1"
     assert "customer_email" not in form
+
+
+def test_plan_change_requires_matching_extra_seat_price(
+    client: TestClient, stripe: _Stripe, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h, tid = _owner(client, "seat-price-missing.example")
+    _paid(client, tid, "seat-price-missing.example", extra=2)
+    stripe.items.append({
+        "id": "si_extra", "price": {"id": "price_cmp_seat"}, "quantity": 2,
+    })
+    monkeypatch.setenv("ENVELOCK_STRIPE_PRICE_EXTRA_MAILBOX_ESSENTIAL", "")
+    get_settings.cache_clear()
+    response = client.post("/api/v1/tenant/plan", json={"plan": "essential"}, headers=h)
+    assert response.status_code == 503
+    assert stripe.updates() == []
+    assert client.get("/api/v1/tenant", headers=h).json()["subscribed_plan"] == "complete"

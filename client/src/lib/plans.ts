@@ -27,8 +27,13 @@ export const PLAN_TIERS: PlanTier[] = [
     per: "/mo · 5 mailboxes",
     extra: "$2",
     extraCents: 200,
-    blurb: "Stops invoice fraud.",
-    features: ["Bank-detail-change alerts", "Fake supplier detection", "IT dashboard"],
+    blurb: "AI-assisted payment fraud detection.",
+    features: [
+      "Everything in Guard",
+      "Bank-detail change & supplier fraud alerts",
+      "AI review of suspicious payment emails",
+      "Supplier records & verification workflow",
+    ],
   },
   {
     id: "complete",
@@ -38,12 +43,12 @@ export const PLAN_TIERS: PlanTier[] = [
     per: "/mo · 5 mailboxes",
     extra: "$3.50",
     extraCents: 350,
-    blurb: "Adds account-takeover protection.",
+    blurb: "Broader detection across email and identity.",
     features: [
       "Everything in Essential",
-      "Unusual sign-in alerts",
-      "Silent access (ATO) detection",
-      "Auto-remove dangerous mail",
+      "AI review of phishing messages",
+      "Account-takeover alerts with integrations",
+      "Automatic quarantine where supported",
     ],
   },
 ];

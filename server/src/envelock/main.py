@@ -321,6 +321,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
         docs_url="/docs" if not settings.is_production else None,
         redoc_url=None,
+        openapi_url="/openapi.json" if not settings.is_production else None,
     )
 
     # Order matters, and Starlette applies these outermost-last: the
@@ -342,7 +343,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
         max_age=600,
     )

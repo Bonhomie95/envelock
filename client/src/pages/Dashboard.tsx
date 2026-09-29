@@ -162,7 +162,7 @@ function AiVerdictPanel({ alertId }: { alertId: string }) {
         className="fg-2 mono-xs flex cursor-pointer items-center gap-1.5 hover:text-[var(--fg)]"
       >
         <Sparkles size={11} aria-hidden />
-        {open ? "HIDE" : "WHY THE AI AGREED"}
+        {open ? "HIDE" : "AI ASSESSMENT"}
       </button>
 
       {open && (
@@ -179,9 +179,7 @@ function AiVerdictPanel({ alertId }: { alertId: string }) {
           )}
           {state.kind === "ready" && state.verdicts.length === 0 && (
             <p className="fg-3 text-xs leading-relaxed">
-              The deterministic checks settled this one on their own — the AI
-              analyst was never called. That is the normal case, and it is why
-              the feature is affordable.
+              No AI assessment is available for this alert. Review the alert evidence and recommended action.
             </p>
           )}
           {state.kind === "ready" &&
@@ -194,26 +192,16 @@ function AiVerdictPanel({ alertId }: { alertId: string }) {
                       CONFIDENCE {Math.round(v.confidence * 100)}%
                     </span>
                   )}
-                  <span className="fg-3 mono-xs">
-                    {v.escalated
-                      ? `RAISED ${String(v.rule_tier ?? "").toUpperCase()} → ${String(
-                          v.final_tier ?? "",
-                        ).toUpperCase()}`
-                      : "NO CHANGE TO SEVERITY"}
-                  </span>
+
                 </div>
                 {v.rationale && (
                   <p className="fg-2 mt-2.5 leading-relaxed">{v.rationale}</p>
                 )}
-                <p className="fg-3 mono-xs mt-2.5">
-                  {[v.provider, v.model].filter(Boolean).join(" · ") || "model not recorded"}
-                  {v.cost_micros !== null &&
-                    ` · ${(v.cost_micros / 10_000).toFixed(2)}¢`}
-                </p>
+
               </div>
             ))}
           <p className="fg-3 mono-xs mt-3">
-            THE ANALYST CAN RAISE A SEVERITY, NEVER LOWER ONE
+            VERIFY SUSPICIOUS REQUESTS BEFORE ACTING
           </p>
         </div>
       )}
@@ -2607,8 +2595,7 @@ function MailboxActivity({ mailboxId }: { mailboxId: string }) {
               <ul className="mt-2 space-y-1.5" role="list">
                 {data.events.length === 0 ? (
                   <li className="fg-3 text-xs">
-                    Connected and monitoring. Nothing to report — quiet is the
-                    correct state.
+                    No activity has been recorded yet. Check the mailbox’s connection and coverage status.
                   </li>
                 ) : (
                   data.events.map((e, i) => (
@@ -3488,7 +3475,8 @@ export default function Dashboard() {
 
   return (
     <main>
-      <div className="shell pt-5">
+      <div className="shell pt-8">
+        <div className="mb-6"><p className="eyebrow">Your security workspace</p><h1 className="mt-2 text-3xl font-semibold tracking-tight">Threat overview</h1><p className="fg-2 mt-2 text-sm">Review what needs attention, understand the evidence, and keep your team protected.</p></div>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
           <span className="sect-label truncate">
             {tenant?.name && tenant.name !== domain ? tenant.name : "Workspace"}
@@ -3511,6 +3499,8 @@ export default function Dashboard() {
             stats={stats}
             issues={issues}
             onShowAlerts={() => showTab("alerts")}
+            loading={loading}
+            unavailable={!!error}
           />
         </div>
 
@@ -3549,6 +3539,18 @@ export default function Dashboard() {
               role="tab"
               id={`tab-${id}`}
               aria-selected={tab === id}
+              tabIndex={tab === id ? 0 : -1}
+              onKeyDown={(event) => {
+                const index = TABS.findIndex(([key]) => key === id);
+                const next = event.key === "ArrowRight" ? (index + 1) % TABS.length
+                  : event.key === "ArrowLeft" ? (index + TABS.length - 1) % TABS.length
+                  : event.key === "Home" ? 0 : event.key === "End" ? TABS.length - 1 : -1;
+                if (next >= 0) {
+                  event.preventDefault();
+                  showTab(TABS[next][0]);
+                  document.getElementById(`tab-${TABS[next][0]}`)?.focus();
+                }
+              }}
               aria-controls={`panel-${id}`}
               onClick={() => showTab(id)}
               className={cn(
@@ -3610,8 +3612,8 @@ export default function Dashboard() {
                   This is your alert queue. When Envelock spots changed bank
                   details, invoice fraud, or a dangerous link in a connected
                   mailbox, it appears here with the action to take — verify,
-                  quarantine or dismiss. An empty queue means nothing needs you
-                  right now; quiet is the correct state.
+                  quarantine or dismiss. An empty queue means no matching alerts have been recorded. Check
+                  mailbox coverage to confirm which protections are active.
                 </p>
               </div>
             ) : (

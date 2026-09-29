@@ -10,7 +10,6 @@ import {
   KeyRound,
   Loader2,
   Lock,
-  ShieldCheck,
 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
 import { ApiError, api, auth } from "../lib/api";
@@ -21,16 +20,12 @@ import {
   isLikelyDisposableEmail,
   looksLikeDomain,
 } from "../lib/passphrase";
-import { Button, cn } from "../components/primitives";
+import { Button } from "../components/primitives";
 
 const STRENGTH_COLOR = ["#dc2626", "#dc2626", "#d97706", "#16a34a", "#16a34a"];
 
 type Step =
-  | "credentials"
-  | "mfa-setup"
-  | "mfa-verify"
-  | "recovery"
-  | "set-password";
+  "credentials" | "mfa-setup" | "mfa-verify" | "recovery" | "set-password";
 
 const LAST_EMAIL_KEY = "envelock.last_email";
 
@@ -134,7 +129,9 @@ export default function SignIn() {
     // the forwarding ingest address, so reject a company name typed here before
     // we create the account — not with a silent failure after registration.
     if (mode === "signup" && domain && !looksLikeDomain(domain)) {
-      setError("Enter your company's domain, like yourcompany.com — not its name.");
+      setError(
+        "Enter your company's domain, like yourcompany.com — not its name.",
+      );
       return;
     }
     if (mode === "signup" && !passwordsMatch) {
@@ -194,7 +191,9 @@ export default function SignIn() {
       // The email is already registered — flip to sign-in so they can just log in.
       if (e instanceof ApiError && e.status === 409) {
         setMode("signin");
-        setError("You already have an account with that email — please sign in.");
+        setError(
+          "You already have an account with that email — please sign in.",
+        );
       } else {
         fail(e);
       }
@@ -310,16 +309,22 @@ export default function SignIn() {
   // Bring a new message into view — on a phone the form is often scrolled.
   useEffect(() => {
     if (error || flowNotice) {
-      messagesRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      messagesRef.current?.scrollIntoView({
+        behavior: "smooth",
+        block: "nearest",
+      });
     }
   }, [error, flowNotice]);
 
   const [copiedCodes, setCopiedCodes] = useState(false);
   function recoveryText() {
     return (
-      "Envelock recovery codes for " + email + "\n" +
+      "Envelock recovery codes for " +
+      email +
+      "\n" +
       "Each code works once. Keep them somewhere safe, away from this device.\n\n" +
-      recovery.join("\n") + "\n"
+      recovery.join("\n") +
+      "\n"
     );
   }
   function copyRecovery() {
@@ -328,7 +333,9 @@ export default function SignIn() {
     setTimeout(() => setCopiedCodes(false), 2000);
   }
   function downloadRecovery() {
-    const url = URL.createObjectURL(new Blob([recoveryText()], { type: "text/plain" }));
+    const url = URL.createObjectURL(
+      new Blob([recoveryText()], { type: "text/plain" }),
+    );
     const a = document.createElement("a");
     a.href = url;
     a.download = "envelock-recovery-codes.txt";
@@ -343,8 +350,8 @@ export default function SignIn() {
   }
 
   return (
-    <main className="grid12 shell min-h-[calc(100dvh-4rem)] items-center py-16">
-      <div className="col-span-12 lg:col-span-5">
+    <main className="shell flex min-h-[calc(100dvh-4rem)] items-center justify-center py-16">
+      <div className="w-full max-w-md">
         <div className="flex items-center gap-3">
           <span className="h-px w-8 bg-[var(--accent)]" aria-hidden />
           <span className="sect-label">
@@ -365,12 +372,18 @@ export default function SignIn() {
             sign-in or a "check your inbox" looked like nothing had happened. */}
         <div ref={messagesRef} className="scroll-mt-24">
           {flowNotice && (
-            <p role="status" className="callout mt-5 px-4 py-3 text-xs leading-relaxed">
+            <p
+              role="status"
+              className="callout mt-5 px-4 py-3 text-xs leading-relaxed"
+            >
               {flowNotice}
             </p>
           )}
           {error && (
-            <div role="alert" className="callout mt-5 px-4 py-3 text-xs leading-relaxed">
+            <div
+              role="alert"
+              className="callout mt-5 px-4 py-3 text-xs leading-relaxed"
+            >
               {error}
               {needsVerification && (
                 <div className="mt-2">
@@ -399,7 +412,7 @@ export default function SignIn() {
               </p>
             )}
             <h1 className="headline mt-5 text-balance">
-              {mode === "signin" ? "Welcome back." : "Start with the free scan."}
+              {mode === "signin" ? "Welcome back." : "Build a safer inbox."}
             </h1>
             <p className="lede mt-4 text-base">
               {mode === "signin"
@@ -410,7 +423,10 @@ export default function SignIn() {
             <form onSubmit={submitCredentials} className="mt-10 space-y-5">
               {mode === "signup" && (
                 <div>
-                  <label htmlFor="domain" className="block text-sm font-semibold">
+                  <label
+                    htmlFor="domain"
+                    className="block text-sm font-semibold"
+                  >
                     Company domain
                   </label>
                   <input
@@ -422,9 +438,10 @@ export default function SignIn() {
                     className="field mt-2"
                   />
                   <p className="fg-3 mt-2 text-xs">
-                    Right after sign-in you'll add one DNS record to prove you own
-                    this domain — it's the first step and unlocks your dashboard.
-                    It switches on your spoof reports too. No mailbox access involved.
+                    Right after sign-in you'll add one DNS record to prove you
+                    own this domain — it's the first step and unlocks your
+                    dashboard. It switches on your spoof reports too. No mailbox
+                    access involved.
                   </p>
                 </div>
               )}
@@ -453,16 +470,20 @@ export default function SignIn() {
                   !isLikelyDisposableEmail(email) &&
                   isConsumerEmail(email) && (
                     <p className="mt-2 text-xs font-medium text-red-600">
-                      Use your work email. Envelock protects a company domain, so
-                      consumer inboxes like Gmail or Outlook.com can't be used —
-                      but if your company runs on Google&nbsp;Workspace or
-                      Microsoft&nbsp;365, sign up with your own company address.
+                      Use your work email. Envelock protects a company domain,
+                      so consumer inboxes like Gmail or Outlook.com can't be
+                      used — but if your company runs on Google&nbsp;Workspace
+                      or Microsoft&nbsp;365, sign up with your own company
+                      address.
                     </p>
                   )}
               </div>
 
               <div>
-                <label htmlFor="password" className="block text-sm font-semibold">
+                <label
+                  htmlFor="password"
+                  className="block text-sm font-semibold"
+                >
                   {mode === "signup" ? "Passphrase" : "Password"}
                 </label>
                 <div className="relative mt-2">
@@ -481,7 +502,9 @@ export default function SignIn() {
                   <button
                     type="button"
                     onClick={() => setShowPassword((v) => !v)}
-                    aria-label={showPassword ? "Hide password" : "Show password"}
+                    aria-label={
+                      showPassword ? "Hide password" : "Show password"
+                    }
                     aria-pressed={showPassword}
                     className="fg-2 absolute inset-y-0 right-0 flex cursor-pointer items-center px-3 hover:text-[var(--fg)]"
                   >
@@ -520,7 +543,9 @@ export default function SignIn() {
                         </div>
                         <p
                           className="mt-1.5 text-xs font-medium"
-                          style={{ color: s.ok ? "#16a34a" : STRENGTH_COLOR[s.score] }}
+                          style={{
+                            color: s.ok ? "#16a34a" : STRENGTH_COLOR[s.score],
+                          }}
                         >
                           {s.label}
                           {s.hint ? ` — ${s.hint}` : ""}
@@ -607,7 +632,9 @@ export default function SignIn() {
             </form>
 
             <p className="fg-2 mt-8 text-sm">
-              {mode === "signin" ? "No account yet?" : "Already have an account?"}{" "}
+              {mode === "signin"
+                ? "No account yet?"
+                : "Already have an account?"}{" "}
               <button
                 onClick={() => {
                   setMode(mode === "signin" ? "signup" : "signin");
@@ -629,9 +656,9 @@ export default function SignIn() {
           <>
             <h1 className="headline mt-5 text-balance">Set up two-factor.</h1>
             <p className="lede mt-4 text-base">
-              Scan this with your authenticator app (Google Authenticator, Authy,
-              1Password, …). Strongly recommended — but you can skip it now and
-              turn it on later from your dashboard.
+              Scan this with your authenticator app (Google Authenticator,
+              Authy, 1Password, …). Strongly recommended — but you can skip it
+              now and turn it on later from your dashboard.
             </p>
 
             <div className="panel mt-8 p-5">
@@ -652,7 +679,9 @@ export default function SignIn() {
                   onClick={() => setShowSecret((v) => !v)}
                   className="fg-2 cursor-pointer text-xs font-semibold underline underline-offset-4"
                 >
-                  {showSecret ? "Hide setup key" : "Can't scan? Enter a key instead"}
+                  {showSecret
+                    ? "Hide setup key"
+                    : "Can't scan? Enter a key instead"}
                 </button>
                 {showSecret && (
                   <div className="mt-3 flex items-center gap-3">
@@ -770,7 +799,10 @@ export default function SignIn() {
               </button>
             ) : (
               <form onSubmit={submitRecovery} className="mt-6 space-y-3">
-                <label htmlFor="recovery-code" className="block text-sm font-semibold">
+                <label
+                  htmlFor="recovery-code"
+                  className="block text-sm font-semibold"
+                >
                   Recovery code
                 </label>
                 <input
@@ -807,7 +839,8 @@ export default function SignIn() {
           <>
             <h1 className="headline mt-5 text-balance">Save these codes.</h1>
             <p className="lede mt-4 text-base">
-              Shown once. Each works a single time if you lose your authenticator.
+              Shown once. Each works a single time if you lose your
+              authenticator.
             </p>
             <div className="panel mt-8 grid grid-cols-2 gap-2 p-5">
               {recovery.map((c) => (
@@ -818,7 +851,8 @@ export default function SignIn() {
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               <Button size="sm" variant="line" onClick={copyRecovery}>
-                <Copy size={13} aria-hidden /> {copiedCodes ? "COPIED" : "COPY ALL"}
+                <Copy size={13} aria-hidden />{" "}
+                {copiedCodes ? "COPIED" : "COPY ALL"}
               </Button>
               <Button size="sm" variant="line" onClick={downloadRecovery}>
                 <Download size={13} aria-hidden /> DOWNLOAD .TXT
@@ -828,7 +862,9 @@ export default function SignIn() {
               variant="accent"
               size="lg"
               className="mt-6 w-full"
-              onClick={() => navigate(from && from.startsWith("/") ? from : "/dashboard")}
+              onClick={() =>
+                navigate(from && from.startsWith("/") ? from : "/dashboard")
+              }
             >
               I HAVE SAVED THEM
               <ArrowRight size={14} aria-hidden />
@@ -866,7 +902,9 @@ export default function SignIn() {
                     return (
                       <p
                         className="mt-2 text-xs font-medium"
-                        style={{ color: s.ok ? "#16a34a" : STRENGTH_COLOR[s.score] }}
+                        style={{
+                          color: s.ok ? "#16a34a" : STRENGTH_COLOR[s.score],
+                        }}
                       >
                         {s.label}
                         {s.hint ? ` — ${s.hint}` : ""}
@@ -898,78 +936,6 @@ export default function SignIn() {
           separately, through your provider or an app-specific credential.
         </p>
       </div>
-
-      <aside className="col-span-12 mt-12 lg:col-span-6 lg:col-start-7 lg:mt-0">
-        <div className="panel p-8 md:p-10">
-          <div className="flex items-center gap-3">
-            <ShieldCheck size={18} className="accent" aria-hidden />
-            <span className="sect-label">What happens next</span>
-          </div>
-
-          <ol className="mt-8 divide-y" role="list">
-            {[
-              [
-                "Confirm your email",
-                "We send a link to the address you signed up with. Confirming it proves the address is yours — it is what stops a stranger claiming your company's workspace — and it is when your trial starts.",
-              ],
-              [
-                "Verify your domain",
-                "Then add one DNS record to prove ownership. It unlocks your dashboard and switches on spoof reporting — no mailbox access involved. We check automatically and continue the moment it's found.",
-              ],
-              [
-                "See your exposure",
-                "Once verified, your dashboard opens and every message on your connected mailboxes is checked.",
-              ],
-              [
-                "Connect a mailbox",
-                "One click on Microsoft or Google. One forwarding rule anywhere else. Nothing installed.",
-              ],
-              [
-                "Add a card only to keep it",
-                "Your full-plan trial runs from the moment you confirm your email — no card needed. Add one any time before it ends to stay protected; if you don't, you drop to Guard (free), never locked out.",
-              ],
-            ].map(([h, b], i) => (
-              <li key={h} className="flex gap-5 py-5 first:pt-0 last:pb-0">
-                <span className="mono-xs fg-3 mt-0.5 shrink-0 tnum">
-                  {String(i + 1).padStart(2, "0")}
-                </span>
-                <div>
-                  <h3 className="text-sm font-semibold">{h}</h3>
-                  <p className="fg-2 mt-1.5 text-sm leading-relaxed">{b}</p>
-                </div>
-              </li>
-            ))}
-          </ol>
-
-          <div className={cn("mt-8 border-t pt-6")}>
-            <span className="sect-label">Included free, forever</span>
-            <ul className="mt-4 grid gap-2.5 sm:grid-cols-2" role="list">
-              {[
-                "Click-time link protection",
-                "Payment-change alerts",
-                "Suspicious-mail banners",
-                "Domain-control verification",
-              ].map((f) => (
-                <li key={f} className="flex gap-2.5 text-xs">
-                  <Check size={13} className="accent mt-0.5 shrink-0" aria-hidden />
-                  <span className="fg-2">{f}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-
-        <p className="fg-3 mt-5 text-xs">
-          Prefer to look first?{" "}
-          <Link
-            to="/analyse"
-            className="underline underline-offset-4 hover:text-[var(--fg)]"
-          >
-            Test a suspicious email
-          </Link>{" "}
-          — no account needed.
-        </p>
-      </aside>
     </main>
   );
 }

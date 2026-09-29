@@ -29,7 +29,7 @@ pytestmark = pytest.mark.asyncio
 
 
 async def _mailbox(session, tenant_id, *, sources=None, cls=MailboxClass.PROTECTED):
-    session.add(Tenant(id=tenant_id, name="Acme"))
+    session.add(Tenant(id=tenant_id, name="Acme", plan="complete", payment_method_ok=True))
     await session.flush()
     mailbox = Mailbox(
         tenant_id=tenant_id,

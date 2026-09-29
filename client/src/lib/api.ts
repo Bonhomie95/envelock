@@ -1,7 +1,7 @@
 export type Tier = "low" | "medium" | "high" | "critical";
 
 export interface Finding {
-  // Null for anonymous callers — the internal detection code is withheld
+  // Null in the customer lab — the internal detection code is withheld
   // server-side (PRD §16); `category` is the public, plain-English grouping.
   service: string | null;
   category?: string;
@@ -13,7 +13,7 @@ export interface Finding {
 
 export interface Assessment {
   tier: Tier;
-  score: number;
+  score: number | null;
   title: string;
   body: string;
   services: string[] | null;
@@ -1136,14 +1136,7 @@ export const api = {
         verdict: string;
         confidence: number | null;
         rationale: string | null;
-        escalated: boolean;
-        rule_tier: string | null;
         final_tier: string | null;
-        provider: string | null;
-        model: string | null;
-        input_tokens: number | null;
-        output_tokens: number | null;
-        cost_micros: number | null;
         human_disposition: string | null;
         created_at: string;
       }[];
@@ -1377,7 +1370,6 @@ export const api = {
   channelStatus: () =>
     request<{
       mail_providers: { source: string; configured: boolean; reason: string | null }[];
-      imap_broker: Record<string, number | string>;
       notification_rungs: { rung: string; configured: boolean; metered: boolean }[];
     }>("/api/v1/status/channels"),
 

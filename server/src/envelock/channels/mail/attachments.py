@@ -15,6 +15,7 @@ from __future__ import annotations
 import io
 import logging
 import re
+import zipfile
 
 logger = logging.getLogger("envelock.attachments")
 
@@ -48,6 +49,8 @@ def _pdf_text(data: bytes) -> str:
 #: turns a small upload into gigabytes. PDFs are page-capped; this is the same
 #: idea for docx: refuse implausibly large inputs outright.
 _MAX_DOCX_BYTES = 10 * 1024 * 1024
+_MAX_DOCX_EXPANDED_BYTES = 30 * 1024 * 1024
+_MAX_DOCX_ENTRIES = 1000
 #: Ceiling on text handed back per attachment; detections don't need more.
 _MAX_EXTRACT_CHARS = 200_000
 
@@ -59,6 +62,15 @@ def _docx_text(data: bytes) -> str:
     try:
         import docx  # python-docx
 
+        # Compressed input size does not bound decompressed XML. Inspect the
+        # archive before python-docx allocates its document trees.
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            entries = archive.infolist()
+            if len(entries) > _MAX_DOCX_ENTRIES or sum(
+                entry.file_size for entry in entries
+            ) > _MAX_DOCX_EXPANDED_BYTES:
+                logger.debug("docx archive exceeds extraction budget")
+                return ""
         document = docx.Document(io.BytesIO(data))
         lines = [p.text for p in document.paragraphs]
         # Bank details are frequently in a table cell, not a paragraph.
@@ -77,7 +89,7 @@ def _image_ocr(data: bytes) -> str:
         from PIL import Image
 
         image = Image.open(io.BytesIO(data))
-        return pytesseract.image_to_string(image) or ""
+        return pytesseract.image_to_string(image, timeout=10) or ""
     except Exception as exc:  # noqa: BLE001 — tesseract binary may be absent
         logger.debug("ocr failed (is tesseract installed?): %s", exc)
         return ""

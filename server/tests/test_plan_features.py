@@ -114,3 +114,20 @@ def test_manual_quarantine_is_never_gated(plan: str) -> None:
     from envelock.platform.remediation import can_remediate
 
     assert can_remediate(frozenset({Capability.MODIFY_MESSAGE})) is True
+
+
+@pytest.mark.parametrize("service", ["A1", "B3", "C7"])
+def test_guard_does_not_include_mailbox_detections(service: str) -> None:
+    assert not features.detection_included(service, "guard")
+
+
+def test_guard_keeps_domain_monitoring_only() -> None:
+    assert features.detection_included("D1", "guard")
+    assert not features.detection_included("A1", "unexpected-plan")
+
+
+def test_free_plan_cannot_gain_mailbox_access_from_a_saved_card() -> None:
+    from envelock.billing.entitlement import mailbox_capacity, mailbox_entitled
+    guard = _tenant("guard", paid=True)
+    assert not mailbox_entitled(guard)
+    assert mailbox_capacity(guard) == 0

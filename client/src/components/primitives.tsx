@@ -93,11 +93,13 @@ export function SectionHead({
   title,
   lede,
   align = "left",
+  as: Heading = "h2",
 }: {
   label: string;
   title: string;
   lede?: string;
   align?: "left" | "center";
+  as?: "h1" | "h2";
 }) {
   return (
     <div className={cn(align === "center" && "mx-auto text-center")}>
@@ -110,7 +112,9 @@ export function SectionHead({
         <span className="h-px w-8 bg-[var(--accent)]" aria-hidden />
         <span className="sect-label">{label}</span>
       </div>
-      <h2 className="headline mt-4 max-w-4xl text-balance">{title}</h2>
+      <Heading className="headline mt-4 max-w-4xl text-balance">
+        {title}
+      </Heading>
       {lede && (
         <p className={cn("lede mt-5", align === "center" && "mx-auto")}>
           {lede}

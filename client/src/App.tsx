@@ -37,7 +37,7 @@ import VerifyEmail from "./pages/VerifyEmail";
 function Mark({ size = 26 }: { size?: number }) {
   return (
     <svg viewBox="0 0 32 32" width={size} height={size} aria-hidden fill="none">
-      <rect width="32" height="32" fill="var(--accent)" />
+      <rect rx="8" width="32" height="32" fill="var(--accent)" />
       <path
         d="M16 7l7 3v5.6c0 4.2-2.9 8-7 9.4-4.1-1.4-7-5.2-7-9.4V10l7-3z"
         stroke="var(--accent-ink)"
@@ -63,7 +63,7 @@ function Logo() {
       aria-label="Envelock home"
     >
       <Mark />
-      <span className="text-[15px] font-bold tracking-tight">ENVELOCK</span>
+      <span className="text-[15px] font-bold tracking-tight">Envelock</span>
     </Link>
   );
 }
@@ -106,10 +106,10 @@ function ThemeToggle() {
 
 const NAV = [
   { to: "/", label: "Product", end: true },
-  { to: "/docs#ai", label: "AI analyst", end: false },
+  { to: "/#ai", label: "AI analyst", end: false },
   { to: "/#pricing", label: "Pricing", end: false },
   { to: "/docs", label: "Documentation", end: false },
-  { to: "/analyse", label: "Sandbox", end: false },
+  { to: "/analyse", label: "Detection lab", end: false },
   // In the top nav, not only the footer: someone with a billing problem or a
   // bug to report should not have to scroll to the bottom of the page to find
   // out how to reach us.
@@ -142,7 +142,7 @@ function Header() {
   // Close the mobile menu when the route changes — a deliberate sync to the
   // router, not the derived-state anti-pattern the rule guards against.
   // eslint-disable-next-line react-hooks/set-state-in-effect
-  useEffect(() => setOpen(false), [pathname]);
+  useEffect(() => setOpen(false), [pathname, hash]);
 
   // Re-read on every navigation (useLocation re-renders the header), so signing
   // in or out flips the controls immediately.
@@ -185,7 +185,7 @@ function Header() {
       <div className="shell flex h-16 items-center gap-8">
         <Logo />
 
-        <nav className="hidden items-center gap-1 md:flex" aria-label="Main">
+        <nav className="hidden items-center gap-1 lg:flex" aria-label="Main">
           {NAV.map((i) => {
             const active = navIsActive(i, pathname, hash);
             return (
@@ -194,7 +194,7 @@ function Header() {
                 to={i.to}
                 aria-current={active ? "page" : undefined}
                 className={cn(
-                  "font-mono px-3 py-2 text-xs font-medium tracking-wide uppercase transition-colors",
+                  "px-3 py-2 text-sm font-medium transition-colors",
                   active ? "accent" : "fg-2 hover:text-[var(--fg)]",
                 )}
               >
@@ -207,7 +207,7 @@ function Header() {
               to="/dashboard"
               className={({ isActive }) =>
                 cn(
-                  "font-mono px-3 py-2 text-xs font-medium tracking-wide uppercase transition-colors",
+                  "px-3 py-2 text-sm font-medium transition-colors",
                   isActive ? "accent" : "fg-2 hover:text-[var(--fg)]",
                 )
               }
@@ -221,7 +221,7 @@ function Header() {
           <ThemeToggle />
           {signedIn ? (
             <>
-              <Link to="/profile" className="hidden md:block">
+              <Link to="/profile" className="hidden lg:block">
                 <Button variant="quiet" size="sm" aria-label="Profile">
                   <UserRound size={15} aria-hidden />
                 </Button>
@@ -229,14 +229,14 @@ function Header() {
               <Button
                 variant="line"
                 size="sm"
-                className="hidden md:flex"
+                className="hidden lg:flex"
                 onClick={signOut}
               >
                 <LogOut size={13} aria-hidden /> SIGN OUT
               </Button>
             </>
           ) : (
-            <Link to="/signin" className="hidden md:block">
+            <Link to="/signin" className="hidden lg:block">
               <Button variant="line" size="sm">
                 SIGN IN
               </Button>
@@ -246,7 +246,7 @@ function Header() {
             onClick={() => setOpen((o) => !o)}
             aria-label={open ? "Close menu" : "Open menu"}
             aria-expanded={open}
-            className="fg-2 flex size-11 cursor-pointer items-center justify-center md:hidden"
+            className="fg-2 flex size-11 cursor-pointer items-center justify-center lg:hidden"
           >
             {open ? (
               <X size={18} aria-hidden />
@@ -258,7 +258,7 @@ function Header() {
       </div>
 
       {open && (
-        <nav className="border-t md:hidden" aria-label="Mobile">
+        <nav className="motion-menu border-t lg:hidden" aria-label="Mobile">
           <div className="shell flex flex-col divide-y">
             {NAV.map((i) => {
               const active = navIsActive(i, pathname, hash);
@@ -325,21 +325,21 @@ const FOOTER = [
     title: "Product",
     links: [
       ["What we stop", "/#problems"],
-      ["AI fraud analyst", "/docs#ai"],
+      ["AI fraud analyst", "/#ai"],
       ["Pricing", "/#pricing"],
       ["Documentation", "/docs"],
-      ["Detection sandbox", "/analyse"],
+      ["Detection lab", "/analyse"],
       ["Sign in", "/signin"],
     ],
   },
   {
     title: "Protects against",
     links: [
-      ["Changed bank details", "/docs#protection"],
-      ["Invoice fraud", "/docs#protection"],
-      ["Compromised vendors", "/docs#protection"],
-      ["Phishing links", "/docs#protection"],
-      ["Malicious links", "/docs#protection"],
+      ["Changed bank details", "/#protection"],
+      ["Invoice fraud", "/#protection"],
+      ["Compromised vendors", "/#protection"],
+      ["Phishing links", "/#protection"],
+      ["Malicious links", "/#protection"],
     ],
   },
   {
@@ -357,7 +357,7 @@ const FOOTER = [
     links: [
       ["Documentation", "/docs"],
       ["System status", "/status"],
-            ["Contact us", "/contact"],
+      ["Contact us", "/contact"],
       ["Our security", "/docs#security"],
       ["Terms of service", "/terms"],
       ["Privacy notice", "/privacy"],
@@ -374,13 +374,11 @@ function Footer() {
           <div className="col-span-12 lg:col-span-4">
             <Logo />
             <p className="fg-2 mt-5 max-w-xs text-sm leading-relaxed">
-              Payment-fraud and phishing-link protection for businesses on any
-              mail provider.
+              AI-powered email threat detection. Clear evidence and practical
+              next steps for payment fraud, phishing, and impersonation.
             </p>
             <p className="fg-3 mono-xs mt-6">
-              WE STOP YOUR MONEY GOING
-              <br />
-              TO THE WRONG BANK ACCOUNT
+              BEFORE YOU CLICK. BEFORE YOU PAY.
             </p>
           </div>
 
@@ -415,16 +413,28 @@ function Footer() {
               pages/Legal.tsx — so this links them. The rule that produced the
               earlier comment still stands: never link a page that is not there. */}
           <div className="fg-3 mono-xs flex flex-wrap gap-x-6 gap-y-2 sm:ml-auto">
-            <Link to="/terms" className="transition-colors hover:text-[var(--fg)]">
+            <Link
+              to="/terms"
+              className="transition-colors hover:text-[var(--fg)]"
+            >
               TERMS
             </Link>
-            <Link to="/privacy" className="transition-colors hover:text-[var(--fg)]">
+            <Link
+              to="/privacy"
+              className="transition-colors hover:text-[var(--fg)]"
+            >
               PRIVACY
             </Link>
-            <Link to="/dpa" className="transition-colors hover:text-[var(--fg)]">
+            <Link
+              to="/dpa"
+              className="transition-colors hover:text-[var(--fg)]"
+            >
               DPA
             </Link>
-            <Link to="/status" className="transition-colors hover:text-[var(--fg)]">
+            <Link
+              to="/status"
+              className="transition-colors hover:text-[var(--fg)]"
+            >
               STATUS
             </Link>
           </div>
@@ -441,16 +451,23 @@ function ScrollToTop() {
       // Lazy routes (/docs) mount after this effect runs — retry briefly so a
       // #section link actually lands on the section instead of doing nothing.
       let tries = 0;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let id: string;
+      try {
+        id = decodeURIComponent(hash.slice(1));
+      } catch {
+        return;
+      }
       const attempt = () => {
-        const el = document.querySelector(hash);
+        const el = document.getElementById(id);
         if (el) {
           el.scrollIntoView({ behavior: "smooth" });
           return;
         }
-        if (tries++ < 20) setTimeout(attempt, 100);
+        if (tries++ < 20) timer = setTimeout(attempt, 100);
       };
       attempt();
-      return;
+      return () => clearTimeout(timer);
     }
     window.scrollTo(0, 0);
   }, [pathname, hash]);
@@ -478,14 +495,24 @@ function MarketingLayout() {
    documentation / sandbox links, no marketing footer — a self-contained
    workspace so it never reads as "still on the landing page". */
 const APP_NAV = [
-  { to: "/dashboard", label: "Dashboard", icon: LayoutDashboard, adminOnly: false },
+  {
+    to: "/dashboard",
+    label: "Dashboard",
+    icon: LayoutDashboard,
+    adminOnly: false,
+  },
   // Payment safety is one of the two v1 features; the registry behind it is
   // where a customer records what makes it work, so it sits in the main rail.
   { to: "/suppliers", label: "Suppliers", icon: Building2, adminOnly: false },
   { to: "/team", label: "Team", icon: Users, adminOnly: true },
   { to: "/billing", label: "Billing", icon: CreditCard, adminOnly: true },
   { to: "/profile", label: "Profile", icon: UserRound, adminOnly: false },
-  { to: "/analyse", label: "Sandbox", icon: FlaskConical, adminOnly: false },
+  {
+    to: "/analyse",
+    label: "Detection lab",
+    icon: FlaskConical,
+    adminOnly: false,
+  },
   { to: "/docs", label: "Documentation", icon: BookOpen, adminOnly: false },
 ];
 
@@ -570,8 +597,9 @@ function AppLayout() {
         .then((r) => {
           if (live)
             setPending(
-              r.members.filter((m) => m.status === "pending" && !m.pending_password)
-                .length,
+              r.members.filter(
+                (m) => m.status === "pending" && !m.pending_password,
+              ).length,
             );
         })
         .catch(() => {});
@@ -628,7 +656,9 @@ function AppLayout() {
 function RequireAuth({ children }: { children: ReactNode }) {
   const location = useLocation();
   if (!auth.signedIn) {
-    return <Navigate to="/signin" replace state={{ from: location.pathname }} />;
+    return (
+      <Navigate to="/signin" replace state={{ from: location.pathname }} />
+    );
   }
   return <>{children}</>;
 }
@@ -696,85 +726,85 @@ export default function App() {
           and outside Routes so no single page can take the app down. */}
       <Suspense fallback={<RouteFallback />}>
         <ErrorBoundary>
-        <Routes>
-          {/* A supplier answering our "did you change your details?" text —
+          <Routes>
+            {/* A supplier answering our "did you change your details?" text —
               not our customer, so no marketing chrome at all. */}
-          <Route path="/v/:token" element={<LazySupplierVerify />} />
-          <Route element={<MarketingLayout />}>
-            <Route path="/" element={<Landing />} />
-            <Route path="/signin" element={<SignIn />} />
-            {/* Same component, opened on the CREATE ACCOUNT tab. Every
+            <Route path="/v/:token" element={<LazySupplierVerify />} />
+            <Route element={<MarketingLayout />}>
+              <Route path="/" element={<Landing />} />
+              <Route path="/signin" element={<SignIn />} />
+              {/* Same component, opened on the CREATE ACCOUNT tab. Every
                 "get started" CTA points here so a new visitor is never shown a
                 password prompt for an account they don't have yet. */}
-            <Route path="/signup" element={<SignIn />} />
-            <Route path="/reset-password" element={<ResetPassword />} />
-            <Route path="/verify-email" element={<VerifyEmail />} />
-          </Route>
+              <Route path="/signup" element={<SignIn />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
+              <Route path="/verify-email" element={<VerifyEmail />} />
+            </Route>
 
-          {/* The sandbox and the docs are public, but a signed-in person reaching
+            {/* The sandbox and the docs are public, but a signed-in person reaching
               them from the console rail should not be thrown back out to the
               marketing chrome. Same URLs, chrome chosen by who is asking. */}
-          <Route element={<ConsoleOrMarketingLayout />}>
-            <Route path="/analyse" element={<LazyAnalyse />} />
-            <Route path="/docs" element={<LazyDocs />} />
-            <Route path="/status" element={<LazyStatus />} />
-            <Route path="/contact" element={<LazyContact />} />
-            {/* One component, four routes — it switches on the pathname. */}
-            <Route path="/terms" element={<LazyLegal />} />
-            {/* Given to Google/Microsoft verification and app-store reviewers. */}
-            <Route path="/tos" element={<LazyLegal />} />
-            <Route path="/privacy" element={<LazyLegal />} />
-            <Route path="/dpa" element={<LazyLegal />} />
-            <Route path="/subprocessors" element={<LazyLegal />} />
-          </Route>
-          <Route element={<AppLayout />}>
-            <Route element={<RequireVerifiedDomain />}>
+            <Route element={<ConsoleOrMarketingLayout />}>
+              <Route path="/analyse" element={<LazyAnalyse />} />
+              <Route path="/docs" element={<LazyDocs />} />
+              <Route path="/status" element={<LazyStatus />} />
+              <Route path="/contact" element={<LazyContact />} />
+              {/* One component, four routes — it switches on the pathname. */}
+              <Route path="/terms" element={<LazyLegal />} />
+              {/* Given to Google/Microsoft verification and app-store reviewers. */}
+              <Route path="/tos" element={<LazyLegal />} />
+              <Route path="/privacy" element={<LazyLegal />} />
+              <Route path="/dpa" element={<LazyLegal />} />
+              <Route path="/subprocessors" element={<LazyLegal />} />
+            </Route>
+            <Route element={<AppLayout />}>
+              <Route element={<RequireVerifiedDomain />}>
+                <Route
+                  path="/dashboard"
+                  element={
+                    <RequireAuth>
+                      <LazyDashboard />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/suppliers"
+                  element={
+                    <RequireAuth>
+                      <LazySuppliers />
+                    </RequireAuth>
+                  }
+                />
+                <Route
+                  path="/team"
+                  element={
+                    <RequireAuth>
+                      <LazyTeam />
+                    </RequireAuth>
+                  }
+                />
+              </Route>
               <Route
-                path="/dashboard"
+                path="/billing"
                 element={
                   <RequireAuth>
-                    <LazyDashboard />
+                    <LazyBilling />
                   </RequireAuth>
                 }
               />
               <Route
-                path="/suppliers"
+                path="/profile"
                 element={
                   <RequireAuth>
-                    <LazySuppliers />
-                  </RequireAuth>
-                }
-              />
-              <Route
-                path="/team"
-                element={
-                  <RequireAuth>
-                    <LazyTeam />
+                    <LazyProfile />
                   </RequireAuth>
                 }
               />
             </Route>
-            <Route
-              path="/billing"
-              element={
-                <RequireAuth>
-                  <LazyBilling />
-                </RequireAuth>
-              }
-            />
-            <Route
-              path="/profile"
-              element={
-                <RequireAuth>
-                  <LazyProfile />
-                </RequireAuth>
-              }
-            />
-          </Route>
-          <Route element={<MarketingLayout />}>
-            <Route path="*" element={<NotFound />} />
-          </Route>
-        </Routes>
+            <Route element={<MarketingLayout />}>
+              <Route path="*" element={<NotFound />} />
+            </Route>
+          </Routes>
         </ErrorBoundary>
       </Suspense>
       <Toaster />

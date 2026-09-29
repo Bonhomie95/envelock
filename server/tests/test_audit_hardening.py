@@ -364,7 +364,7 @@ async def test_a_flagged_message_never_becomes_the_vendor_baseline(session) -> N
 
     owned = frozenset({"acme.com"})
     tenant_id = uuid4()
-    session.add(Tenant(id=tenant_id, name="Acme"))
+    session.add(Tenant(id=tenant_id, name="Acme", plan="complete", payment_method_ok=True))
     await session.flush()
     mailbox = Mailbox(
         tenant_id=tenant_id,

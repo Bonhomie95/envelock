@@ -280,7 +280,7 @@ async def test_the_worker_fetches_detects_and_quarantines_over_a_socket(
 
     tenant_id, mailbox_id = uuid4(), uuid4()
     async with get_sessionmaker()() as session:
-        session.add(Tenant(id=tenant_id, name="SocketCo"))
+        session.add(Tenant(id=tenant_id, name="SocketCo", plan="complete", payment_method_ok=True))
         await session.flush()  # the tenant row must exist before its children
         session.add(
             Domain(

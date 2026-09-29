@@ -92,8 +92,8 @@ def _trusted_facts(event, context) -> dict[str, str]:  # noqa: ANN001
     Without these the judge was blind to everything that changes the verdict:
     whether SPF/DKIM passed, whether the sender is a five-year vendor or a
     first-contact stranger, whether the links are already on a feed, how old
-    the sending domain is. Values are enum states, counts and hard-truncated
-    filenames — never attacker-authored free text."""
+    the sending domain is. Values are enum states and counts — never
+    attacker-authored free text."""
     facts: dict[str, str] = {}
     auth = getattr(event, "authentication", None)
     if auth is not None:
@@ -126,7 +126,7 @@ def _trusted_facts(event, context) -> dict[str, str]:  # noqa: ANN001
         facts["links"] = f"{len(urls)} link(s), {flagged} on threat feeds"
     attachments = tuple(getattr(event, "attachments", ()) or ())
     if attachments:
-        facts["attachments"] = ", ".join(a.filename[:60] for a in attachments[:5])
+        facts["attachments"] = f"{len(attachments)} attachment(s)"
     age = getattr(context, "sender_domain_age_days", None) if context else None
     if age is not None:
         facts["sender_domain_age_days"] = str(age)

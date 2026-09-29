@@ -2011,12 +2011,10 @@ async def quarantine(alert_id: UUID, actor: ActiveUser, session: Session) -> dic
 
 @router.get("/alerts/{alert_id}/ai")
 async def alert_ai_verdict(alert_id: UUID, principal: AdminUser, session: Session) -> dict:
-    """The AI judge's full working for one alert — admin oversight only.
+    """Customer-visible AI explanation and review outcome for workspace admins.
 
-    The dashboard chip and the alert body carry the plain-language line; the
-    numbers (confidence, model, tokens, cost) were recorded on every call and
-    readable by NOTHING, so "why did the AI (not) act?" was unanswerable. The
-    detail stays off member views per the taxonomy rule (PRD §16).
+    Provider diagnostics, detector transitions, token counts and internal costs
+    remain in the stored audit record, not in this customer response.
     """
     from envelock.models import LlmVerdictRecord
 
@@ -2042,14 +2040,7 @@ async def alert_ai_verdict(alert_id: UUID, principal: AdminUser, session: Sessio
                 "verdict": r.verdict,
                 "confidence": r.confidence,
                 "rationale": r.rationale,
-                "escalated": r.escalated,
-                "rule_tier": r.rule_tier,
                 "final_tier": r.final_tier,
-                "provider": r.provider,
-                "model": r.model,
-                "input_tokens": r.input_tokens,
-                "output_tokens": r.output_tokens,
-                "cost_micros": r.cost_micros,
                 "human_disposition": r.human_disposition,
                 "created_at": r.created_at.isoformat(),
             }

@@ -6,7 +6,9 @@ our internal signal weights or thresholds (PRD §16)."""
 from __future__ import annotations
 
 import logging
+import math
 import secrets
+from typing import cast
 
 from envelock.llm.base import LlmError, LlmProvider, LlmVerdict
 
@@ -124,11 +126,17 @@ class Judge:
             sender=sender, subject=subject, body=body, signals=signals, facts=facts
         )
         try:
-            data = await self.provider.complete_json(
+            data = cast(object, await self.provider.complete_json(
                 system=_SYSTEM, user=user, max_tokens=max_tokens
+            ))
+        except (LlmError, ValueError, TypeError, AttributeError, KeyError, IndexError):
+            # Untrusted provider payloads must neither stop the rule engine nor
+            # leak private message text through exception strings.
+            logger.warning(
+                "llm judge failed (%s): invalid or unavailable response", self.provider.name
             )
-        except LlmError as exc:
-            logger.warning("llm judge failed (%s): %s", self.provider.name, exc)
+            return None
+        if not isinstance(data, dict):
             return None
 
         verdict = str(data.get("verdict", "suspicious")).lower()
@@ -138,8 +146,17 @@ class Judge:
             confidence = float(data.get("confidence", 0.0))
         except (TypeError, ValueError):
             confidence = 0.0
-        confidence = max(0.0, min(1.0, confidence))
+        confidence = max(0.0, min(1.0, confidence)) if math.isfinite(confidence) else 0.0
         usage = data.get("_usage") or {}
+        if not isinstance(usage, dict):
+            usage = {}
+
+        def count(key: str) -> int:
+            try:
+                return max(0, int(usage.get(key, 0)))
+            except (ValueError, TypeError, OverflowError):
+                return 0
+
         return LlmVerdict(
             verdict=verdict,
             confidence=confidence,
@@ -148,9 +165,9 @@ class Judge:
             escalate=(verdict == "fraud"),
             provider=self.provider.name,
             model=self.provider.model,
-            input_tokens=int(usage.get("in", 0)),
-            output_tokens=int(usage.get("out", 0)),
-            cost_micros=int(usage.get("cost_micros", 0)),
+            input_tokens=count("in"),
+            output_tokens=count("out"),
+            cost_micros=count("cost_micros"),
             raw=data,
         )
 
