@@ -219,8 +219,12 @@ async def oauth_authorize(
         raise HTTPException(404, "mailbox not found")
 
     from envelock.services.domains import require_verified_domain
+    from envelock.services.plan_gate import require_mailbox_entitlement
 
     await require_verified_domain(session, principal.tenant_id, mailbox.address)
+    # Before the consent URL, not after the grant: sending a Guard tenant round
+    # Microsoft's consent screen and then refusing them is the worst order.
+    await require_mailbox_entitlement(session, principal.tenant_id)
 
     for_imap = req.mode == "imap"
     state = oauth.issue_state(
@@ -937,6 +941,13 @@ async def simulate(req: SimulationRequest, principal: AdminUser, session: Sessio
         last_seen_at=datetime.now(UTC),
     )
 
+    # Run the simulation on the plan they actually have. Without this a Guard or
+    # Essential tenant watched Complete-only detections pass and concluded their
+    # mail was covered by them — a demo that lies in our favour is worse than no
+    # demo. `plan_locked` then names what a bigger plan would have caught.
+    tenant_row = await session.get(Tenant, principal.tenant_id)
+    plan = entitlement.effective_plan(tenant_row) if tenant_row is not None else None
+
     runs: list[SimulationRun] = []
     for sim in simulations(
         protected_domain=req.protected_domain, vendor_domain=req.vendor_domain
@@ -958,6 +969,7 @@ async def simulate(req: SimulationRequest, principal: AdminUser, session: Sessio
             owned_domains=owned,
             known_counterparties=frozenset({vendor}),
             counterparty=seeded,
+            plan=plan,
             now=datetime.now(UTC),
         )
         findings = run_all(ctx)
@@ -970,17 +982,31 @@ async def simulate(req: SimulationRequest, principal: AdminUser, session: Sessio
             )
         )
 
+    from envelock.billing.features import detection_included
+
+    def locked(expected: str) -> bool:
+        """Missed because the plan excludes it, not because detection failed.
+
+        Reported per run so a Guard or Essential tenant reads "your plan does not
+        include this" rather than a bare failure, which would look like a broken
+        product and is the opposite of the truth.
+        """
+        return plan is not None and not detection_included(expected, plan)
+
     return {
+        "plan": plan,
         "runs": [
             {
                 "id": r.simulation_id,
                 "expected": r.expected,
                 "detected": r.detected,
                 "passed": r.passed,
+                "plan_locked": locked(r.expected),
             }
             for r in runs
         ],
         "passed": sum(1 for r in runs if r.passed),
+        "plan_locked": sum(1 for r in runs if locked(r.expected)),
         "total": len(runs),
         "note": "Simulations are analysed but never stored as alerts.",
     }
@@ -1037,6 +1063,13 @@ async def ingest_message(
     also makes the system demonstrable without configuring mail flow.
     """
     from envelock.channels.mail.parser import parse_message_async
+    from envelock.services.plan_gate import require_mailbox_entitlement
+
+    # Same gate as `backfill` below. Without it a lapsed tenant keeps feeding
+    # mail through the full pipeline — reputation lookups, parsing, storage —
+    # and the only reason nothing leaks is that the plan filter empties the
+    # detection set downstream. Refuse at the door instead of paying for it.
+    await require_mailbox_entitlement(session, principal.tenant_id)
 
     mailbox = (
         await session.execute(

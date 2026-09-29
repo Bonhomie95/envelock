@@ -1025,6 +1025,11 @@ async def connect_imap(
     product); Monitored mailboxes poll (PRD §12.11D)."""
     mailbox = await _mailbox_or_404(session, mailbox_id, principal.tenant_id)
     await _require_verified_domain(session, principal.tenant_id, mailbox.address)
+    # A Guard or lapsed tenant must not be able to finish this: the poller will
+    # not read the mailbox, so "connected" would be a lie we stored a credential
+    # for. The seat cap is checked when the mailbox is ADDED; this is the other
+    # half, for a mailbox that already exists from a trial that has since run out.
+    _require_mailbox_entitlement(await _tenant_or_404(session, principal.tenant_id))
 
     # Prove the credentials work before storing them. Reporting "connected" on a
     # wrong password (then silently ingesting nothing) is worse than an error.

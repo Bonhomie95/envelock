@@ -621,6 +621,18 @@ async def stripe_webhook(request: Request, session: Session) -> dict:
             if tenant is not None and tenant.stripe_subscription_id in (None, obj.get("id")):
                 _apply_subscription(tenant, obj)
                 await session.commit()
+        elif obj.get("status") in ("unpaid", "canceled", "incomplete_expired"):
+            # A subscription that ends does not always arrive as `deleted`: when
+            # dunning is configured to "mark unpaid" rather than cancel, Stripe
+            # keeps the subscription and only changes its status. Relying on
+            # `deleted` alone therefore leaves a switch in the Stripe dashboard
+            # that silently hands every non-paying customer the full plan forever.
+            await _downgrade_to_guard(
+                session,
+                tenant_id=meta.get("tenant_id"),
+                customer_id=obj.get("customer"),
+                subscription_id=obj.get("id"),
+            )
     elif etype in ("invoice.paid", "invoice.payment_succeeded"):
         # A renewal charge settled. Nothing to change — the subscription events
         # already carry plan and seats — but the customer gets told what came off

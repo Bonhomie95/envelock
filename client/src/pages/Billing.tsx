@@ -29,8 +29,14 @@ export default function Billing() {
 
   const [tenant, setTenant] = useState<TenantInfo | null>(null);
   const [providers, setProviders] = useState<string[] | null>(null);
-  const [selected, setSelected] = useState<"essential" | "complete">(
-    requested === "essential" ? "essential" : "complete",
+  // null = nobody has chosen yet, so fall back to the plan they are ON. It used
+  // to default to Complete, which showed an Essential subscriber Complete's
+  // price, feature list and extra-seat rate under a "Summary" heading, right
+  // beside their own $2 seat rate — two plans described at once, on the page
+  // where a wrong charge would be noticed. Derived rather than an effect so
+  // there is no render where the wrong plan is on screen.
+  const [chosen, setSelected] = useState<"essential" | "complete" | null>(
+    requested === "essential" || requested === "complete" ? requested : null,
   );
   const [provider, setProvider] = useState<string>("");
   const [reference, setReference] = useState("");
@@ -68,6 +74,10 @@ export default function Billing() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void load();
   }, [load]);
+
+  const selected: "essential" | "complete" =
+    chosen ??
+    (tenant?.subscribed_plan === "essential" ? "essential" : "complete");
 
   const identifier = useMemo(() => tenant?.primary_domain ?? "", [tenant]);
   const hasSub = Boolean(tenant?.billing?.subscription);
@@ -637,7 +647,9 @@ export default function Billing() {
               </ul>
             </>
           )}
-          {tenant?.trial.active && tenant.trial.days_left !== null && (
+          {tenant?.trial.active &&
+            !tenant.trial.payment_method_ok &&
+            tenant.trial.days_left !== null && (
             <div className="mt-5 flex items-baseline justify-between gap-3 border-t pt-4">
               <span className="fg-2 text-xs">Trial remaining</span>
               <span

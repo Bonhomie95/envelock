@@ -1871,7 +1871,11 @@ function PlanBadge({ tenant }: { tenant: TenantInfo }) {
 
   let title: string | undefined;
 
-  if (trial.active && trial.days_left !== null) {
+  // A countdown only belongs here while the trial is what is keeping the plan
+  // on. Once a card is on file the trial window is irrelevant, and showing
+  // "TRIAL · 12 DAYS LEFT" to someone who has already paid reads as "the thing
+  // I bought is about to be taken away".
+  if (trial.active && !trial.payment_method_ok && trial.days_left !== null) {
     text = `TRIAL · ${trial.days_left} DAY${trial.days_left === 1 ? "" : "S"} LEFT`;
     tone =
       trial.days_left <= 3
@@ -2783,7 +2787,7 @@ function UpgradePlans({
       </div>
       <p className="fg-2 mt-2 text-sm">
         <span className="font-semibold">{planName}</span>
-        {tenant.trial.active && (
+        {tenant.trial.active && !tenant.trial.payment_method_ok && (
           <span className="fg-3">
             {" "}
             · trial{tenant.trial.days_left !== null ? `, ${tenant.trial.days_left}d left` : ""}
@@ -3717,6 +3721,9 @@ export default function Dashboard() {
               <SensorPanel
                 mailboxes={mailboxes}
                 isAdmin={auth.role === "owner" || auth.role === "admin"}
+                planIncludesIdentity={
+                  tenant?.features?.identity_detections ?? true
+                }
                 onChanged={load}
               />
             )}

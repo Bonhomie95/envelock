@@ -164,10 +164,16 @@ function InstallSteps() {
 export default function SensorPanel({
   mailboxes,
   isAdmin,
+  planIncludesIdentity,
   onChanged,
 }: {
   mailboxes: MailboxRecord[];
   isAdmin: boolean;
+  /* Whether the plan includes Channel 2 (Complete). The sensor's only output is
+     sign-in and silent-access detection, so on a smaller plan pairing installs
+     an extension on someone's laptop that can never raise anything. Say that,
+     rather than offering the button and letting the server refuse it. */
+  planIncludesIdentity: boolean;
   onChanged: () => Promise<void>;
 }) {
   const [devices, setDevices] = useState<SensorDevice[] | null>(null);
@@ -286,6 +292,15 @@ export default function SensorPanel({
           which devices are yours, so a sign-in from somewhere new — or a message
           read while none of them were open — raises an alert.
         </p>
+        {!planIncludesIdentity && (
+          <p className="fg-3 mt-2 text-xs leading-relaxed">
+            Sign-in and account-takeover protection is included in the Complete
+            plan.{" "}
+            <a className="accent underline underline-offset-4" href="/billing">
+              Compare plans
+            </a>
+          </p>
+        )}
       </div>
 
       {loadError && <p className="fg-3 px-5 py-3 text-xs">{loadError}</p>}
@@ -390,11 +405,21 @@ export default function SensorPanel({
                 ))}
               </select>
             )}
-            <Button size="sm" variant="accent" disabled={busy} onClick={() => void createCode()}>
+            <Button
+              size="sm"
+              variant="accent"
+              disabled={busy || !planIncludesIdentity}
+              title={
+                planIncludesIdentity
+                  ? undefined
+                  : "Included in the Complete plan."
+              }
+              onClick={() => void createCode()}
+            >
               {busy ? <Loader2 size={12} className="animate-spin" aria-hidden /> : <Plus size={12} aria-hidden />}
               ADD A DEVICE
             </Button>
-            {live.length === 0 && (
+            {live.length === 0 && planIncludesIdentity && (
               <p className="fg-3 mt-1 flex w-full items-center gap-1.5 text-xs">
                 <Laptop size={12} aria-hidden /> No devices yet — sign-in alerts need at least one.
               </p>

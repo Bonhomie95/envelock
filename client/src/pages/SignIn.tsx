@@ -134,6 +134,24 @@ export default function SignIn() {
       );
       return;
     }
+    // The domain that actually gets claimed and DNS-verified is the one in the
+    // email address — the server derives it there, and this field only names the
+    // workspace. So a mismatch means the screen's own promise ("prove you own
+    // this domain") is about to be made about a different domain than the one
+    // typed, and the DNS record they are then asked for won't be the one they
+    // expect. Catch it here rather than after the account exists.
+    if (mode === "signup" && domain && email.includes("@")) {
+      const emailDomain = email.split("@")[1]!.trim().toLowerCase();
+      const typed = domain.trim().toLowerCase().replace(/^www\./, "");
+      if (typed && emailDomain !== typed && !emailDomain.endsWith("." + typed)) {
+        setError(
+          `Your email is at ${emailDomain}, but you entered ${typed}. Sign up ` +
+            `with an address at ${typed}, or enter ${emailDomain} as your ` +
+            "company domain — that is the one you'll verify.",
+        );
+        return;
+      }
+    }
     if (mode === "signup" && !passwordsMatch) {
       setError("The two passphrases don't match.");
       return;

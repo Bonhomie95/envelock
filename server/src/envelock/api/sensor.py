@@ -61,6 +61,14 @@ async def create_pairing(req: PairingRequest, actor: ActiveUser, session: Sessio
     the workspace — IT installing the extension on a colleague's machine is the
     normal way this gets rolled out.
     """
+    from envelock.services.plan_gate import require_identity_detections
+
+    # The sensor's whole output is Channel 2 — unusual sign-in, silent access,
+    # device identity — which is what Complete sells over Essential. Pairing on
+    # a smaller plan would have someone install an extension on their laptop
+    # that can never raise anything, and conclude the product is broken.
+    await require_identity_detections(session, actor.tenant_id)
+
     mailbox = await session.get(Mailbox, req.mailbox_id)
     if mailbox is None or mailbox.tenant_id != actor.tenant_id:
         raise HTTPException(404, "mailbox not found")

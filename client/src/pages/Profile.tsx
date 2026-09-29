@@ -584,7 +584,11 @@ export default function Profile() {
             <Row label="Organisation">{tenant?.name ?? tenant?.primary_domain ?? "—"}</Row>
             <Row label="Plan">
               <span className="font-mono text-xs uppercase">{tenant?.plan ?? "guard"}</span>
-              {tenant?.trial.active && tenant.trial.days_left !== null && (
+              {/* Only while the trial is what keeps the plan on: once a card is
+                  on file the countdown is not news, it reads as a warning. */}
+              {tenant?.trial.active &&
+                !tenant.trial.payment_method_ok &&
+                tenant.trial.days_left !== null && (
                 <span className="fg-3 text-xs">
                   · trial ends in {tenant.trial.days_left} day
                   {tenant.trial.days_left === 1 ? "" : "s"}

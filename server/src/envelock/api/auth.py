@@ -404,7 +404,7 @@ async def register(req: RegisterRequest, request: Request, session: Session) -> 
         if dns_verify.deliverability_status(mail_domain) == "absent":
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
-                "that email domain doesn't exist or can't receive email — "
+                "That email domain doesn't exist or can't receive email — "
                 "check the spelling of your address.",
             )
 
