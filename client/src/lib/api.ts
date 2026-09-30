@@ -1429,10 +1429,13 @@ export const api = {
 
   // Start a hosted Stripe Checkout for a paid plan; returns the URL to redirect
   // the browser to. Activation happens server-side via the Stripe webhook.
-  startCheckout: (plan: string, extra_mailboxes = 0) =>
+  // `term` is "monthly" (default) or "annual". Annual is the same plan at the
+  // annual discount; the server refuses it with a 503 rather than silently
+  // billing monthly if its Stripe Price isn't configured.
+  startCheckout: (plan: string, extra_mailboxes = 0, term = "monthly") =>
     request<{ url: string; id: string }>("/api/v1/billing/checkout", {
       method: "POST",
-      body: JSON.stringify({ plan, extra_mailboxes }),
+      body: JSON.stringify({ plan, extra_mailboxes, term }),
     }),
 
   // Set the number of paid mailboxes beyond the plan's five, on the live Stripe

@@ -494,6 +494,18 @@ class Settings(BaseSettings):
     # Unset → extra seats can't be bought self-serve and the API says so.
     stripe_price_extra_mailbox_essential: str | None = None
     stripe_price_extra_mailbox_complete: str | None = None
+    # The same four Prices on a YEARLY interval, at the annual term discount
+    # (billing/pricing.TERM_DISCOUNT: −20%, so $240/yr Essential, $470/yr
+    # Complete, and $19.20 / $33.60 per extra seat per year). Annual prepay is
+    # what funds the 100-odd days a business customer takes to be worth $1k a
+    # month, and it is standard for security tooling — but every one of these
+    # must also be recognised on the way BACK in, or a paying annual subscriber's
+    # webhook maps to no plan and they get nothing. See `_plan_for_price`.
+    # Unset → the annual option is refused with an honest 503, never billed wrong.
+    stripe_price_essential_annual: str | None = None
+    stripe_price_complete_annual: str | None = None
+    stripe_price_extra_mailbox_essential_annual: str | None = None
+    stripe_price_extra_mailbox_complete_annual: str | None = None
     adyen_api_key: SecretStr | None = None  # Europe / global enterprise
     adyen_merchant_account: str | None = None
     mercadopago_access_token: SecretStr | None = None  # Latin America

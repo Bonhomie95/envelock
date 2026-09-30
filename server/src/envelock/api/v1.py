@@ -86,25 +86,73 @@ class QuoteRequest(BaseModel):
 
 @router.post("/pricing/quote")
 async def pricing_quote(req: QuoteRequest) -> dict:
-    q = pricing.quote(
-        plan=req.plan,
-        term=req.term,
-        mail_domains=req.mail_domains,
-        protected=req.protected,
-        monitored=req.monitored,
-        solo_mailboxes=req.solo_mailboxes,
+    """The price a self-serve customer will actually be charged.
+
+    This is public and unauthenticated, so it is the one number a prospect may
+    hold us to — which is why it comes from `self_serve_cents`, the same shape
+    the Stripe subscription is built from, and not from `pricing.quote`'s banded
+    ladder. Serving the ladder here understated a 500-mailbox Essential plan by
+    $402 a month against the invoice we would have sent: a quote nobody could
+    honour, on the endpoint a buyer is most likely to screenshot.
+
+    Above the self-serve ceiling the flat per-seat rate is the wrong instrument
+    and the banded ladder is not wired to billing, so we decline to invent a
+    figure and route to sales instead.
+    """
+    mailboxes = req.protected + req.monitored + req.solo_mailboxes
+    # Guard first: it is free forever and protects domains, never mailboxes, so
+    # asking it for 99 seats is a category error, not a volume deal. Answering
+    # "contact us for a quote" there would invite a sales conversation about
+    # something we do not sell.
+    if req.plan is pricing.Plan.GUARD:
+        return {
+            "plan": req.plan.value,
+            "term": req.term.value,
+            "mailboxes": 0,
+            "self_serve": True,
+            "included_seats": 0,
+            "extra_seat_cents": None,
+            "term_discount_pct": 0,
+            "total_cents": 0,
+            "total_usd": 0.0,
+            "note": (
+                "Guard is free forever. It watches your domain for lookalikes and "
+                "impersonation; protecting mailboxes needs Essential or Complete."
+            ),
+        }
+    if mailboxes > pricing.SELF_SERVE_MAILBOX_CEILING:
+        return {
+            "plan": req.plan.value,
+            "term": req.term.value,
+            "mailboxes": mailboxes,
+            "self_serve": False,
+            "total_cents": None,
+            "total_usd": None,
+            "note": (
+                f"Over {pricing.SELF_SERVE_MAILBOX_CEILING} mailboxes we price "
+                "per organisation rather than per seat, and it works out cheaper. "
+                "Contact us for a quote."
+            ),
+        }
+
+    total = pricing.self_serve_cents(
+        req.plan.value, mailboxes, term=req.term.value
     )
+    # `monitored` is accepted so the request shape stays stable, but it is
+    # deliberately priced at the protected rate: mailbox class does not reach any
+    # billed path today (nothing outside `pricing.quote` reads MONITORED), so a
+    # cheaper monitored line here would be a second price we cannot charge.
     return {
-        "plan": q.plan,
-        "term": q.term,
-        "platform_cents": q.platform_cents,
-        "protected_cents": q.protected_cents,
-        "monitored_cents": q.monitored_cents,
-        "subtotal_cents": q.subtotal_cents,
-        "discount_cents": q.discount_cents,
-        "total_cents": q.total_cents,
-        "total_usd": q.total_usd,
-        "breakdown": q.breakdown,
+        "plan": req.plan.value,
+        "term": req.term.value,
+        "mailboxes": mailboxes,
+        "self_serve": True,
+        "included_seats": pricing.included_mailbox_seats(req.plan.value),
+        "extra_seat_cents": pricing.extra_mailbox_cents(req.plan.value),
+        "term_discount_pct": int(pricing.TERM_DISCOUNT[req.term] * 100),
+        "total_cents": total,
+        "total_usd": total / 100,
+        "monitored_priced_as_protected": req.monitored > 0,
     }
 
 

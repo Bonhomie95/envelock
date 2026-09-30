@@ -9,6 +9,7 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { ApiError, api, auth, type TenantInfo } from "../lib/api";
+import { planTotals } from "../lib/pricing";
 import { PLAN_TIERS, planTier } from "../lib/plans";
 import { Button, cn } from "../components/primitives";
 
@@ -38,6 +39,10 @@ export default function Billing() {
   const [chosen, setSelected] = useState<"essential" | "complete" | null>(
     requested === "essential" || requested === "complete" ? requested : null,
   );
+  // Monthly stays the default: annual prepay is genuinely hard for a small
+  // finance team, and the plan is the same either way — annual only changes the
+  // interval and takes 20% off (billing/pricing.TERM_DISCOUNT).
+  const [term, setTerm] = useState<"monthly" | "annual">("monthly");
   const [provider, setProvider] = useState<string>("");
   const [reference, setReference] = useState("");
   const [seatCount, setSeatCount] = useState(1);
@@ -211,7 +216,7 @@ export default function Billing() {
     setBusy(true);
     setError(null);
     try {
-      const { url } = await api.startCheckout(selected, checkoutExtra);
+      const { url } = await api.startCheckout(selected, checkoutExtra, term);
       window.location.assign(url); // hand off to Stripe's hosted page
     } catch (e) {
       setBusy(false);
@@ -308,7 +313,9 @@ export default function Billing() {
         <p className="lede mt-4 text-base">
           {hasSub
             ? "Change your plan or mailbox seats below. Changes apply to your existing subscription, prorated, so you're never billed twice."
-            : "Add a payment method to continue your selected plan when your trial ends. You can change or cancel anytime — monthly, no penalty."}
+            : term === "annual"
+              ? "Add a payment method to continue your selected plan when your trial ends. Billed once a year; change or cancel anytime."
+              : "Add a payment method to continue your selected plan when your trial ends. You can change or cancel anytime — monthly, no penalty."}
         </p>
 
         {/* What the current plan does NOT include, stated on the page where it
@@ -487,6 +494,39 @@ export default function Billing() {
                 /* Real Stripe: hand off to the hosted card page. No card data
                    touches us; the webhook activates the plan on completion. */
                 <>
+                  <div
+                    className="flex flex-wrap items-center gap-2"
+                    role="radiogroup"
+                    aria-label="Billing term"
+                  >
+                    {(
+                      [
+                        ["monthly", "MONTHLY", null],
+                        ["annual", "ANNUAL", "SAVE 20%"],
+                      ] as const
+                    ).map(([value, label, badge]) => (
+                      <button
+                        key={value}
+                        type="button"
+                        role="radio"
+                        aria-checked={term === value}
+                        onClick={() => setTerm(value)}
+                        className={cn(
+                          "mono-xs rounded border px-3 py-1.5",
+                          term === value
+                            ? "border-[var(--accent)] accent"
+                            : "border-[var(--rule)] fg-2",
+                        )}
+                      >
+                        {label}
+                        {badge && (
+                          <span className="accent ml-1.5 text-[10px]">
+                            {badge}
+                          </span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
                   <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                     <label className="fg-2 text-sm" htmlFor="extra-mb">
                       Extra mailboxes
@@ -514,6 +554,26 @@ export default function Billing() {
                       beyond the 5 included · {tier?.extra ?? "$3.50"}/mo each
                       {neededExtra > 0 && ` · you have ${used} mailboxes`}
                     </span>
+                  </div>
+                  <div>
+                    {term === "annual" && tier && (
+                      <p className="fg-2 text-xs leading-relaxed">
+                        Billed once a year at{" "}
+                        <span className="tnum font-mono">
+                          $
+                          {(
+                            Number(tier.price.replace("$", "")) *
+                            12 *
+                            0.8
+                          ).toFixed(2)}
+                        </span>{" "}
+                        instead of{" "}
+                        <span className="tnum font-mono">
+                          ${(Number(tier.price.replace("$", "")) * 12).toFixed(2)}
+                        </span>
+                        .
+                      </p>
+                    )}
                   </div>
                   <Button
                     variant="accent"
@@ -597,10 +657,15 @@ export default function Billing() {
                   mailboxes" on one row ran together ("Complete$49"). */}
               <div className="mt-4">
                 <span className="text-sm font-semibold">{tier.name}</span>
+                {/* The summary has to agree with the term that is selected. It
+                    showed the monthly price beside an annual checkout, which is
+                    the one place a customer checks the number before paying. */}
                 <div className="tnum mt-0.5 font-mono text-lg font-semibold">
-                  {tier.price}
+                  {term === "annual" && !hasSub
+                    ? `$${(Number(tier.price.replace("$", "")) * 12 * 0.8).toFixed(0)}`
+                    : tier.price}
                   <span className="fg-3 ml-1 text-[11px] font-normal">
-                    {tier.per}
+                    {term === "annual" && !hasSub ? "/yr · 5 mailboxes" : tier.per}
                   </span>
                 </div>
               </div>
@@ -611,23 +676,32 @@ export default function Billing() {
                     ? checkoutExtra
                     : 0;
                 if (!extra) return null;
-                const base = Number(tier.price.replace("$", ""));
-                const total = base + (extra * tier.extraCents) / 100;
+                // Every line here has to be on the SAME term. It used to show an
+                // annual headline over monthly seat maths under a "Total per
+                // month" label — three different periods in one box, on the one
+                // screen a customer checks before paying. Stripe billed $316.80
+                // a year while this read $33.00.
+                const annual = term === "annual" && !hasSub;
+                const { base, seat, seats } = planTotals(
+                  Number(tier.price.replace("$", "")),
+                  tier.extraCents,
+                  extra,
+                  annual ? "annual" : "monthly",
+                );
                 return (
                   <div className="fg-2 mt-2 space-y-1 text-xs">
                     <div className="flex justify-between gap-2">
                       <span>
-                        {extra} extra mailbox{extra === 1 ? "" : "es"} ×{" "}
-                        {tier.extra}
+                        {extra} extra mailbox{extra === 1 ? "" : "es"} × $
+                        {seat.toFixed(2)}
+                        {annual ? "/yr" : "/mo"}
                       </span>
-                      <span className="tnum font-mono">
-                        ${((extra * tier.extraCents) / 100).toFixed(2)}
-                      </span>
+                      <span className="tnum font-mono">${seats.toFixed(2)}</span>
                     </div>
                     <div className="flex justify-between gap-2 border-t pt-1 font-semibold text-[var(--fg)]">
-                      <span>Total per month</span>
+                      <span>Total per {annual ? "year" : "month"}</span>
                       <span className="tnum font-mono">
-                        ${total.toFixed(2)}
+                        ${(base + seats).toFixed(2)}
                       </span>
                     </div>
                   </div>

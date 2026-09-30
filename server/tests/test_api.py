@@ -205,20 +205,37 @@ def test_domain_scan_sorts_registered_newest_first(client: TestClient, monkeypat
     assert last_dated < first_undated
 
 
-def test_pricing_matches_prd_worked_examples(client: TestClient) -> None:
+def test_pricing_endpoint_quotes_only_what_stripe_can_bill(client: TestClient) -> None:
+    """The public quote is the invoice, or it is nothing.
+
+    This used to assert the PRD §12.9C thousand-seat example (~$442/mo) straight
+    off this endpoint. The number is real and the design is good — it is the
+    banded, two-class ladder in `pricing.quote` — but no part of billing can
+    charge it: the Stripe subscription is a platform fee plus one flat per-seat
+    rate, which would have invoiced that same customer $3,531. Quoting $442
+    publicly was a promise we could not keep, so above the self-serve ceiling the
+    endpoint now declines and routes to sales.
+
+    The ladder itself stays covered, at the level where it is honest:
+    `test_billing.test_worked_example_c_thousand_seats`.
+    """
     five = client.post(
         "/api/v1/pricing/quote",
         json={"plan": "essential", "term": "monthly", "mail_domains": 1,
               "protected": 5, "monitored": 0},
     ).json()
     assert five["total_usd"] == 25.00
+    assert five["self_serve"] is True
 
     thousand = client.post(
         "/api/v1/pricing/quote",
         json={"plan": "complete", "term": "monthly", "mail_domains": 1,
               "protected": 30, "monitored": 970},
     ).json()
-    assert 430 <= thousand["total_usd"] <= 450
+    assert thousand["self_serve"] is False
+    assert thousand["total_usd"] is None
+    assert thousand["total_cents"] is None
+    assert "contact us" in thousand["note"].lower()
 
 
 def test_ordinary_email_produces_no_alert(client: TestClient) -> None:

@@ -93,12 +93,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 ", ".join(missing_billing),
             )
 
+    from envelock.billing.margin import check_ai_margin
+    from envelock.security.keys import custody_summary
+
+    # Is a marginal mailbox still profitable at the configured model and cap?
+    # A config pair that is individually reasonable and jointly wrong, where
+    # nothing downstream would ever notice — so it is checked out loud, at boot.
+    check_ai_margin()
+
     # Say out loud what custody this process actually has over stored mailbox
     # credentials (PRD §5.2). "We use a KMS" has to be checkable in a log line,
     # not just claimed in a doc — and a seal-only process needs to know it is one
     # before it starts workers that would fail every poll.
-    from envelock.security.keys import custody_summary
-
     custody = custody_summary()
     can_decrypt_credentials = bool(custody.get("can_decrypt"))
     if not custody.get("ok"):
@@ -217,6 +223,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             )
         )
         logger.info("imap poll worker enabled (%ss)", settings.imap_poll_worker_seconds)
+
+    # Does Stripe charge what the pricing page says? A network call, so it runs
+    # as a task rather than holding up startup — and it never fails boot: a
+    # Stripe outage must not stop the API from protecting mail. Only the API
+    # process does it; the worker would just log the same thing twice.
+    from envelock.billing.price_check import check_stripe_prices
+
+    asyncio.create_task(check_stripe_prices())  # noqa: RUF006 — fire-and-forget by design
 
     # The periodic scheduler (PRD §8.1 E6, §15.2 retention, §17 watchers). This is
     # what makes escalation fire, data actually get purged, OAuth tokens stay alive,

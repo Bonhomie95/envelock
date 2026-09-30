@@ -109,3 +109,33 @@ def test_migrations_apply_and_match_models(monkeypatch) -> None:
         get_settings.cache_clear()
         with contextlib.suppress(Exception):  # best-effort cleanup
             asyncio.run(_run_admin(f'DROP DATABASE IF EXISTS "{tmp_db}" WITH (FORCE)'))
+
+
+def test_running_migrations_does_not_silence_the_application() -> None:
+    """Alembic must not take the app's logging with it.
+
+    `logging.config.fileConfig` defaults to `disable_existing_loggers=True`, so
+    loading `alembic.ini` DISABLED every logger that already existed. In this
+    suite that muted the application for every test that ran afterwards, which
+    surfaced as log assertions passing alone and failing together — an hour to
+    diagnose, because a disabled logger raises nothing and drops records before
+    any handler can see them.
+
+    It matters beyond tests: anything that runs a migration in-process before
+    serving would come up mute, and a service that cannot say what is wrong is
+    the failure this codebase spends most of its effort avoiding.
+    """
+    import logging
+
+    from alembic.config import Config
+
+    probe = logging.getLogger("envelock.billing.price_check")
+    assert not probe.disabled
+
+    Config(_INI)  # loads alembic.ini through migrations/env.py's fileConfig
+
+    assert not probe.disabled, (
+        "loading the Alembic config disabled an application logger — "
+        "migrations/env.py must pass disable_existing_loggers=False"
+    )
+

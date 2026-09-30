@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import uuid
 from collections.abc import AsyncIterator, Iterator
@@ -544,3 +545,54 @@ def client() -> Iterator[TestClient]:
 @pytest.fixture
 def api(client: TestClient) -> TestClient:
     return client
+
+
+class _LoggerCapture(logging.Handler):
+    """Collects the records a named logger emits, for tests that assert on logs.
+
+    `caplog` is the obvious tool and it is unreliable here: `obs.logs.
+    configure_logging` deliberately REMOVES every root handler (otherwise every
+    line prints twice), and pytest's capture handler lives on the root. So once
+    anything in a session has built the app, caplog can see nothing — which
+    makes a log assertion pass when run alone and fail in the suite, the worst
+    way for a test to be wrong. Attaching to the logger under test avoids the
+    question entirely.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.messages: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.messages.append(record.getMessage())
+
+    @property
+    def text(self) -> str:
+        return " ".join(self.messages)
+
+
+@pytest.fixture
+def logged():  # noqa: ANN201
+    """`logged("envelock.some.module")` -> a capture with `.messages` / `.text`."""
+    attached: list[tuple[logging.Logger, _LoggerCapture, int]] = []
+
+    def attach(name: str) -> _LoggerCapture:
+        handler = _LoggerCapture()
+        log = logging.getLogger(name)
+        previous = log.level
+        log.addHandler(handler)
+        log.setLevel(logging.DEBUG)
+        # A disabled logger drops records before any handler runs, so this would
+        # silently capture nothing. `logging.config.fileConfig` disables every
+        # existing logger unless told not to, which is how running the migration
+        # tests used to mute the whole application for the rest of the session.
+        # Fixed at the source in `migrations/env.py`; belt and braces here,
+        # because the symptom (an empty capture, no error) is baffling.
+        log.disabled = False
+        attached.append((log, handler, previous))
+        return handler
+
+    yield attach
+    for log, handler, previous in attached:
+        log.removeHandler(handler)
+        log.setLevel(previous)

@@ -268,14 +268,30 @@ async def buy_mailbox_seats(
 _PAID_PLANS = {"essential", "complete"}
 
 
-def _price_for(plan: str) -> str | None:
+#: Billing terms the checkout offers. Monthly stays the default: annual prepay is
+#: genuinely hard for a small finance team, and penalising it would cost us the
+#: customers this product is for.
+TERMS = ("monthly", "annual")
+
+
+def _price_for(plan: str, term: str = "monthly") -> str | None:
     s = get_settings()
+    if term == "annual":
+        return {
+            "essential": s.stripe_price_essential_annual,
+            "complete": s.stripe_price_complete_annual,
+        }.get(plan)
     return {"essential": s.stripe_price_essential, "complete": s.stripe_price_complete}.get(plan)
 
 
-def _extra_price_for(plan: str) -> str | None:
+def _extra_price_for(plan: str, term: str = "monthly") -> str | None:
     """The per-seat Stripe Price for mailboxes beyond the plan's included five."""
     s = get_settings()
+    if term == "annual":
+        return {
+            "essential": s.stripe_price_extra_mailbox_essential_annual,
+            "complete": s.stripe_price_extra_mailbox_complete_annual,
+        }.get(plan)
     return {
         "essential": s.stripe_price_extra_mailbox_essential,
         "complete": s.stripe_price_extra_mailbox_complete,
@@ -283,16 +299,26 @@ def _extra_price_for(plan: str) -> str | None:
 
 
 def _plan_for_price(price_id: str | None) -> str | None:
+    """Map a Stripe Price back to the plan it grants — across EVERY term.
+
+    This is the entitlement path: `_apply_subscription` uses it to decide what a
+    subscription is for. Miss a term here and an annual customer's
+    `subscription.created` webhook resolves to no plan, so someone who has paid
+    for a year is silently left on Guard. Adding a term means adding it here.
+    """
     if not price_id:
         return None
     for plan in _PAID_PLANS:
-        if _price_for(plan) == price_id:
-            return plan
+        for term in TERMS:
+            if _price_for(plan, term) == price_id:
+                return plan
     return None
 
 
 def _is_extra_price(price_id: str | None) -> bool:
-    return bool(price_id) and price_id in {_extra_price_for(p) for p in _PAID_PLANS}
+    return bool(price_id) and price_id in {
+        _extra_price_for(p, t) for p in _PAID_PLANS for t in TERMS
+    }
 
 
 def _item_price(item: dict) -> str | None:
@@ -302,6 +328,28 @@ def _item_price(item: dict) -> str | None:
 
 def _subscription_items(sub: dict) -> list[dict]:
     return list(((sub.get("items") or {}).get("data")) or [])
+
+
+def _term_of(sub: dict) -> str:
+    """Which term this subscription is on, read off its own Price IDs.
+
+    Stripe refuses to mix billing intervals on one subscription, so a seat or
+    plan change has to reuse the term already there. Derived rather than stored:
+    a `billing_term` column would be a second copy of a fact Stripe owns, and the
+    copy is what goes stale after a change made in the Stripe dashboard.
+    """
+    annual = {
+        _price_for(p, "annual") for p in _PAID_PLANS
+    } | {_extra_price_for(p, "annual") for p in _PAID_PLANS}
+    # Drop unset settings. An env file with `ENVELOCK_..._ANNUAL=` yields the
+    # empty string, not None, so discarding only None would leave "" in the set —
+    # harmless today because a Stripe id is never empty, and exactly the kind of
+    # thing that stops being harmless when someone reuses this set.
+    annual = {pid for pid in annual if pid}
+    for item in _subscription_items(sub):
+        if _item_price(item) in annual:
+            return "annual"
+    return "monthly"
 
 
 def _apply_subscription(tenant: Tenant, sub: dict) -> None:
@@ -395,6 +443,10 @@ class CheckoutRequest(BaseModel):
     extra_mailboxes: int = Field(
         default=0, ge=0, le=500, description="mailboxes beyond the plan's included five"
     )
+    term: str = Field(
+        default="monthly",
+        description="monthly | annual (annual is the same plan at the annual discount)",
+    )
 
 
 @router.post("/checkout")
@@ -410,6 +462,9 @@ async def create_checkout(
     plan = req.plan.strip().lower()
     if plan not in _PAID_PLANS:
         raise HTTPException(422, "choose the Essential or Complete plan")
+    term = req.term.strip().lower()
+    if term not in TERMS:
+        raise HTTPException(422, "choose a monthly or annual term")
 
     stripe = payments.hosted_checkout_provider("stripe")
     if stripe is None or not stripe.is_configured():
@@ -426,7 +481,7 @@ async def create_checkout(
         )
     extra_items: list[tuple[str, int]] = []
     if req.extra_mailboxes:
-        extra_price = _extra_price_for(plan)
+        extra_price = _extra_price_for(plan, term)
         if not extra_price:
             raise HTTPException(
                 503,
@@ -434,12 +489,15 @@ async def create_checkout(
                 "without them, or contact support.",
             )
         extra_items.append((extra_price, req.extra_mailboxes))
-    price_id = _price_for(plan)
+    price_id = _price_for(plan, term)
     if not price_id:
-        logger.warning("no checkout price configured for plan %s", plan)
+        # Never silently fall back to the monthly Price: that would charge a
+        # month for what the customer chose to pay for a year, on our terms.
+        logger.warning("no %s checkout price configured for plan %s", term, plan)
         raise HTTPException(
             503,
-            f"The {plan.capitalize()} plan isn't available for checkout right now — "
+            f"The {plan.capitalize()} plan isn't available for checkout "
+            f"{'annually' if term == 'annual' else 'right now'} — "
             "please contact support.",
         )
 
@@ -851,11 +909,6 @@ async def set_mailbox_seats(
             409, "Start your plan first — you can add extra mailboxes at checkout."
         )
     stripe = _stripe_or_503()
-    extra_price = _extra_price_for(tenant.plan)
-    if not extra_price:
-        raise HTTPException(
-            503, "Extra mailboxes can't be bought online right now — contact support."
-        )
     used = await _mailboxes_in_use(session, tenant.id)
     floor = max(0, used - included_mailbox_seats(tenant.plan))
     if req.extra_mailboxes < floor:
@@ -870,6 +923,15 @@ async def set_mailbox_seats(
         sub = await _stripe_call(
             stripe.get_subscription(tenant.stripe_subscription_id), "load your subscription"
         )
+        # The seat Price has to match the subscription's own interval: Stripe will
+        # not hold a monthly line and a yearly line together, and defaulting to
+        # monthly would bill an annual customer on our terms rather than theirs.
+        extra_price = _extra_price_for(tenant.plan, _term_of(sub))
+        if not extra_price:
+            raise HTTPException(
+                503,
+                "Extra mailboxes can't be bought online right now — contact support.",
+            )
         seat_items = [i for i in _subscription_items(sub) if _is_extra_price(_item_price(i))]
         ops: list[dict[str, str]] = []
         if seat_items:
@@ -919,18 +981,21 @@ async def change_subscription_plan(session: AsyncSession, tenant: Tenant, target
             "the end of the period you've paid for, then move to Guard (free).",
         )
     stripe = _stripe_or_503()
-    new_price = _price_for(target)
-    if not new_price:
-        raise HTTPException(503, f"The {target.capitalize()} plan isn't available right now.")
     sub_id = tenant.stripe_subscription_id or ""
     sub = await _stripe_call(stripe.get_subscription(sub_id), "load your subscription")
+    # Keep them on the term they bought: an annual subscriber switching plan must
+    # land on the annual Price, not be quietly moved to monthly billing.
+    term = _term_of(sub)
+    new_price = _price_for(target, term)
+    if not new_price:
+        raise HTTPException(503, f"The {target.capitalize()} plan isn't available right now.")
     ops: list[dict[str, str]] = []
     for item in _subscription_items(sub):
         pid = _item_price(item)
         if _plan_for_price(pid):
             ops.append({"id": item["id"], "price": new_price})
         elif _is_extra_price(pid):
-            seat_price = _extra_price_for(target)
+            seat_price = _extra_price_for(target, term)
             if not seat_price:
                 raise HTTPException(
                     503, "Additional mailbox pricing for this plan is unavailable. "

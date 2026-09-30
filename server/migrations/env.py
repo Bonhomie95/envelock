@@ -16,7 +16,14 @@ from envelock import models  # noqa: F401  (register metadata)
 
 config = context.config
 if config.config_file_name:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers=False` matters outside Alembic's own process.
+    # The default is True, which DISABLES every logger that already exists — so
+    # anything that runs a migration in-process (the test suite does; a boot-time
+    # upgrade would too) silences the whole application afterwards. A disabled
+    # logger drops records before any handler sees them, so nothing downstream
+    # can notice or recover: the app simply stops saying anything, which is the
+    # exact failure mode the rest of this codebase works to avoid.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # `ddl_dsn`, not `postgres_dsn`: under RLS the application connects as a
 # restricted role with no DDL rights, so migrations run with the owner's

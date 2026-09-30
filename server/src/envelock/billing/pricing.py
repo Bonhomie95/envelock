@@ -69,6 +69,14 @@ EXTRA_MAILBOX_CENTS: dict[Plan, int] = {
 }
 
 
+#: The largest mailbox count the self-serve checkout will price. Above this the
+#: flat per-seat rate stops reflecting our costs and the banded ladder below
+#: (PRD §12.9C) is the right instrument — but that needs graduated Stripe prices
+#: and usage reporting, so above the ceiling we say "talk to us" rather than
+#: quote a number we cannot charge.
+SELF_SERVE_MAILBOX_CEILING = 50
+
+
 def included_mailbox_seats(plan: str) -> int:
     try:
         return PLAN_MAILBOX_SEATS[Plan(plan)]
@@ -117,6 +125,35 @@ class Quote:
     @property
     def total_usd(self) -> float:
         return self.total_cents / 100
+
+
+def self_serve_cents(plan: str, mailboxes: int, *, term: str = BillingTerm.MONTHLY) -> int:
+    """What Stripe actually charges, to the cent.
+
+    This is the ONLY function that may answer a customer-facing price question.
+    `quote()` below implements the PRD §12.9 banded ladder, which is a different
+    (better, cheaper-at-scale) model that nothing bills yet — and the public
+    quote endpoint was serving it, understating a 500-mailbox Essential plan by
+    $402/month against the invoice Stripe would send. A price we quote and a
+    price we charge have to come from one place.
+
+    The shape is the subscription's: a per-domain platform fee plus every seat at
+    the plan's per-seat rate, with the plan's included seats as a floor — which is
+    why five mailboxes and one mailbox both cost $25 on Essential.
+    """
+    try:
+        plan_enum = Plan(plan)
+        term_enum = BillingTerm(term)
+    except ValueError:
+        return 0
+    if plan_enum is Plan.GUARD:
+        return 0
+    rate = EXTRA_MAILBOX_CENTS.get(plan_enum)
+    if rate is None:  # Solo has no per-domain platform fee; price it flat.
+        return SOLO_CENTS * max(0, mailboxes)
+    billed_seats = max(mailboxes, included_mailbox_seats(plan_enum.value))
+    subtotal = PLATFORM_CENTS[plan_enum] + billed_seats * rate
+    return subtotal - int(subtotal * TERM_DISCOUNT[term_enum])
 
 
 def _banded_cost(count: int, rates: tuple[int, ...]) -> tuple[int, list[dict]]:

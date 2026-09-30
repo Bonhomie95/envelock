@@ -338,6 +338,17 @@ class _Stripe:
             headers=self._headers(),
         )
 
+    async def get_price(self, price_id: str, *, transport: Transport | None = None) -> dict:
+        """Retrieve a Price, with its Product expanded, so the amount we charge
+        can be checked against the amount we advertise."""
+        if not self.is_configured():
+            raise PaymentError("Stripe is not configured on this deployment")
+        return await _transport(transport).request(
+            "GET",
+            f"https://api.stripe.com/v1/prices/{price_id}?expand[]=product",
+            headers=self._headers(),
+        )
+
     async def update_subscription(
         self,
         subscription_id: str,

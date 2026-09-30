@@ -13,7 +13,6 @@ So these assert on the log, which is the only signal there is.
 from __future__ import annotations
 
 import asyncio
-import logging
 
 import pytest
 
@@ -22,8 +21,8 @@ from envelock.workers.watchers import CertTransparencyWatcher
 
 @pytest.mark.asyncio
 async def test_a_missing_websockets_package_is_an_error_not_a_silent_exit(
-    monkeypatch, caplog
-) -> None:
+    monkeypatch, logged
+) -> None:  # noqa: ANN001
     """`websockets` used to arrive only as a transitive extra of
     `uvicorn[standard]`. Without it the generator simply returned, so the
     scheduler logged "started" and the feed never existed."""
@@ -40,16 +39,16 @@ async def test_a_missing_websockets_package_is_an_error_not_a_silent_exit(
     watcher = CertTransparencyWatcher()
     watcher._running = True
 
-    with caplog.at_level(logging.ERROR):
-        assert [m async for m in watcher._connect()] == []
+    watcher_log = logged("envelock.workers.watchers")
+    assert [m async for m in watcher._connect()] == []
 
-    assert any("websockets" in r.message for r in caplog.records), (
-        f"a watcher that cannot run at all said nothing: {[r.message for r in caplog.records]}"
+    assert "websockets" in watcher_log.text, (
+        f"a watcher that cannot run at all said nothing: {watcher_log.messages}"
     )
 
 
 @pytest.mark.asyncio
-async def test_a_lost_feed_says_so_and_does_not_ratchet_its_backoff(monkeypatch, caplog) -> None:
+async def test_a_lost_feed_says_so_and_does_not_ratchet_its_backoff(monkeypatch, logged) -> None:  # noqa: ANN001
     """Two claims: the outage is logged, and a successful reconnect resets the
     counter. The delay was `min(2**reconnects, 60)` over a counter that only ever
     went up, so after a handful of outages it stayed pinned at the 60s ceiling
@@ -96,14 +95,14 @@ async def test_a_lost_feed_says_so_and_does_not_ratchet_its_backoff(monkeypatch,
     watcher = CertTransparencyWatcher(protected_domains=frozenset({"acme.com"}))
     watcher._running = True
 
-    with caplog.at_level(logging.INFO):
-        gen = watcher._connect()
-        first = await anext(gen)
-        watcher._running = False
-        await gen.aclose()
+    watcher_log = logged("envelock.workers.watchers")
+    gen = watcher._connect()
+    first = await anext(gen)
+    watcher._running = False
+    await gen.aclose()
 
+    messages = watcher_log.messages
     assert first["data"]["leaf_cert"]["all_domains"] == ["example.com"]
-    messages = [r.getMessage() for r in caplog.records]
     assert any("lost the feed" in m for m in messages), f"an outage was not reported: {messages}"
     assert any("reconnected" in m for m in messages), f"the recovery was not reported: {messages}"
     # The whole point: a healthy connection clears the backoff.

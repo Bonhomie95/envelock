@@ -543,10 +543,10 @@ export default function Landing() {
             ))}
           </div>
           <p className="pricing-footnote">
-            Paid plans: 15-day trial, monthly billing, cancel anytime. AI review
-            is subject to usage limits. Prices shown for one mail domain.
-            Identity protection requires supported provider logs or the Envelock
-            sensor.
+            Paid plans: 15-day trial, cancel anytime. Prices shown are monthly,
+            for one mail domain; pay annually and save 20%. AI review is subject
+            to usage limits. Identity protection requires supported provider logs
+            or the Envelock sensor.
           </p>
         </div>
       </section>
