@@ -174,10 +174,13 @@ class CertTransparencyWatcher:
                         )
                         self.stats.reconnects = 0
                     else:
+                        n = len(self.protected)
                         logger.info(
-                            "CT lookalike watcher connected to %s, watching %d protected domains",
+                            "CT lookalike watcher connected to %s, watching %d "
+                            "protected domain%s",
                             self.url,
-                            len(self.protected),
+                            n,
+                            "" if n == 1 else "s",
                         )
                     async for raw in socket:
                         self.stats.last_message_at = datetime.now(UTC)
