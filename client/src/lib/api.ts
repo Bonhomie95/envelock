@@ -386,8 +386,20 @@ export interface Oversight {
 }
 
 export interface SimulationResult {
-  runs: { id: string; expected: string; detected: string[]; passed: boolean }[];
+  /** The plan the run was scored on — Guard once a trial has lapsed unpaid. */
+  plan: string | null;
+  runs: {
+    id: string;
+    expected: string;
+    detected: string[];
+    passed: boolean;
+    /** Missed because the plan excludes the detection, not because it failed.
+        Anything rendering this must say so, or a smaller plan reads as a broken
+        product. */
+    plan_locked: boolean;
+  }[];
   passed: number;
+  plan_locked: number;
   total: number;
 }
 
