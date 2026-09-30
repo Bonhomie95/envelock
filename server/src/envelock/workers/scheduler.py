@@ -23,8 +23,14 @@ from envelock.db import get_sessionmaker
 
 logger = logging.getLogger(__name__)
 
-#: The live CT watcher, when the scheduler starts one — /status/channels reads
-#: it so the stats shown are the REAL stream's, not a fresh instance's zeros.
+#: The live CT watcher, when the scheduler starts one — held module-level so the
+#: stats read are the REAL stream's and not a fresh instance's zeros.
+#:
+#: Read by the operator console's overview (`api/admin._ct_watcher_health`) to
+#: answer the one question the product previously could not: is the free tier's
+#: advertised lookalike monitoring actually receiving anything. Customer-facing
+#: status deliberately does not show it — platform internals belong in staff
+#: tools.
 LIVE_CT_WATCHER = None
 
 Job = Callable[[], Awaitable[dict | list | None]]

@@ -176,7 +176,41 @@ async def overview(actor: PlatformReader, session: Session) -> dict:
         "paying_tenants": paying,
         "active_trials": active_trials,
         "plan_distribution": {plan: int(n) for plan, n in plan_rows},
+        "lookalike_watcher": _ct_watcher_health(),
         "generated_at": now.isoformat(),
+    }
+
+
+def _ct_watcher_health() -> dict:
+    """Whether Guard's advertised lookalike monitoring is actually happening.
+
+    The watcher's stats had no reader anywhere — `LIVE_CT_WATCHER` was assigned
+    and never looked at, and a comment claimed `/status/channels` read it, which
+    it did not. So a dead certstream feed was indistinguishable from a quiet one
+    from inside the product, and the only free-tier promise we make was
+    unobservable. Operator-facing on purpose: this is platform internals, which
+    belong in staff tools rather than a customer's dashboard.
+    """
+    from envelock.workers import scheduler
+
+    watcher = scheduler.LIVE_CT_WATCHER
+    if watcher is None:
+        return {
+            "running": False,
+            "reason": (
+                "not started — ENVELOCK_CT_WATCHER_ENABLED is off, or "
+                "ENVELOCK_FOCUS_CORE=true is overriding it, or this process is "
+                "not the scheduler leader"
+            ),
+        }
+    stats = watcher.stats.payload()
+    return {
+        "running": True,
+        "protected_domains": len(watcher.protected),
+        # `last_message_at: null` with reconnects climbing is a dead feed. That is
+        # the distinction the log lines and this field exist to make.
+        "connected": stats["last_message_at"] is not None and not stats["reconnects"],
+        **stats,
     }
 
 

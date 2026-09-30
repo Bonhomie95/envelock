@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -16,6 +17,8 @@ from datetime import UTC, datetime
 from envelock.channels.external.lookalike import match_stream_entry
 from envelock.config import get_settings
 from envelock.util.domains import registrable_domain
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +42,12 @@ class WatcherStats:
     errors: int = 0
     reconnects: int = 0
     started_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    #: When the feed last delivered anything. `None` means it has never
+    #: connected — which is the state that must not look like "connected and the
+    #: world is quiet", because the two are indistinguishable from the Activity
+    #: tab ("no lookalike domains found for you yet") and only one of them means
+    #: Guard's advertised monitoring is actually happening.
+    last_message_at: datetime | None = None
 
     def payload(self) -> dict:
         return {
@@ -48,6 +57,7 @@ class WatcherStats:
             "errors": self.errors,
             "reconnects": self.reconnects,
             "started_at": self.started_at.isoformat(),
+            "last_message_at": (self.last_message_at.isoformat() if self.last_message_at else None),
         }
 
 
@@ -127,20 +137,64 @@ class CertTransparencyWatcher:
 
     async def _connect(self) -> AsyncIterator[dict]:
         """Live certstream. The public feed has no SLA, so reconnection is
-        expected rather than exceptional."""
+        expected rather than exceptional.
+
+        Every exit path here says something. This watcher IS the delivery of the
+        free tier's one advertised feature, and it used to fail in total silence:
+        the scheduler logged "started", the feed never arrived, and the dashboard
+        said "no lookalike domains found for you yet" — which is also what a
+        working watcher says on a quiet day. Nothing in the product could tell
+        the two apart.
+        """
         try:
             import websockets
         except ImportError:
+            # Reached only if `websockets` is genuinely absent. It is a direct
+            # import of ours and now a declared dependency; it used to arrive
+            # only as a transitive extra of `uvicorn[standard]`, so a plain
+            # uvicorn install turned Guard's monitoring off with no way to tell.
+            logger.error(
+                "CT lookalike watcher cannot run: the `websockets` package is "
+                "not installed, so Guard's advertised lookalike monitoring is "
+                "NOT happening. Reinstall the server dependencies."
+            )
             return
         while self._running:
             try:
                 async with websockets.connect(self.url) as socket:
+                    # Reset the backoff on a real connection. It was cumulative,
+                    # so after a handful of outages the delay stayed pinned at the
+                    # 60s ceiling for the life of the process even once the feed
+                    # was healthy again.
+                    if self.stats.reconnects:
+                        logger.info(
+                            "CT lookalike watcher reconnected to %s after %d attempts",
+                            self.url,
+                            self.stats.reconnects,
+                        )
+                        self.stats.reconnects = 0
+                    else:
+                        logger.info(
+                            "CT lookalike watcher connected to %s, watching %d protected domains",
+                            self.url,
+                            len(self.protected),
+                        )
                     async for raw in socket:
+                        self.stats.last_message_at = datetime.now(UTC)
                         with contextlib.suppress(json.JSONDecodeError):
                             yield json.loads(raw)
-            except Exception:
+            except Exception as exc:
                 self.stats.reconnects += 1
-                await asyncio.sleep(min(2**self.stats.reconnects, 60))
+                delay = min(2**self.stats.reconnects, 60)
+                logger.warning(
+                    "CT lookalike watcher lost the feed (%s); attempt %d, "
+                    "retrying in %ds. Lookalike monitoring is paused until it "
+                    "reconnects.",
+                    exc,
+                    self.stats.reconnects,
+                    delay,
+                )
+                await asyncio.sleep(delay)
 
     def stop(self) -> None:
         self._running = False
