@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -43,6 +44,11 @@ from envelock.security.middleware import (
 )
 
 logger = logging.getLogger(__name__)
+
+#: Strong references to fire-and-forget startup tasks. Without this the event
+#: loop keeps only a weak reference and the task can be collected before it
+#: finishes, silently — see `price_check_task` below.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
 
 
 
@@ -226,11 +232,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # Does Stripe charge what the pricing page says? A network call, so it runs
     # as a task rather than holding up startup — and it never fails boot: a
-    # Stripe outage must not stop the API from protecting mail. Only the API
-    # process does it; the worker would just log the same thing twice.
+    # Stripe outage must not stop the API from protecting mail.
+    #
+    # The reference is kept deliberately. `asyncio` holds only a WEAK reference
+    # to a running task, so a bare `create_task(...)` can be garbage-collected
+    # mid-await and vanish without a word — which is exactly what happened: the
+    # check produced no log line at all in production. RUF006 warns about this
+    # and was suppressed, which is the whole lesson.
     from envelock.billing.price_check import check_stripe_prices
 
-    asyncio.create_task(check_stripe_prices())  # noqa: RUF006 — fire-and-forget by design
+    price_check_task = asyncio.create_task(check_stripe_prices())
+    _BACKGROUND_TASKS.add(price_check_task)
+    price_check_task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     # The periodic scheduler (PRD §8.1 E6, §15.2 retention, §17 watchers). This is
     # what makes escalation fire, data actually get purged, OAuth tokens stay alive,

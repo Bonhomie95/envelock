@@ -166,11 +166,34 @@ async def test_a_stripe_outage_does_not_fail_the_check(stripe, price_log) -> Non
 
 
 @pytest.mark.asyncio
-async def test_no_stripe_configured_is_silent() -> None:
+async def test_every_outcome_says_something(stripe, price_log) -> None:  # noqa: ANN001
+    """Silence must never be the answer.
+
+    In production this check logged NOTHING and the cause was ambiguous between
+    four things: no Stripe key, no Price IDs, the task garbage-collected before
+    it ran, and everything fine. (It was the third — `asyncio` keeps only a weak
+    reference to a task, so a bare `create_task` can vanish mid-await.) A check
+    whose quiet state is unreadable is not a check.
+    """
+    # Configured, but no Price IDs at all — nothing can be bought.
+    stripe({}, stripe_secret_key=FAKE_KEY)
+    assert await check_stripe_prices() == []
+    assert "no Price IDs are configured" in price_log.text, price_log.messages
+
+
+@pytest.mark.asyncio
+async def test_no_stripe_key_says_so_rather_than_nothing(
+    monkeypatch, price_log
+) -> None:  # noqa: ANN001
     from envelock.config import get_settings
 
+    monkeypatch.setenv("ENVELOCK_STRIPE_SECRET_KEY", "")
     get_settings.cache_clear()
-    assert await check_stripe_prices() == []
+    try:
+        assert await check_stripe_prices() == []
+        assert "no Stripe secret key" in price_log.text, price_log.messages
+    finally:
+        get_settings.cache_clear()
 
 
 @pytest.fixture

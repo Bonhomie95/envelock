@@ -37,6 +37,23 @@ from envelock.models import Tenant
 #: moves together rather than the four bullets that happen to be named.
 _COMPLETE_ONLY_PREFIX = "C"
 
+#: Which detection FAMILIES each plan includes, stated rather than inferred.
+#:
+#: A = payment and invoice fraud, B = links and attachments, C = identity and
+#: takeover (Complete only), D = domain and brand (free, Channel 3).
+#:
+#: This was previously expressed as "included unless it starts with C", which is
+#: correct for every family that exists and fails OPEN for any that does not: a
+#: new family — or a typo in a service id — was silently granted to every paid
+#: plan, with nobody deciding. Listing the families means adding one is a choice
+#: someone has to make here, and the default for an unknown id is "not sold".
+_PLAN_FAMILIES: dict[str, frozenset[str]] = {
+    Plan.GUARD.value: frozenset({"D"}),
+    Plan.SOLO.value: frozenset({"A", "B", "D"}),
+    Plan.ESSENTIAL.value: frozenset({"A", "B", "D"}),
+    Plan.COMPLETE.value: frozenset({"A", "B", "C", "D"}),
+}
+
 
 def _plan_of(tenant: Tenant | None) -> str:
     """The plan in force right now — Guard once an unpaid trial has lapsed."""
@@ -56,13 +73,11 @@ def detection_included(service: str, plan: str) -> bool:
     which knows nothing about billing — can be filtered without importing the
     ORM into it.
     """
-    if plan == Plan.GUARD.value:
-        return service.upper().startswith("D")
-    if plan not in {Plan.ESSENTIAL.value, Plan.COMPLETE.value, Plan.SOLO.value}:
+    families = _PLAN_FAMILIES.get(plan)
+    if families is None:  # an unrecognised plan buys nothing
         return False
-    if not service.upper().startswith(_COMPLETE_ONLY_PREFIX):
-        return True
-    return plan == Plan.COMPLETE.value
+    family = service[:1].upper()
+    return family in families
 
 
 def ai_on_links(tenant: Tenant | None) -> bool:

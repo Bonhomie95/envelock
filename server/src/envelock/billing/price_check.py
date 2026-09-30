@@ -73,13 +73,27 @@ async def check_stripe_prices() -> list[dict]:
     from envelock.billing import payments
     from envelock.config import get_settings
 
+    # Every exit path below says something. Silence used to mean any of four
+    # different things — no Stripe key, no prices set, the task collected before
+    # it ran, or everything fine — and an operator grepping the log could not
+    # tell which. That ambiguity is the failure this module exists to remove, so
+    # it must not reappear in the module itself.
     stripe = payments.provider_for("stripe")
     if stripe is None or not stripe.is_configured():
+        logger.warning(
+            "Stripe prices NOT verified: no Stripe secret key is configured in "
+            "this process, so nothing checked that we charge what the pricing "
+            "page says. Card checkout is unavailable here too."
+        )
         return []
     # Only Stripe can answer "what does this Price actually charge", and the
     # shared PaymentProvider protocol has no business growing a method for it.
     get_price = getattr(stripe, "get_price", None)
     if get_price is None:
+        logger.warning(
+            "Stripe prices NOT verified: the configured provider cannot retrieve "
+            "a Price."
+        )
         return []
 
     settings = get_settings()
@@ -141,7 +155,12 @@ async def check_stripe_prices() -> list[dict]:
                 want_interval,
             )
 
-    if not problems and seen:
+    if not seen:
+        logger.warning(
+            "Stripe prices NOT verified: no Price IDs are configured, so no plan "
+            "can be bought. Set ENVELOCK_STRIPE_PRICE_* (see .env.example)."
+        )
+    elif not problems:
         logger.info("Stripe prices verified: %d match the pricing table", len(seen))
     return problems
 
