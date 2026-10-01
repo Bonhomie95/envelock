@@ -199,6 +199,13 @@ REQUIRED_WEBHOOK_EVENTS = frozenset(
 )
 
 
+def _key_is_test() -> bool:
+    from envelock.config import get_settings
+
+    key = get_settings().stripe_secret_key
+    return bool(key) and key.get_secret_value().startswith("sk_test")
+
+
 async def check_webhook_events() -> list[str]:
     """Which events we act on that Stripe will never send us.
 
@@ -222,7 +229,33 @@ async def check_webhook_events() -> list[str]:
         logger.warning("could not check which Stripe webhook events are enabled: %s", exc)
         return []
 
-    endpoints = [e for e in body.get("data", []) if e.get("status") == "enabled"]
+    # Which Stripe MODE this deployment is in, and whether the endpoints belong
+    # to it. Test and live are separate worlds with separate endpoints and
+    # separate signing secrets, and the dashboard shows whichever mode its toggle
+    # is set to — so copying "the" signing secret from the wrong one produces an
+    # endpoint that looks perfect and rejects every delivery. Nothing in the
+    # product said which mode it was in, which is what made that invisible.
+    all_endpoints = body.get("data", [])
+    key_is_live = not _key_is_test()
+    wrong_mode = [e for e in all_endpoints if bool(e.get("livemode")) != key_is_live]
+    logger.info(
+        "Stripe mode: %s (%d webhook endpoint(s) in this mode)",
+        "LIVE" if key_is_live else "TEST",
+        len(all_endpoints) - len(wrong_mode),
+    )
+    if wrong_mode:
+        logger.warning(
+            "%d Stripe webhook endpoint(s) belong to the other mode and will "
+            "never receive this deployment's events. Their signing secrets will "
+            "not validate here either.",
+            len(wrong_mode),
+        )
+
+    endpoints = [
+        e
+        for e in all_endpoints
+        if e.get("status") == "enabled" and bool(e.get("livemode")) == key_is_live
+    ]
     if not endpoints:
         logger.error(
             "Stripe has NO enabled webhook endpoint, so nothing can tell us a "

@@ -252,8 +252,9 @@ class _StripeWithEndpoints(_FakeStripe):
         return {"data": self._endpoints}
 
 
-def _endpoint(events: list[str], status: str = "enabled") -> dict:
+def _endpoint(events: list[str], status: str = "enabled", livemode: bool = False) -> dict:
     return {"id": "we_1", "status": status, "enabled_events": events,
+            "livemode": livemode,
             "url": "https://api.example/billing/stripe/webhook"}
 
 
@@ -325,4 +326,24 @@ async def test_a_disabled_endpoint_does_not_count(endpoints, price_log) -> None:
     endpoints([_endpoint(sorted(REQUIRED_WEBHOOK_EVENTS), status="disabled")])
     assert sorted(await check_webhook_events()) == sorted(REQUIRED_WEBHOOK_EVENTS)
     assert "NO enabled webhook endpoint" in price_log.text, price_log.messages
+
+
+@pytest.mark.asyncio
+async def test_an_endpoint_in_the_other_stripe_mode_does_not_count(
+    endpoints, price_log
+) -> None:  # noqa: ANN001
+    """Test and live are separate worlds: separate endpoints, separate signing
+    secrets, and a dashboard that shows whichever its toggle is set to.
+
+    This cost a live debugging session. A webhook endpoint was created in LIVE
+    mode while the deployment ran on a test key, so its signing secret could
+    never validate a test event — and every check passed, because an endpoint
+    did exist with the right URL and the right events. The mode is now stated at
+    boot, which is the fact that was missing.
+    """
+    endpoints([_endpoint(sorted(REQUIRED_WEBHOOK_EVENTS), livemode=True)])
+    missing = await check_webhook_events()
+    assert missing, "a live-mode endpoint was counted for a test-mode deployment"
+    assert "other mode" in price_log.text, price_log.messages
+    assert "Stripe mode: TEST" in price_log.text, price_log.messages
 
