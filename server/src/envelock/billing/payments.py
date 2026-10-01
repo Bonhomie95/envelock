@@ -338,6 +338,30 @@ class _Stripe:
             headers=self._headers(),
         )
 
+    async def find_live_subscription_for_tenant(
+        self, tenant_id: str, *, transport: Transport | None = None
+    ) -> dict | None:
+        """A subscription Stripe is already billing for this tenant, if any.
+
+        Searched by the `tenant_id` we stamp into checkout metadata, NOT by our
+        stored customer id — the whole point is to work when our own record is
+        missing, which is precisely when a duplicate gets created.
+        """
+        if not self.is_configured():
+            return None
+        from urllib.parse import quote
+
+        query = quote(f"metadata['tenant_id']:'{tenant_id}'")
+        body = await _transport(transport).request(
+            "GET",
+            f"https://api.stripe.com/v1/subscriptions/search?query={query}&limit=20",
+            headers=self._headers(),
+        )
+        for sub in body.get("data", []):
+            if sub.get("status") in ("active", "trialing", "past_due"):
+                return sub
+        return None
+
     async def list_webhook_endpoints(self, *, transport: Transport | None = None) -> dict:
         """The endpoints Stripe will deliver to, and which events each carries."""
         if not self.is_configured():

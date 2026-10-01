@@ -427,6 +427,41 @@ def _checkout_trial_end(tenant: Tenant) -> int | None:
     return int(ends.timestamp())
 
 
+async def _adopt_existing_subscription(session: AsyncSession, tenant: Tenant) -> bool:
+    """Reconcile a subscription Stripe is billing that we never recorded.
+
+    Best effort: if the lookup fails we proceed to checkout rather than block a
+    customer from paying, because the ordinary path still has the guard above.
+    """
+    stripe = payments.provider_for("stripe")
+    finder = getattr(stripe, "find_live_subscription_for_tenant", None)
+    if finder is None:
+        return False
+    try:
+        sub = await finder(str(tenant.id))
+    except Exception as exc:  # noqa: BLE001 — never block a payment over this
+        logger.warning("could not check Stripe for an existing subscription: %s", exc)
+        return False
+    if not sub:
+        return False
+
+    logger.error(
+        "tenant %s has a live Stripe subscription (%s) we had no record of — "
+        "adopting it. A webhook was missed; without this the customer would have "
+        "paid a second time.",
+        tenant.id,
+        sub.get("id"),
+    )
+    _apply_subscription(tenant, sub)
+    # `_apply_subscription` mirrors plan and seats but not entitlement: that is
+    # normally set by the checkout event we never received.
+    tenant.payment_method_ok = True
+    if customer := sub.get("customer"):
+        tenant.stripe_customer_id = customer if isinstance(customer, str) else customer.get("id")
+    await session.commit()
+    return True
+
+
 async def _primary_domain(session: AsyncSession, tenant_id: UUID) -> str | None:
     return (
         await session.execute(
@@ -479,6 +514,25 @@ async def create_checkout(
             "You already have a subscription. Change your plan or mailbox seats "
             "on this page instead — you won't be billed twice.",
         )
+
+    # The guard above trusts OUR record, and our record is written by the webhook.
+    # So the one situation it cannot cover is the one that matters: a checkout
+    # that succeeded while the webhook was failing. The customer sees no plan,
+    # pays again, and is billed twice — which is exactly what happened on staging,
+    # twice, before anyone noticed two live subscriptions on one tenant.
+    #
+    # So ask Stripe, which is the source of truth for what is being billed. If it
+    # already has a live subscription for this tenant, adopt it rather than just
+    # refusing: that repairs the missed webhook instead of leaving the customer
+    # stuck looking at a plan they have already paid for.
+    adopted = await _adopt_existing_subscription(session, tenant)
+    if adopted:
+        raise HTTPException(
+            409,
+            "You already have an active subscription — we've just reconnected it "
+            "to your workspace. Reload this page; you have not been charged twice.",
+        )
+
     extra_items: list[tuple[str, int]] = []
     if req.extra_mailboxes:
         extra_price = _extra_price_for(plan, term)
