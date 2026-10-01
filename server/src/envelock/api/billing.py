@@ -985,6 +985,14 @@ async def set_mailbox_seats(
             "reduce seats.",
         )
     current = tenant.extra_mailbox_seats or 0
+    if req.extra_mailboxes == current:
+        # Not an error, but the customer clicked a button and nothing moved, so
+        # say so rather than returning a success that looks like a no-op.
+        logger.info(
+            "seat change for tenant %s was a no-op: already at %d seats",
+            tenant.id,
+            current,
+        )
     if req.extra_mailboxes != current:
         sub = await _stripe_call(
             stripe.get_subscription(tenant.stripe_subscription_id), "load your subscription"
@@ -1027,6 +1035,13 @@ async def set_mailbox_seats(
             ) from exc
         tenant.extra_mailbox_seats = req.extra_mailboxes
         await session.commit()
+        logger.info(
+            "seats changed for tenant %s: %d -> %d (%s)",
+            tenant.id,
+            current,
+            req.extra_mailboxes,
+            extra_price,
+        )
     return {
         "extra_mailbox_seats": tenant.extra_mailbox_seats,
         "capacity": included_mailbox_seats(tenant.plan) + tenant.extra_mailbox_seats,

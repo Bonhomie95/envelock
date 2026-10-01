@@ -48,8 +48,12 @@ export default function Billing() {
   const [seatCount, setSeatCount] = useState(1);
   // Mailboxes beyond the plan's five: bought at checkout, or set on the live
   // subscription afterwards. null = not touched yet (defaults from usage).
-  const [extraAtCheckout, setExtraAtCheckout] = useState<number | null>(null);
-  const [seatTarget, setSeatTarget] = useState<number | null>(null);
+  // The raw text, not a number. Holding a number meant an empty field was
+  // immediately coerced back to "0", so the zero could never be cleared and
+  // every keystroke landed in front of it — "02", "04". null = untouched, so the
+  // field still shows the current value until someone edits it.
+  const [extraAtCheckout, setExtraAtCheckout] = useState<string | null>(null);
+  const [seatTarget, setSeatTarget] = useState<string | null>(null);
   const [planMsg, setPlanMsg] = useState<string | null>(null);
   const [openedAt] = useState(() => Date.now());
   const [seatBusy, setSeatBusy] = useState(false);
@@ -80,6 +84,24 @@ export default function Billing() {
     void load();
   }, [load]);
 
+  // Coming BACK from Stripe with the browser's back button.
+  //
+  // Both hand-offs set a busy flag and then leave the page, which is right while
+  // we are navigating. The browser then restores this page from its back/forward
+  // cache with the React state exactly as it was — so every button returns still
+  // spinning, for ever, and the page looks hung. `pageshow` with `persisted` is
+  // the only event fired on a bfcache restore; there is no remount to hook.
+  useEffect(() => {
+    const revive = (e: PageTransitionEvent) => {
+      if (!e.persisted) return;
+      setBusy(false);
+      setSeatBusy(false);
+      void load();
+    };
+    window.addEventListener("pageshow", revive);
+    return () => window.removeEventListener("pageshow", revive);
+  }, [load]);
+
   const selected: "essential" | "complete" =
     chosen ??
     (tenant?.subscribed_plan === "essential" ? "essential" : "complete");
@@ -90,9 +112,13 @@ export default function Billing() {
   const used = tenant?.mailboxes?.used ?? 0;
   const included = 5;
   const neededExtra = Math.max(0, used - included);
-  const checkoutExtra = extraAtCheckout ?? neededExtra;
+  /** What a seat box currently shows (may be ""), and the number it means. */
+  const seatCountOf = (raw: string) => Math.max(0, Math.min(500, Number(raw) || 0));
+  const checkoutText = extraAtCheckout ?? String(neededExtra);
+  const checkoutExtra = seatCountOf(checkoutText);
   const currentExtra = tenant?.mailboxes?.extra_seats ?? 0;
-  const targetExtra = seatTarget ?? currentExtra;
+  const seatText = seatTarget ?? String(currentExtra);
+  const targetExtra = seatCountOf(seatText);
   // Stripe only defers the first charge when the trial has 48h+ left (the
   // server uses 49h); inside that window checkout charges today.
   const trialEndsAt = tenant?.trial.ends_at
@@ -536,18 +562,13 @@ export default function Billing() {
                       type="number"
                       min={0}
                       max={500}
-                      value={checkoutExtra}
+                      value={checkoutText}
+                      /* Digits only, and "" is allowed while typing so the zero
+                         can be cleared. Normalised on blur. */
                       onChange={(e) =>
-                        setExtraAtCheckout(
-                          Math.max(
-                            0,
-                            Math.min(
-                              500,
-                              Math.floor(Number(e.target.value) || 0),
-                            ),
-                          ),
-                        )
+                        setExtraAtCheckout(e.target.value.replace(/[^0-9]/g, ""))
                       }
+                      onBlur={() => setExtraAtCheckout(String(checkoutExtra))}
                       className="field w-20 text-sm"
                     />
                     <span className="fg-3 text-xs">
@@ -780,24 +801,22 @@ export default function Billing() {
                     type="number"
                     min={neededExtra}
                     max={500}
-                    value={targetExtra}
+                    value={seatText}
                     onChange={(e) =>
-                      setSeatTarget(
-                        Math.max(
-                          0,
-                          Math.min(
-                            500,
-                            Math.floor(Number(e.target.value) || 0),
-                          ),
-                        ),
-                      )
+                      setSeatTarget(e.target.value.replace(/[^0-9]/g, ""))
                     }
+                    onBlur={() => setSeatTarget(String(targetExtra))}
                     className="field w-20 text-sm"
                   />
                   <Button
                     size="sm"
                     variant="line"
                     disabled={seatBusy || targetExtra === currentExtra}
+                    title={
+                      targetExtra === currentExtra
+                        ? "Change the number of seats first"
+                        : undefined
+                    }
                     onClick={updateSeats}
                   >
                     {seatBusy && (
@@ -806,13 +825,20 @@ export default function Billing() {
                     UPDATE
                   </Button>
                 </div>
-                {targetExtra !== currentExtra && (
-                  <p className="fg-3 mt-2 text-[11px] leading-relaxed">
-                    {targetExtra > currentExtra
-                      ? `Adds ${targetExtra - currentExtra} × ${planTier(subscribedPlan)?.extra ?? "$3.50"}/mo, charged now for the rest of this billing period.`
-                      : "Fewer seats — the unused time is credited on your next invoice."}
-                  </p>
-                )}
+                <p className="fg-3 mt-2 text-[11px] leading-relaxed">
+                  {targetExtra === currentExtra
+                    ? /* The button is disabled until this number changes. Without
+                         saying so, clicking a greyed-out UPDATE looks like a dead
+                         button — which is exactly how it was reported. */
+                      "Change the number above to buy or release seats."
+                    : targetExtra > currentExtra
+                      ? /* Deliberately no per-period rate here: this panel does
+                           not know whether the subscription is monthly or annual,
+                           and "$3.50/mo" beside an annual seat that costs $33.60
+                           a year is a wrong number on a money screen. */
+                        `Adds ${targetExtra - currentExtra} seat${targetExtra - currentExtra === 1 ? "" : "s"}, charged now and prorated to your billing date.`
+                      : `Releases ${currentExtra - targetExtra} seat${currentExtra - targetExtra === 1 ? "" : "s"} — the unused time is credited on your next invoice.`}
+                </p>
               </>
             ) : isStripe ? (
               <p className="fg-2 mt-3 text-xs leading-relaxed">
