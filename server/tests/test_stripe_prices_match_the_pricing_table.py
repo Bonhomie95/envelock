@@ -23,6 +23,7 @@ from envelock.billing.price_check import check_stripe_prices, expected_prices
 #: Not a credential — the fake client below never calls Stripe. It only has to
 #: be non-empty so `is_configured()` is true.
 FAKE_KEY = "sk_test_notreal"  # noqa: S105
+FAKE_WEBHOOK_SECRET = "whsec_notreal"  # noqa: S105
 
 
 def test_the_expected_table_matches_the_published_pricing() -> None:
@@ -73,6 +74,9 @@ def stripe(monkeypatch):  # noqa: ANN001, ANN201
         # the suite, which is the worst way for a test to be wrong.
         for setting in expected_prices():
             monkeypatch.setenv(f"ENVELOCK_{setting.upper()}", "")
+        # A webhook secret by default, so these tests are about PRICES. The one
+        # test that cares about its absence clears it explicitly.
+        monkeypatch.setenv("ENVELOCK_STRIPE_WEBHOOK_SECRET", FAKE_WEBHOOK_SECRET)
         for k, v in settings.items():
             monkeypatch.setenv(f"ENVELOCK_{k.upper()}", v)
         get_settings.cache_clear()
@@ -199,3 +203,36 @@ async def test_no_stripe_key_says_so_rather_than_nothing(
 @pytest.fixture
 def price_log(logged):  # noqa: ANN001, ANN201
     return logged("envelock.billing.price_check")
+
+
+@pytest.mark.asyncio
+async def test_a_missing_webhook_secret_is_an_error(stripe, price_log) -> None:  # noqa: ANN001
+    """Correct Prices nobody can pay for.
+
+    Stripe confirms payment server-to-server and that call is authenticated only
+    by the signing secret. Without it every webhook is rejected with a 400, so a
+    customer is charged, Stripe reports success, and the plan never activates —
+    and the only signal is a support email saying "I paid and nothing happened".
+    """
+    stripe(
+        {"p_ess": _price(2500)},
+        stripe_secret_key=FAKE_KEY,
+        stripe_webhook_secret="",
+        stripe_price_essential="p_ess",
+    )
+    problems = await check_stripe_prices()
+    assert any(p["setting"] == "stripe_webhook_secret" for p in problems), problems
+    assert "NO payment can activate a plan" in price_log.text, price_log.messages
+
+
+@pytest.mark.asyncio
+async def test_a_present_webhook_secret_is_not_flagged(stripe, price_log) -> None:  # noqa: ANN001
+    stripe(
+        {"p_ess": _price(2500)},
+        stripe_secret_key=FAKE_KEY,
+        stripe_webhook_secret=FAKE_WEBHOOK_SECRET,
+        stripe_price_essential="p_ess",
+    )
+    assert await check_stripe_prices() == []
+    assert "Stripe prices verified" in price_log.text, price_log.messages
+

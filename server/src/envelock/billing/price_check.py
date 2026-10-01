@@ -155,6 +155,21 @@ async def check_stripe_prices() -> list[dict]:
                 want_interval,
             )
 
+    # A Price nobody can pay for is as useless as a wrong one. Stripe confirms a
+    # payment server-to-server, and that POST is authenticated ONLY by the
+    # signing secret — without it `stripe_webhook` rejects every call with a 400,
+    # so the customer is charged, Stripe reports success, and the plan never
+    # turns on. Nothing else in the system would notice until someone complained
+    # that they had paid and nothing happened.
+    if not settings.stripe_webhook_secret:
+        problems.append({"setting": "stripe_webhook_secret", "problem": "missing"})
+        logger.error(
+            "Stripe is configured for checkout but ENVELOCK_STRIPE_WEBHOOK_SECRET "
+            "is not set. Stripe confirms payment through that webhook and it is "
+            "signed — unsigned calls are rejected, so NO payment can activate a "
+            "plan. Customers would be charged and get nothing."
+        )
+
     if not seen:
         logger.warning(
             "Stripe prices NOT verified: no Price IDs are configured, so no plan "
