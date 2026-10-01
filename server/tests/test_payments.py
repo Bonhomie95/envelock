@@ -475,3 +475,25 @@ def test_subscription_deleted_drops_tenant_to_guard(
     finally:
         payments.set_default_transport(None)
         get_settings.cache_clear()
+
+
+def test_a_rejected_webhook_is_logged_loudly(client, logged) -> None:  # noqa: ANN001
+    """A 400 in an access log is not a signal anybody reads.
+
+    Every rejected webhook is a payment that will never activate or a
+    cancellation that will never downgrade, and Stripe retries for days before
+    giving up. This cost a real test payment: Stripe delivered, the signature did
+    not match, the endpoint answered 400, and nothing anywhere said so.
+    """
+    billing_log = logged("envelock.api.billing")
+    r = client.post(
+        "/api/v1/billing/stripe/webhook",
+        content=b'{"type":"checkout.session.completed"}',
+        headers={"Stripe-Signature": "t=1,v1=deadbeef", "Content-Type": "application/json"},
+    )
+    assert r.status_code == 400
+    assert "Stripe webhook REJECTED" in billing_log.text, billing_log.messages
+    assert "ENVELOCK_STRIPE_WEBHOOK_SECRET" in billing_log.text, (
+        "the log must name the setting an operator has to fix"
+    )
+

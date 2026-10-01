@@ -633,6 +633,18 @@ async def stripe_webhook(request: Request, session: Session) -> dict:
     try:
         event = payments.verify_stripe_webhook(payload, sig, secret)
     except payments.WebhookError as exc:
+        # Loud, because of what it means. Stripe retries a rejected webhook for
+        # days and then gives up, and every one of these is a payment that will
+        # never activate or a cancellation that will never downgrade. A 400 in an
+        # access log is not a signal anybody reads; this is.
+        logger.error(
+            "Stripe webhook REJECTED (%s). Stripe is being told to go away, so "
+            "payments are not activating and cancellations are not downgrading. "
+            "The usual cause is ENVELOCK_STRIPE_WEBHOOK_SECRET not matching the "
+            "signing secret of the endpoint in the Stripe dashboard%s.",
+            exc,
+            " — and it is currently unset" if not secret else "",
+        )
         raise HTTPException(400, f"webhook verification failed: {exc}") from exc
 
     etype = event.get("type")
