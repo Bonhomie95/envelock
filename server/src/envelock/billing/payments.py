@@ -338,6 +338,16 @@ class _Stripe:
             headers=self._headers(),
         )
 
+    async def list_webhook_endpoints(self, *, transport: Transport | None = None) -> dict:
+        """The endpoints Stripe will deliver to, and which events each carries."""
+        if not self.is_configured():
+            raise PaymentError("Stripe is not configured on this deployment")
+        return await _transport(transport).request(
+            "GET",
+            "https://api.stripe.com/v1/webhook_endpoints?limit=20",
+            headers=self._headers(),
+        )
+
     async def get_price(self, price_id: str, *, transport: Transport | None = None) -> dict:
         """Retrieve a Price, with its Product expanded, so the amount we charge
         can be checked against the amount we advertise."""

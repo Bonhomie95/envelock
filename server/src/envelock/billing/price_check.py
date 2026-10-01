@@ -180,4 +180,87 @@ async def check_stripe_prices() -> list[dict]:
     return problems
 
 
-__all__ = ["check_stripe_prices", "expected_prices"]
+#: The events this deployment acts on. `api/billing.stripe_webhook` ignores
+#: everything else, and without these Stripe simply never tells us what happened.
+#: `checkout.session.completed` is the one that ACTIVATES a paid plan and
+#: `customer.subscription.deleted` is the one that ENDS it — a Stripe endpoint
+#: created from the dashboard's default subscription preset carries neither, so
+#: payments succeed and activate nothing, and cancellations never downgrade.
+REQUIRED_WEBHOOK_EVENTS = frozenset(
+    {
+        "checkout.session.completed",
+        "checkout.session.async_payment_succeeded",
+        "customer.subscription.created",
+        "customer.subscription.updated",
+        "customer.subscription.deleted",
+        "invoice.paid",
+        "invoice.payment_failed",
+    }
+)
+
+
+async def check_webhook_events() -> list[str]:
+    """Which events we act on that Stripe will never send us.
+
+    Found the hard way: a real test payment succeeded and the plan did not turn
+    on, because the endpoint had eighteen events enabled and not one of them was
+    `checkout.session.completed`. Everything else looked perfect — correct
+    Prices, correct secret, endpoint enabled, right URL.
+    """
+    from envelock.billing import payments
+
+    stripe = payments.provider_for("stripe")
+    if stripe is None or not stripe.is_configured():
+        return []
+    lister = getattr(stripe, "list_webhook_endpoints", None)
+    if lister is None:
+        return []
+
+    try:
+        body = await lister()
+    except Exception as exc:  # noqa: BLE001 — never fail boot over this
+        logger.warning("could not check which Stripe webhook events are enabled: %s", exc)
+        return []
+
+    endpoints = [e for e in body.get("data", []) if e.get("status") == "enabled"]
+    if not endpoints:
+        logger.error(
+            "Stripe has NO enabled webhook endpoint, so nothing can tell us a "
+            "payment succeeded. Customers would be charged and never activated."
+        )
+        return sorted(REQUIRED_WEBHOOK_EVENTS)
+
+    # Any one endpoint carrying an event is enough — Stripe delivers to all.
+    delivered: set[str] = set()
+    for e in endpoints:
+        events = set(e.get("enabled_events", []))
+        delivered |= REQUIRED_WEBHOOK_EVENTS if "*" in events else events
+
+    missing = sorted(REQUIRED_WEBHOOK_EVENTS - delivered)
+    if missing:
+        logger.error(
+            "Stripe will never send %d event(s) this deployment acts on: %s. "
+            "%sAdd them to the endpoint in the Stripe dashboard.",
+            len(missing),
+            ", ".join(missing),
+            (
+                "Without `checkout.session.completed` a successful payment "
+                "activates nothing. "
+                if "checkout.session.completed" in missing
+                else ""
+            ),
+        )
+    else:
+        logger.info(
+            "Stripe webhook events verified: all %d we act on are enabled",
+            len(REQUIRED_WEBHOOK_EVENTS),
+        )
+    return missing
+
+
+__all__ = [
+    "REQUIRED_WEBHOOK_EVENTS",
+    "check_stripe_prices",
+    "check_webhook_events",
+    "expected_prices",
+]

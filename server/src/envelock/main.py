@@ -239,11 +239,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # mid-await and vanish without a word — which is exactly what happened: the
     # check produced no log line at all in production. RUF006 warns about this
     # and was suppressed, which is the whole lesson.
-    from envelock.billing.price_check import check_stripe_prices
+    from envelock.billing.price_check import check_stripe_prices, check_webhook_events
 
-    price_check_task = asyncio.create_task(check_stripe_prices())
-    _BACKGROUND_TASKS.add(price_check_task)
-    price_check_task.add_done_callback(_BACKGROUND_TASKS.discard)
+    for _check in (check_stripe_prices(), check_webhook_events()):
+        _started = asyncio.create_task(_check)
+        _BACKGROUND_TASKS.add(_started)
+        _started.add_done_callback(_BACKGROUND_TASKS.discard)
 
     # The periodic scheduler (PRD §8.1 E6, §15.2 retention, §17 watchers). This is
     # what makes escalation fire, data actually get purged, OAuth tokens stay alive,

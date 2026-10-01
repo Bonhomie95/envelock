@@ -18,7 +18,12 @@ from __future__ import annotations
 
 import pytest
 
-from envelock.billing.price_check import check_stripe_prices, expected_prices
+from envelock.billing.price_check import (
+    REQUIRED_WEBHOOK_EVENTS,
+    check_stripe_prices,
+    check_webhook_events,
+    expected_prices,
+)
 
 #: Not a credential — the fake client below never calls Stripe. It only has to
 #: be non-empty so `is_configured()` is true.
@@ -235,4 +240,89 @@ async def test_a_present_webhook_secret_is_not_flagged(stripe, price_log) -> Non
     )
     assert await check_stripe_prices() == []
     assert "Stripe prices verified" in price_log.text, price_log.messages
+
+
+# ── Which events Stripe will actually send ───────────────────────────────────
+class _StripeWithEndpoints(_FakeStripe):
+    def __init__(self, endpoints: list[dict]) -> None:
+        super().__init__({})
+        self._endpoints = endpoints
+
+    async def list_webhook_endpoints(self) -> dict:
+        return {"data": self._endpoints}
+
+
+def _endpoint(events: list[str], status: str = "enabled") -> dict:
+    return {"id": "we_1", "status": status, "enabled_events": events,
+            "url": "https://api.example/billing/stripe/webhook"}
+
+
+@pytest.fixture
+def endpoints(monkeypatch):  # noqa: ANN001, ANN201
+    def install(rows: list[dict]) -> None:
+        from envelock.billing import payments
+        from envelock.config import get_settings
+
+        monkeypatch.setenv("ENVELOCK_STRIPE_SECRET_KEY", FAKE_KEY)
+        get_settings.cache_clear()
+        monkeypatch.setitem(payments._PROVIDERS, "stripe", _StripeWithEndpoints(rows))
+
+    yield install
+    from envelock.config import get_settings
+
+    get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_the_real_misconfiguration_that_ate_a_payment(endpoints, price_log) -> None:  # noqa: ANN001
+    """A real test payment succeeded and activated nothing.
+
+    The endpoint was enabled, at the right URL, with the right signing secret and
+    eighteen events — and `checkout.session.completed` was not among them. It was
+    Stripe's default subscription preset, which is invoice-centric. Everything
+    looked healthy and no payment could ever turn a plan on.
+    """
+    endpoints([_endpoint([
+        "entitlements.active_entitlement_summary.updated", "invoice.created",
+        "invoice.finalized", "invoice.finalization_failed", "invoice.paid",
+        "invoice.payment_action_required", "invoice.payment_failed",
+        "invoice.upcoming", "invoice.updated", "payment_intent.created",
+        "payment_intent.succeeded", "subscription_schedule.aborted",
+        "subscription_schedule.canceled",
+    ])])
+    missing = await check_webhook_events()
+    assert "checkout.session.completed" in missing, missing
+    assert "customer.subscription.deleted" in missing, (
+        "a cancellation that never downgrades is the mirror of a payment that "
+        "never activates, and costs more"
+    )
+    assert "activates nothing" in price_log.text, price_log.messages
+
+
+@pytest.mark.asyncio
+async def test_a_correctly_configured_endpoint_is_quiet(endpoints, price_log) -> None:  # noqa: ANN001
+    endpoints([_endpoint(sorted(REQUIRED_WEBHOOK_EVENTS))])
+    assert await check_webhook_events() == []
+    assert "webhook events verified" in price_log.text, price_log.messages
+
+
+@pytest.mark.asyncio
+async def test_a_wildcard_endpoint_counts_as_everything(endpoints) -> None:  # noqa: ANN001
+    endpoints([_endpoint(["*"])])
+    assert await check_webhook_events() == []
+
+
+@pytest.mark.asyncio
+async def test_events_may_be_split_across_endpoints(endpoints) -> None:  # noqa: ANN001
+    """Stripe delivers to every matching endpoint, so the union is what counts."""
+    half = sorted(REQUIRED_WEBHOOK_EVENTS)
+    endpoints([_endpoint(half[:3]), _endpoint(half[3:])])
+    assert await check_webhook_events() == []
+
+
+@pytest.mark.asyncio
+async def test_a_disabled_endpoint_does_not_count(endpoints, price_log) -> None:  # noqa: ANN001
+    endpoints([_endpoint(sorted(REQUIRED_WEBHOOK_EVENTS), status="disabled")])
+    assert sorted(await check_webhook_events()) == sorted(REQUIRED_WEBHOOK_EVENTS)
+    assert "NO enabled webhook endpoint" in price_log.text, price_log.messages
 
