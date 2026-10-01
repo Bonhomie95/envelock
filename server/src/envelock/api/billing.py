@@ -1027,11 +1027,25 @@ async def set_mailbox_seats(
                     charge_now=req.extra_mailboxes > current,
                 )
         except payments.PaymentError as exc:
-            logger.warning("seat change failed for tenant %s: %s", tenant.id, exc)
+            # Only a real decline is the cardholder's to fix. Telling someone to
+            # update a working card because Stripe rejected OUR request wastes
+            # their time and hides the actual fault.
+            if exc.card_declined:
+                logger.warning("seat change declined for tenant %s: %s", tenant.id, exc)
+                raise HTTPException(
+                    402,
+                    "The payment for the extra mailboxes didn't go through, so "
+                    "nothing changed. Update your card under Manage billing and "
+                    "try again.",
+                ) from exc
+            logger.error(
+                "seat change FAILED for tenant %s (not a decline): %s", tenant.id, exc
+            )
             raise HTTPException(
-                402,
-                "The payment for the extra mailboxes didn't go through, so nothing "
-                "changed. Update your card under Manage billing and try again.",
+                502,
+                "We couldn't change your mailbox seats just now. Nothing was "
+                "charged and nothing changed — please try again, and contact "
+                "support if it keeps happening.",
             ) from exc
         tenant.extra_mailbox_seats = req.extra_mailboxes
         await session.commit()

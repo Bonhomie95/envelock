@@ -215,3 +215,69 @@ async def test_the_capacity_actually_rises_so_the_mailbox_can_be_added(
     finally:
         payments.set_default_transport(None)
         get_settings.cache_clear()
+
+
+# ── What the customer is told when it fails ──────────────────────────────────
+class _FailingStripe(_Stripe):
+    """Fails the update with a chosen HTTP status and body."""
+
+    def __init__(self, plan_price: str, status: int, body: str) -> None:
+        super().__init__(plan_price)
+        self.status, self.body = status, body
+
+    async def request(self, method, url, *, headers, json=None, data=None):  # noqa: A002
+        if url.endswith("/subscriptions/sub_1") and method == "POST":
+            raise payments.PaymentError(
+                f"{url} returned {self.status}: {self.body}",
+                status_code=self.status,
+                card_declined=self.status == 402 or "card_error" in self.body,
+            )
+        return await super().request(method, url, headers=headers, json=json, data=data)
+
+
+@pytest.mark.asyncio
+async def test_a_real_decline_tells_them_to_fix_their_card(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _env(monkeypatch)
+    payments.set_default_transport(
+        _FailingStripe("price_cmp_yr", 402, '{"error":{"type":"card_error"}}')
+    )
+    try:
+        slug = "decline-co"
+        h, _tid = _signup(client, slug)
+        await _give_subscription(slug)
+        r = client.put("/api/v1/billing/seats", json={"extra_mailboxes": 2}, headers=h)
+        assert r.status_code == 402, r.text[:200]
+        assert "Update your card" in r.json()["detail"]
+    finally:
+        payments.set_default_transport(None)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_our_own_bad_request_does_not_blame_their_card(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every non-2xx from Stripe used to be reported as "your payment didn't go
+    through, update your card" — including a validation error that is entirely
+    ours. That sends someone to re-enter a card that was never the problem, and
+    buries the real fault. It cost a live debugging round."""
+    _env(monkeypatch)
+    payments.set_default_transport(
+        _FailingStripe(
+            "price_cmp_yr", 400, '{"error":{"type":"invalid_request_error"}}'
+        )
+    )
+    try:
+        slug = "badreq-co"
+        h, _tid = _signup(client, slug)
+        await _give_subscription(slug)
+        r = client.put("/api/v1/billing/seats", json={"extra_mailboxes": 2}, headers=h)
+        assert r.status_code == 502, r.text[:200]
+        detail = r.json()["detail"]
+        assert "card" not in detail.lower(), detail
+        assert "Nothing was charged" in detail
+    finally:
+        payments.set_default_transport(None)
+        get_settings.cache_clear()

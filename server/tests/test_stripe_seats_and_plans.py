@@ -56,7 +56,14 @@ class _Stripe:
             return self.sub()
         if url.endswith("/subscriptions/sub_1") and method == "POST":
             if self.decline:
-                raise payments.PaymentError("402: card_declined")
+                # Constructed the way the real transport does, so this fake still
+                # simulates a DECLINE rather than a generic failure — the two now
+                # tell the customer different things.
+                raise payments.PaymentError(
+                    "402: card_declined",
+                    status_code=402,
+                    card_declined=True,
+                )
             form = data or {}
             idx = sorted({k.split("]")[0].split("[")[1] for k in form if k.startswith("items[")})
             for i in idx:

@@ -26,7 +26,25 @@ from envelock.config import get_settings
 
 
 class PaymentError(Exception):
-    pass
+    """A payment provider call failed.
+
+    `card_declined` separates the one cause the CUSTOMER can fix from every other
+    reason a call can fail. Without it, every error — a validation mistake, a rate
+    limit, an outage — was reported to the customer as "your payment didn't go
+    through, update your card", which sends someone to re-enter a card that was
+    never the problem and leaves the real fault invisible.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        card_declined: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.card_declined = card_declined
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,7 +116,19 @@ class HttpxTransport:
                 method, url, headers=headers, data=data, json=None if data else json
             )
         if resp.status_code >= 400:
-            raise PaymentError(f"{url} returned {resp.status_code}: {resp.text[:200]}")
+            # Stripe reports a declined card as `type: card_error` (HTTP 402).
+            # Anything else is our problem, not the cardholder's.
+            declined = False
+            try:
+                err = (resp.json() or {}).get("error") or {}
+                declined = err.get("type") == "card_error" or bool(err.get("decline_code"))
+            except ValueError:
+                pass
+            raise PaymentError(
+                f"{url} returned {resp.status_code}: {resp.text[:300]}",
+                status_code=resp.status_code,
+                card_declined=declined or resp.status_code == 402,
+            )
         return resp.json()
 
 
