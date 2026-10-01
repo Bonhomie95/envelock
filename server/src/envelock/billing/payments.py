@@ -718,18 +718,32 @@ def verify_stripe_webhook(
     if not sig_header:
         raise WebhookError("missing signature header")
 
-    parts = dict(
-        p.split("=", 1) for p in sig_header.split(",") if "=" in p
-    )
-    timestamp, provided = parts.get("t"), parts.get("v1")
-    if not timestamp or not provided:
+    # EVERY v1, not just one. The header carries a scheme-prefixed list and may
+    # hold more than one `v1` — Stripe signs with both the old and the new secret
+    # while an endpoint's signing secret is being rolled, and it also sends older
+    # schemes (`v0`) that must be ignored rather than compared. Collapsing this
+    # into a dict kept whichever signature happened to come last, so during a
+    # roll roughly half of all deliveries were rejected as forgeries.
+    timestamp: str | None = None
+    signatures: list[str] = []
+    for part in sig_header.split(","):
+        if "=" not in part:
+            continue
+        name, _, value = part.partition("=")
+        name, value = name.strip(), value.strip()
+        if name == "t":
+            timestamp = value
+        elif name == "v1":
+            signatures.append(value)
+
+    if not timestamp or not signatures:
         raise WebhookError("malformed signature header")
     if tolerance and abs(time.time() - int(timestamp)) > tolerance:
         raise WebhookError("timestamp outside tolerance")
 
     signed = f"{timestamp}.".encode() + payload
     expected = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
-    if not hmac.compare_digest(expected, provided):
+    if not any(hmac.compare_digest(expected, s) for s in signatures):
         raise WebhookError("signature mismatch")
 
     try:

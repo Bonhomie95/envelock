@@ -497,3 +497,60 @@ def test_a_rejected_webhook_is_logged_loudly(client, logged) -> None:  # noqa: A
         "the log must name the setting an operator has to fix"
     )
 
+
+def _sig_header(payload: bytes, *secrets: str, extra: str = "") -> str:
+    import hashlib
+    import hmac
+    import time
+
+    t = str(int(time.time()))
+    sigs = ",".join(
+        "v1=" + hmac.new(sec.encode(), f"{t}.".encode() + payload, hashlib.sha256).hexdigest()
+        for sec in secrets
+    )
+    return f"t={t},{sigs}" + (f",{extra}" if extra else "")
+
+
+def test_any_valid_v1_signature_is_accepted_during_a_secret_roll() -> None:
+    """Stripe signs with BOTH secrets while an endpoint's signing secret is being
+    rolled, and sends them as two `v1` entries in one header.
+
+    This was parsed into a dict, which kept whichever came last — so during a
+    roll roughly half of all deliveries were rejected as forgeries, and the only
+    symptom was "signature mismatch" on an endpoint whose secret was correct.
+    """
+    from envelock.billing import payments
+
+    payload = b'{"type":"checkout.session.completed"}'
+    old, new = "whsec_old", "whsec_new"  # noqa: S105 — test secrets
+
+    # The new secret second (the natural order), and first (the order that used
+    # to break): both must verify against whichever secret we hold.
+    for header in (
+        _sig_header(payload, old, new),
+        _sig_header(payload, new, old),
+    ):
+        for secret in (old, new):
+            assert payments.verify_stripe_webhook(payload, header, secret)
+
+
+def test_older_signature_schemes_are_ignored_not_compared() -> None:
+    """`v0` is a legacy scheme Stripe still sends. It must never be treated as a
+    candidate — and its presence must not stop a valid `v1` being found."""
+    from envelock.billing import payments
+
+    payload = b'{"type":"ping"}'
+    secret = "whsec_only"  # noqa: S105 — test secret
+    header = _sig_header(payload, secret, extra="v0=deadbeef")
+    assert payments.verify_stripe_webhook(payload, header, secret)
+
+
+def test_a_wholly_wrong_secret_is_still_rejected() -> None:
+    """The fix must not turn into "accept anything"."""
+    from envelock.billing import payments
+
+    payload = b'{"type":"ping"}'
+    header = _sig_header(payload, "whsec_a", "whsec_b")
+    with pytest.raises(payments.WebhookError, match="signature mismatch"):
+        payments.verify_stripe_webhook(payload, header, "whsec_c")
+
