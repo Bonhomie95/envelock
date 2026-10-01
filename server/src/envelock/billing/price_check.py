@@ -203,7 +203,9 @@ def _key_is_test() -> bool:
     from envelock.config import get_settings
 
     key = get_settings().stripe_secret_key
-    return bool(key) and key.get_secret_value().startswith("sk_test")
+    if key is None:
+        return True  # no key: nothing is live, so treat as the safer default
+    return key.get_secret_value().startswith("sk_test")
 
 
 async def check_webhook_events() -> list[str]:
