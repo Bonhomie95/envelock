@@ -47,10 +47,14 @@ PRICES = {
 class _Stripe:
     def __init__(self) -> None:
         self.items = [{"id": "si_plan", "price": {"id": "price_cmp"}, "quantity": 1}]
+        #: A subscription Stripe is billing that is NOT the one we stored.
+        self.live_elsewhere: dict | None = None
 
     async def request(self, method, url, *, headers, json=None, data=None):  # noqa: A002
         if "checkout/sessions" in url:
             return {"id": "cs_1", "url": "https://checkout.stripe.com/c/pay/cs_1"}
+        if "/subscriptions/search" in url:
+            return {"data": [self.live_elsewhere] if self.live_elsewhere else []}
         if url.endswith("/subscriptions/sub_1"):
             return {"id": "sub_1", "status": "active", "items": {"data": self.items}}
         return {}
@@ -416,3 +420,86 @@ async def test_a_declined_renewal_does_not_cut_them_off_immediately(
     assert _tenant(client, h)["plan"] == "complete", (
         "one declined charge cut off protection before Stripe had finished retrying"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_duplicate_does_not_cut_off_a_paying_customer(
+    client: TestClient, stripe: _Stripe
+) -> None:
+    """Reconstructed from a real incident's Stripe event log.
+
+    A duplicate subscription was created while webhooks were failing, the orphan
+    was cancelled, and nothing corrected our stored pointer — so the tenant row
+    named the DEAD subscription while Stripe kept billing a live one.
+
+    A `customer.subscription.deleted` for that dead id then matches our stored id
+    exactly, so the "an old subscription must not cancel the current one" guard
+    cannot fire: it only compares the two ids. Stripe is the authority on who is
+    still paying, so it gets asked before protection is taken away. A late retry
+    of that cancellation would otherwise have dropped a live annual customer to
+    Guard and stopped their mail protection.
+    """
+    slug = "stale-pointer"
+    h, tid = _signup(client, slug)
+    _pay(client, tid, slug)
+    assert _tenant(client, h)["plan"] == "complete"
+
+    # Stripe still bills this tenant — on a DIFFERENT subscription than the one
+    # we recorded, which is the whole point.
+    stripe.live_elsewhere = {
+        "id": "sub_the_one_they_pay_for",
+        "status": "trialing",
+        "customer": "cus_1",
+        "metadata": {"tenant_id": tid},
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_cmp"}, "quantity": 1}]},
+    }
+
+    _event(
+        client,
+        "customer.subscription.deleted",
+        {
+            "id": "sub_1",  # exactly what we have stored
+            "object": "subscription",
+            "status": "canceled",
+            "customer": "cus_1",
+            "metadata": {"tenant_id": tid},
+            "items": {"data": []},
+        },
+    )
+
+    after = _tenant(client, h)
+    assert after["plan"] == "complete", (
+        "a paying customer was dropped to Guard because a cancelled duplicate "
+        f"matched our stale pointer: {after}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_genuine_cancellation_still_downgrades(
+    client: TestClient, stripe: _Stripe
+) -> None:
+    """The guard above must not become a way to keep a plan after cancelling.
+
+    With nothing live at Stripe, the cancellation has to land — otherwise the
+    protection against a stale pointer hands a free plan to everyone who leaves.
+    """
+    slug = "real-cancel"
+    h, tid = _signup(client, slug)
+    _pay(client, tid, slug)
+    assert _tenant(client, h)["plan"] == "complete"
+
+    stripe.live_elsewhere = None
+    _event(
+        client,
+        "customer.subscription.deleted",
+        {
+            "id": "sub_1",
+            "object": "subscription",
+            "status": "canceled",
+            "customer": "cus_1",
+            "metadata": {"tenant_id": tid},
+            "items": {"data": []},
+        },
+    )
+
+    assert _tenant(client, h)["plan"] == "guard", "a real cancellation did not downgrade"

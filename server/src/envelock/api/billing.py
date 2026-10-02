@@ -977,6 +977,25 @@ async def _tenant_for_event(
     return tenant
 
 
+async def _has_another_live_subscription(tenant: Tenant, *, ended: str) -> bool:
+    """Whether Stripe is still billing this tenant on some OTHER subscription.
+
+    Fail closed on purpose: if we cannot reach Stripe we report False and the
+    downgrade proceeds, because the alternative is granting a paid plan to
+    someone who cancelled whenever Stripe is unreachable.
+    """
+    stripe = payments.provider_for("stripe")
+    finder = getattr(stripe, "find_live_subscription_for_tenant", None)
+    if finder is None:
+        return False
+    try:
+        sub = await finder(str(tenant.id))
+    except Exception as exc:  # noqa: BLE001 — a lookup failure is not a grant
+        logger.warning("could not confirm the end of %s with Stripe: %s", ended, exc)
+        return False
+    return bool(sub and sub.get("id") and sub["id"] != ended)
+
+
 async def _downgrade_to_guard(
     session: AsyncSession,
     *,
@@ -994,6 +1013,21 @@ async def _downgrade_to_guard(
         and tenant.stripe_subscription_id != subscription_id
     ):
         # An old subscription ending must not cancel the one they pay for now.
+        return False
+    if subscription_id and await _has_another_live_subscription(
+        tenant, ended=subscription_id
+    ):
+        # Our stored id can be the stale one: a duplicate subscription was
+        # cancelled, and nothing corrected the pointer afterwards. The id check
+        # above then MATCHES the dead subscription and we would cut off a
+        # customer who is still paying — Stripe is the authority on that, so ask
+        # it before taking protection away.
+        logger.error(
+            "ignoring the end of subscription %s for tenant %s: Stripe still has "
+            "a live subscription for them. Our stored id was stale.",
+            subscription_id,
+            tenant.id,
+        )
         return False
     was_paid = tenant.payment_method_ok
     tenant.plan = "guard"
