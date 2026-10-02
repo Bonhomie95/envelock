@@ -796,8 +796,18 @@ def verify_stripe_webhook(
         raise WebhookError("timestamp outside tolerance")
 
     signed = f"{timestamp}.".encode() + payload
-    expected = hmac.new(secret.encode(), signed, hashlib.sha256).hexdigest()
-    if not any(hmac.compare_digest(expected, s) for s in signatures):
+    # `secret` may hold several comma-separated signing secrets. An endpoint has
+    # its own secret, so a deployment serving more than one (a rolled secret, or
+    # separate dashboard endpoints) must accept any of them — HMAC'ing the whole
+    # comma-joined string would match nothing and reject every delivery.
+    secrets = [s.strip() for s in secret.split(",") if s.strip()]
+    if not secrets:
+        raise WebhookError("no webhook signing secret configured")
+    if not any(
+        hmac.compare_digest(hmac.new(k.encode(), signed, hashlib.sha256).hexdigest(), sig)
+        for k in secrets
+        for sig in signatures
+    ):
         raise WebhookError("signature mismatch")
 
     try:

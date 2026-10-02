@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { ApiError, api, auth, type TenantInfo } from "../lib/api";
 import { planTotals } from "../lib/pricing";
+import ConfirmDialog from "../components/ConfirmDialog";
 import { PLAN_TIERS, planTier } from "../lib/plans";
 import { Button, cn } from "../components/primitives";
 
@@ -57,6 +58,7 @@ export default function Billing() {
   const [planMsg, setPlanMsg] = useState<string | null>(null);
   const [openedAt] = useState(() => Date.now());
   const [seatBusy, setSeatBusy] = useState(false);
+  const [seatConfirm, setSeatConfirm] = useState(false);
   const [seatMsg, setSeatMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -181,6 +183,7 @@ export default function Billing() {
   }
 
   async function updateSeats() {
+    setSeatConfirm(false);
     setSeatBusy(true);
     setSeatMsg(null);
     try {
@@ -817,7 +820,7 @@ export default function Billing() {
                         ? "Change the number of seats first"
                         : undefined
                     }
-                    onClick={updateSeats}
+                    onClick={() => setSeatConfirm(true)}
                   >
                     {seatBusy && (
                       <Loader2 size={12} className="animate-spin" aria-hidden />
@@ -886,6 +889,29 @@ export default function Billing() {
           </div>
         )}
       </aside>
+      {/* Taking money needs a deliberate second action. An increase is charged
+          the moment UPDATE is pressed, and a stray click on a number input is
+          far too cheap for that. No figure is quoted here on purpose: this panel
+          does not know whether the subscription is monthly or annual, and a
+          wrong number on a confirmation is worse than none. */}
+      <ConfirmDialog
+        open={seatConfirm}
+        busy={seatBusy}
+        destructive={false}
+        title={
+          targetExtra > currentExtra
+            ? `Add ${targetExtra - currentExtra} mailbox seat${targetExtra - currentExtra === 1 ? "" : "s"}?`
+            : `Release ${currentExtra - targetExtra} mailbox seat${currentExtra - targetExtra === 1 ? "" : "s"}?`
+        }
+        body={
+          targetExtra > currentExtra
+            ? `Your card is charged today for the extra seats, prorated to your billing date, taking you from ${currentExtra} to ${targetExtra} extra mailboxes. The exact amount appears on the invoice in Manage billing.`
+            : `You'll go from ${currentExtra} to ${targetExtra} extra mailboxes. Nothing is charged — the unused time is credited on your next invoice.`
+        }
+        confirmLabel={targetExtra > currentExtra ? "CHARGE MY CARD" : "RELEASE SEATS"}
+        onConfirm={() => void updateSeats()}
+        onCancel={() => setSeatConfirm(false)}
+      />
     </main>
   );
 }

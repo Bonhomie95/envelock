@@ -281,3 +281,88 @@ async def test_our_own_bad_request_does_not_blame_their_card(
     finally:
         payments.set_default_transport(None)
         get_settings.cache_clear()
+
+
+class _StaleSubStripe(_Stripe):
+    """Our stored subscription id points at a cancelled subscription, and Stripe
+    is billing a different, live one — the state a missed webhook leaves behind.
+
+    This is the shape of the real incident: Stripe rejects the write to the dead
+    subscription with a 400 that is not a card error, and the customer was told
+    to update a card that was working perfectly.
+    """
+
+    def __init__(self, live_id: str = "sub_live") -> None:
+        super().__init__("price_cmp_yr")
+        self.live_id = live_id
+        self.searched = False
+
+    def sub(self) -> dict:
+        return {"id": self.live_id, "status": "active", "items": {"data": self.items}}
+
+    async def request(self, method, url, *, headers, json=None, data=None):  # noqa: A002
+        if "/subscriptions/search" in url:
+            self.searched = True
+            return {"data": [dict(self.sub(), metadata={})]}
+        if url.endswith("/subscriptions/sub_1"):
+            # Exactly what Stripe answers for a cancelled subscription.
+            raise payments.PaymentError(
+                "returned 400: invalid_canceled_subscription_fields",
+                status_code=400,
+                card_declined=False,
+            )
+        url = url.replace(self.live_id, "sub_1")
+        return await super().request(method, url, headers=headers, json=json, data=data)
+
+
+@pytest.mark.asyncio
+async def test_a_stale_subscription_id_is_re_pointed_not_blamed_on_the_card(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _env(monkeypatch)
+    fake = _StaleSubStripe()
+    payments.set_default_transport(fake)
+    try:
+        slug = "seats-stale"
+        h, _tid = _signup(client, slug)
+        await _give_subscription(slug)
+
+        r = client.put("/api/v1/billing/seats", json={"extra_mailboxes": 4}, headers=h)
+        assert fake.searched, "we never looked for the live subscription"
+        assert r.status_code == 200, (
+            f"a stale subscription id was reported as {r.status_code} instead of "
+            f"being re-pointed at the live subscription: {r.text[:300]}"
+        )
+        assert r.json()["extra_mailbox_seats"] == 4, r.json()
+    finally:
+        payments.set_default_transport(None)
+        get_settings.cache_clear()
+
+
+class _NoSubAtAllStripe(_StaleSubStripe):
+    async def request(self, method, url, *, headers, json=None, data=None):  # noqa: A002
+        if "/subscriptions/search" in url:
+            self.searched = True
+            return {"data": []}
+        return await super().request(method, url, headers=headers, json=json, data=data)
+
+
+@pytest.mark.asyncio
+async def test_no_live_subscription_says_so_instead_of_accusing_the_card(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _env(monkeypatch)
+    payments.set_default_transport(_NoSubAtAllStripe())
+    try:
+        slug = "seats-gone"
+        h, _tid = _signup(client, slug)
+        await _give_subscription(slug)
+
+        r = client.put("/api/v1/billing/seats", json={"extra_mailboxes": 4}, headers=h)
+        assert r.status_code == 409, r.text[:300]
+        assert "card" not in r.text.lower(), (
+            f"a missing subscription still blamed the card: {r.text[:300]}"
+        )
+    finally:
+        payments.set_default_transport(None)
+        get_settings.cache_clear()

@@ -383,6 +383,88 @@ def _apply_subscription(tenant: Tenant, sub: dict) -> None:
     tenant.subscription_cancel_at_period_end = bool(sub.get("cancel_at_period_end"))
 
 
+async def _apply_subscription_change(
+    stripe: payments.HostedCheckoutProvider,
+    sub_id: str,
+    *,
+    items: list[dict[str, str]],
+    charge_now: bool,
+    tenant_id: object,
+    what: str,
+) -> None:
+    """Write items to a live subscription, blaming the card only when Stripe
+    actually declined it.
+
+    Every caller that charges a customer goes through here. Split across callers
+    this logic drifted: one path told a customer with a perfectly good card to
+    update it because Stripe had rejected OUR request with a 400.
+    """
+    try:
+        await stripe.update_subscription(sub_id, items=items, charge_now=charge_now)
+    except payments.PaymentError as exc:
+        if exc.card_declined:
+            logger.warning("%s declined for tenant %s: %s", what, tenant_id, exc)
+            raise HTTPException(
+                402,
+                f"The payment for {what} didn't go through, so nothing changed. "
+                "Update your card under Manage billing and try again.",
+            ) from exc
+        logger.error("%s FAILED for tenant %s (not a decline): %s", what, tenant_id, exc)
+        raise HTTPException(
+            502,
+            f"We couldn't change {what} just now. Nothing was charged and nothing "
+            "changed — please try again, and contact support if it keeps happening.",
+        ) from exc
+
+
+#: Statuses Stripe will still let us bill against. Anything else is finished:
+#: its items are frozen, and a write to it fails with a 400 that has nothing to
+#: do with the customer's card.
+_BILLABLE_STATUSES = ("active", "trialing", "past_due", "unpaid", "incomplete")
+
+
+async def _live_subscription(
+    session: AsyncSession, tenant: Tenant, stripe: payments.HostedCheckoutProvider
+) -> dict:
+    """The subscription we may actually charge for this tenant.
+
+    A stored id can go stale: the customer re-subscribed through Checkout and a
+    webhook was missed, or an orphan was cancelled. Writing to a cancelled
+    subscription is rejected by Stripe with `invalid_canceled_subscription_fields`
+    — a 400 that used to surface to the customer as "update your card". So look
+    up the live one Stripe knows about before giving up, and only then refuse.
+    """
+    sub_id = tenant.stripe_subscription_id or ""
+    sub: dict | None = None
+    if sub_id:
+        try:
+            sub = await stripe.get_subscription(sub_id)
+        except payments.PaymentError as exc:
+            logger.warning("subscription %s could not be loaded: %s", sub_id, exc)
+    if sub is not None and sub.get("status") in _BILLABLE_STATUSES:
+        return sub
+
+    logger.error(
+        "tenant %s points at subscription %r with status %r — looking for the "
+        "live one before refusing.",
+        tenant.id,
+        sub_id,
+        (sub or {}).get("status"),
+    )
+    if await _adopt_existing_subscription(session, tenant):
+        replacement = tenant.stripe_subscription_id or ""
+        if replacement and replacement != sub_id:
+            return await _stripe_call(
+                stripe.get_subscription(replacement), "load your subscription"
+            )
+    raise HTTPException(
+        409,
+        "We can't find an active subscription for your workspace, so there's "
+        "nothing to change. Nothing was charged. Start a plan on the billing "
+        "page, or contact support if you believe you're already paying.",
+    )
+
+
 async def _stripe_call[T](call: Awaitable[T], what: str) -> T:
     """A Stripe request that isn't a charge. Stripe being down or rejecting the
     request is reported as such, never as an unhandled 500."""
@@ -994,9 +1076,7 @@ async def set_mailbox_seats(
             current,
         )
     if req.extra_mailboxes != current:
-        sub = await _stripe_call(
-            stripe.get_subscription(tenant.stripe_subscription_id), "load your subscription"
-        )
+        sub = await _live_subscription(session, tenant, stripe)
         # The seat Price has to match the subscription's own interval: Stripe will
         # not hold a monthly line and a yearly line together, and defaulting to
         # monthly would bill an annual customer on our terms rather than theirs.
@@ -1019,34 +1099,15 @@ async def set_mailbox_seats(
             ops.extend({"id": i["id"], "deleted": "true"} for i in rest)
         elif req.extra_mailboxes:
             ops.append({"price": extra_price, "quantity": str(req.extra_mailboxes)})
-        try:
-            if ops:
-                await stripe.update_subscription(
-                    tenant.stripe_subscription_id,
-                    items=ops,
-                    charge_now=req.extra_mailboxes > current,
-                )
-        except payments.PaymentError as exc:
-            # Only a real decline is the cardholder's to fix. Telling someone to
-            # update a working card because Stripe rejected OUR request wastes
-            # their time and hides the actual fault.
-            if exc.card_declined:
-                logger.warning("seat change declined for tenant %s: %s", tenant.id, exc)
-                raise HTTPException(
-                    402,
-                    "The payment for the extra mailboxes didn't go through, so "
-                    "nothing changed. Update your card under Manage billing and "
-                    "try again.",
-                ) from exc
-            logger.error(
-                "seat change FAILED for tenant %s (not a decline): %s", tenant.id, exc
+        if ops:
+            await _apply_subscription_change(
+                stripe,
+                sub["id"],
+                items=ops,
+                charge_now=req.extra_mailboxes > current,
+                tenant_id=tenant.id,
+                what="the extra mailboxes",
             )
-            raise HTTPException(
-                502,
-                "We couldn't change your mailbox seats just now. Nothing was "
-                "charged and nothing changed — please try again, and contact "
-                "support if it keeps happening.",
-            ) from exc
         tenant.extra_mailbox_seats = req.extra_mailboxes
         await session.commit()
         logger.info(
@@ -1076,8 +1137,7 @@ async def change_subscription_plan(session: AsyncSession, tenant: Tenant, target
             "the end of the period you've paid for, then move to Guard (free).",
         )
     stripe = _stripe_or_503()
-    sub_id = tenant.stripe_subscription_id or ""
-    sub = await _stripe_call(stripe.get_subscription(sub_id), "load your subscription")
+    sub = await _live_subscription(session, tenant, stripe)
     # Keep them on the term they bought: an annual subscriber switching plan must
     # land on the annual Price, not be quietly moved to monthly billing.
     term = _term_of(sub)
@@ -1104,15 +1164,14 @@ async def change_subscription_plan(session: AsyncSession, tenant: Tenant, target
     upgrade = tenant.plan not in _PLAN_ORDER or (
         _PLAN_ORDER.index(target) > _PLAN_ORDER.index(tenant.plan)
     )
-    try:
-        await stripe.update_subscription(sub_id, items=ops, charge_now=upgrade)
-    except payments.PaymentError as exc:
-        logger.warning("plan change failed for tenant %s: %s", tenant.id, exc)
-        raise HTTPException(
-            402,
-            "The payment for the new plan didn't go through, so your plan hasn't "
-            "changed. Update your card under Manage billing and try again.",
-        ) from exc
+    await _apply_subscription_change(
+        stripe,
+        sub["id"],
+        items=ops,
+        charge_now=upgrade,
+        tenant_id=tenant.id,
+        what="the new plan",
+    )
     tenant.plan = target
 
 
