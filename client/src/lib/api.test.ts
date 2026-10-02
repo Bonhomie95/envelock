@@ -197,3 +197,65 @@ describe("registry calls", () => {
     expect(JSON.parse(String(init.body)).dry_run).toBe(true);
   });
 });
+
+
+describe("an idle tab does not spend a request to learn its token expired", () => {
+  /** Tokens are `base64url(payload).base64url(hmac)` — payload FIRST. */
+  function token(expSeconds: number, role = "owner"): string {
+    const payload = btoa(
+      JSON.stringify({ sub: "u", tenant: "t", role, typ: "access", exp: expSeconds, jti: "j" }),
+    )
+      .replace(/\+/g, "-")
+      .replace(/\//g, "_")
+      .replace(/=+$/, "");
+    return `${payload}.signature`;
+  }
+
+  it("refreshes first, so no 401 is ever sent with a spent token", async () => {
+    auth.set(token(Math.floor(Date.now() / 1000) - 60), "refresh-me");
+    fetchMock.mockImplementation((url: string) => {
+      if (String(url).includes("/auth/refresh")) {
+        return Promise.resolve(
+          jsonResponse({ access_token: token(9e9), refresh_token: "next" }),
+        );
+      }
+      return Promise.resolve(jsonResponse({ ok: true }));
+    });
+
+    await api.tenant();
+
+    const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(calls[0]).toContain("/auth/refresh");
+    expect(calls.filter((u) => u.includes("/auth/refresh"))).toHaveLength(1);
+    // The real call went out once, with the fresh token — not twice.
+    expect(calls.filter((u) => u.includes("/tenant"))).toHaveLength(1);
+  });
+
+  it("leaves a still-valid token alone rather than refreshing on every call", async () => {
+    auth.set(token(9e9), "refresh-me");
+    fetchMock.mockResolvedValue(jsonResponse({ ok: true }));
+
+    await api.tenant();
+
+    const calls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(calls.some((u) => u.includes("/auth/refresh"))).toBe(false);
+  });
+
+  it("a burst on first paint triggers exactly one refresh", async () => {
+    auth.set(token(Math.floor(Date.now() / 1000) - 60), "refresh-me");
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        String(url).includes("/auth/refresh")
+          ? jsonResponse({ access_token: token(9e9), refresh_token: "next" })
+          : jsonResponse({ ok: true }),
+      ),
+    );
+
+    await Promise.all([api.tenant(), api.members(), api.paymentProviders()]);
+
+    const refreshes = fetchMock.mock.calls
+      .map((c) => String(c[0]))
+      .filter((u) => u.includes("/auth/refresh"));
+    expect(refreshes).toHaveLength(1);
+  });
+});

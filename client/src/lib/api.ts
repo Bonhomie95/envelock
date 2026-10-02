@@ -528,18 +528,35 @@ export const auth = {
   get signedIn(): boolean {
     return Boolean(localStorage.getItem(TOKEN_KEY));
   },
-  /** Role from the token payload ("owner" | "admin" | "member"), for showing
-   *  admin-only nav without a round-trip. The server still enforces every check. */
-  get role(): string | null {
+  /** The token's claims. Our tokens are `base64url(payload).base64url(hmac)` —
+   *  two segments, payload FIRST, not a three-segment JWT. The signature is
+   *  never checked client-side; the server enforces every decision. */
+  get claims(): { role?: string; exp?: number } | null {
     const t = localStorage.getItem(TOKEN_KEY);
     if (!t) return null;
     try {
       const raw = t.split(".")[0].replace(/-/g, "+").replace(/_/g, "/");
       const json = atob(raw + "=".repeat((4 - (raw.length % 4)) % 4));
-      return (JSON.parse(json).role as string) ?? null;
+      return JSON.parse(json) as { role?: string; exp?: number };
     } catch {
       return null;
     }
+  },
+  /** Role from the token payload ("owner" | "admin" | "member"), for showing
+   *  admin-only nav without a round-trip. The server still enforces every check. */
+  get role(): string | null {
+    return auth.claims?.role ?? null;
+  },
+  /** Whether the access token is spent (or close enough that a request would
+   *  land after it expires). A token we cannot read is treated as expired: the
+   *  refresh path can recover, whereas sending it certainly 401s.
+   *
+   *  30s of slack absorbs clock skew and the request's own flight time. */
+  get accessTokenExpired(): boolean {
+    if (!localStorage.getItem(TOKEN_KEY)) return false;
+    const exp = auth.claims?.exp;
+    if (typeof exp !== "number") return true;
+    return exp * 1000 - Date.now() < 30_000;
   },
 };
 
@@ -624,9 +641,28 @@ async function tryRefresh(): Promise<boolean> {
   return refreshInFlight;
 }
 
+/** Spend the refresh token BEFORE a request, not after it fails.
+ *
+ * The 401-then-refresh-then-replay path below still exists and is still the
+ * backstop — a token can be revoked server-side while it looks valid here. But
+ * for the ordinary case of simply sitting idle past the 15-minute TTL, every
+ * request on the page used to fail first: three wasted round-trips and three
+ * red 401s in the console on each page load, which read as a broken app.
+ *
+ * `tryRefresh` already shares one in-flight refresh, so a burst of calls on
+ * first paint triggers exactly one. A failure here is not handled: the request
+ * proceeds and the existing 401 branch signs the user out.
+ */
+async function ensureFreshToken(path: string): Promise<void> {
+  if (path.includes("/auth/")) return;
+  if (!auth.accessTokenExpired || !auth.refreshToken) return;
+  await tryRefresh();
+}
+
 /** An authenticated file download (the API needs the bearer token, so a plain
  *  link can't carry it). Refreshes an expired session once, like `request`. */
 async function download(path: string, fallbackName: string, _retried = false): Promise<void> {
+  if (!_retried) await ensureFreshToken(path);
   const res = await fetch(apiUrl(path), {
     headers: auth.token ? { Authorization: `Bearer ${auth.token}` } : {},
   });
@@ -653,6 +689,7 @@ async function download(path: string, fallbackName: string, _retried = false): P
 }
 
 async function request<T>(path: string, init?: RequestInit, _retried = false): Promise<T> {
+  if (!_retried) await ensureFreshToken(path);
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
     ...(init?.headers as Record<string, string>),
