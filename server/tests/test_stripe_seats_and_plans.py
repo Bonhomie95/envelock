@@ -357,7 +357,8 @@ def test_upgrading_essential_to_complete_opens_the_complete_only_door(
     """
     h, tid = _owner(client, "upgrade-path.example")
     _paid(client, tid, "upgrade-path.example")
-    assert client.post("/api/v1/tenant/plan", json={"plan": "essential"}, headers=h).status_code == 200
+    down = client.post("/api/v1/tenant/plan", json={"plan": "essential"}, headers=h)
+    assert down.status_code == 200, down.text[:300]
 
     mailbox_id = client.post(
         "/api/v1/mailboxes",
