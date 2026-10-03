@@ -342,3 +342,46 @@ def test_plan_change_requires_matching_extra_seat_price(
     assert response.status_code == 503
     assert stripe.updates() == []
     assert client.get("/api/v1/tenant", headers=h).json()["subscribed_plan"] == "complete"
+
+
+def test_upgrading_essential_to_complete_opens_the_complete_only_door(
+    client: TestClient, stripe: _Stripe
+) -> None:
+    """An upgrade has to deliver what it sells, not just move a label.
+
+    Complete's whole advantage over Essential is Channel 2 — unusual sign-in
+    and silent-access detection, which is what the sensor feeds. So the test of
+    the upgrade is not that `subscribed_plan` changed: it is that the door which
+    was shut on Essential is open afterwards, and that Stripe charged for it
+    before it opened.
+    """
+    h, tid = _owner(client, "upgrade-path.example")
+    _paid(client, tid, "upgrade-path.example")
+    assert client.post("/api/v1/tenant/plan", json={"plan": "essential"}, headers=h).status_code == 200
+
+    mailbox_id = client.post(
+        "/api/v1/mailboxes",
+        json={"address": "owner@upgrade-path.example", "mailbox_class": "protected"},
+        headers=h,
+    ).json()["id"]
+
+    shut = client.post("/api/v1/sensor/pairings", json={"mailbox_id": mailbox_id}, headers=h)
+    assert shut.status_code == 402, (
+        f"Essential was sold Complete's sign-in protection: {shut.status_code}"
+    )
+
+    up = client.post("/api/v1/tenant/plan", json={"plan": "complete"}, headers=h)
+    assert up.status_code == 200, up.text[:300]
+    assert up.json()["subscribed_plan"] == "complete"
+
+    # Charged before granted — an upgrade on credit is a free upgrade.
+    last = stripe.updates()[-1]
+    assert last["proration_behavior"] == "always_invoice", last
+    assert last["payment_behavior"] == "error_if_incomplete", last
+    assert stripe.items[0]["price"]["id"] == "price_cmp", stripe.items
+
+    opened = client.post("/api/v1/sensor/pairings", json={"mailbox_id": mailbox_id}, headers=h)
+    assert opened.status_code == 201, (
+        "they paid for Complete and sign-in protection is still refused: "
+        f"{opened.status_code} {opened.text[:200]}"
+    )

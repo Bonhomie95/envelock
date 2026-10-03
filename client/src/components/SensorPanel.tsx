@@ -36,6 +36,16 @@ const STORES = {
   firefox: import.meta.env.VITE_SENSOR_FIREFOX_URL as string | undefined,
 };
 
+/** The add-on's listing on addons.thunderbird.net, once it is published there.
+ *
+ * Until it is, the .xpi we build is UNSIGNED, and release Thunderbird refuses
+ * to install an unsigned add-on — `xpinstall.signatures.required` only works on
+ * Daily and developer builds. Offering it as a plain download was telling
+ * people to do something that cannot work. */
+const THUNDERBIRD_LISTING = import.meta.env.VITE_SENSOR_THUNDERBIRD_URL as
+  | string
+  | undefined;
+
 const CLIENT_NAME: Record<SensorDevice["client"], string> = {
   browser: "Browser extension",
   thunderbird: "Thunderbird",
@@ -132,12 +142,35 @@ function InstallSteps() {
       </li>
       <li>
         <p className="font-semibold">Thunderbird</p>
-        <p className="fg-2 mt-1">
-          <a className="accent underline underline-offset-4" href="/downloads/envelock-sensor-thunderbird.xpi" download>
-            Download the add-on
-          </a>
-          , then in Thunderbird <b>Add-ons and Themes → ⚙ → Install Add-on From File</b>.
-        </p>
+        {THUNDERBIRD_LISTING ? (
+          <p className="fg-2 mt-1">
+            <a
+              className="accent underline underline-offset-4"
+              href={THUNDERBIRD_LISTING}
+              target="_blank"
+              rel="noreferrer"
+            >
+              Get it from addons.thunderbird.net
+            </a>
+            , then open a message and pair it with the code below.
+          </p>
+        ) : (
+          <p className="fg-2 mt-1">
+            Awaiting review on addons.thunderbird.net. Thunderbird only installs signed
+            add-ons, so the build below works on <b>Thunderbird Daily</b> or a developer
+            build —{" "}
+            <a
+              className="accent underline underline-offset-4"
+              href="/downloads/envelock-sensor-thunderbird.xpi"
+              download
+            >
+              download the add-on
+            </a>
+            , then <b>Add-ons and Themes → ⚙ → Install Add-on From File</b>. On release
+            Thunderbird it will be refused as unverified; use the browser extension with
+            your webmail in the meantime.
+          </p>
+        )}
       </li>
       <li>
         <p className="font-semibold">Webmail in a browser — Gmail, Outlook on the web, your provider's webmail</p>

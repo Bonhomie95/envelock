@@ -112,3 +112,38 @@ test("the zip writer round-trips, compressed and stored", () => {
     assert.equal(back[e.name].crc, crc32(e.data));
   }
 });
+
+test("the dashboard does not promise a Thunderbird install that cannot work", () => {
+  /* Release Thunderbird refuses an unsigned add-on, and the
+     `xpinstall.signatures.required` escape hatch only exists on Daily and
+     developer builds. We shipped the .xpi as a plain "download and install",
+     which fails for essentially every real user.
+
+     Signing happens at addons.thunderbird.net, outside this build — so this
+     ties the two facts together: while the package is unsigned, the dashboard
+     has to say so. When a signed build does land, this fails and sends whoever
+     did it to the copy. */
+  const signed = existsSync(join(targets.thunderbird, "META-INF"));
+  const panel = readFileSync(
+    join(fileURLToPath(new URL("../../src/components/SensorPanel.tsx", import.meta.url))),
+    "utf8",
+  );
+  if (!signed) {
+    assert.match(
+      panel,
+      /addons\.thunderbird\.net/,
+      "the add-on is unsigned, so the dashboard must point at the store listing instead",
+    );
+    assert.match(
+      panel,
+      /Thunderbird Daily|developer build/,
+      "the add-on is unsigned: say which builds can actually install it",
+    );
+  } else {
+    assert.doesNotMatch(
+      panel,
+      /Awaiting review on addons\.thunderbird\.net/,
+      "the add-on is signed now — drop the 'awaiting review' copy",
+    );
+  }
+});
