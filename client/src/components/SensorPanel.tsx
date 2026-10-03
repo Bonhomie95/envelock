@@ -114,7 +114,21 @@ function InstallSteps() {
           <code className="flex-1 truncate font-mono text-[11px]">{OUTLOOK_MANIFEST}</code>
           <CopyButton text={OUTLOOK_MANIFEST} label="Copy the Outlook add-in address" />
         </div>
-        <p className="fg-3 mt-1">Pin the Envelock pane so it stays open between messages.</p>
+        {/* The step everyone misses. A mail add-in only runs inside an open
+            message: it is not in the Apps list, and opening it from there or
+            from the admin centre gives Microsoft's "App launch failed", which
+            reads as our bug. Say where it actually is. */}
+        <p className="fg-2 mt-2">
+          Then <b>open any email</b> and click <b>Envelock sensor</b> on the ribbon above
+          the message — on Mac and the web it may be under <b>…</b> (More apps). That is
+          where the pane asks for the code below. <b>Pin it</b> so it stays open between
+          messages.
+        </p>
+        <p className="fg-3 mt-1">
+          It will not appear in the Apps list or the admin centre's app launcher — mail
+          add-ins only run inside a message. A central deployment can take a few hours,
+          or a restart of Outlook, to show up.
+        </p>
       </li>
       <li>
         <p className="font-semibold">Thunderbird</p>

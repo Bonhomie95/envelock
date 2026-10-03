@@ -17,6 +17,24 @@
 
   <div id="loading" class="muted">Starting…</div>
 
+  <!-- Shown when this page is open anywhere that is not a message in Outlook.
+       It is reachable by its URL, from the Apps list, and from the Microsoft
+       365 admin centre — all of which end in "App launch failed" or a blank
+       pane, because a mail add-in only runs inside an open message. Someone who
+       lands here with no explanation concludes the sensor is broken. -->
+  <section id="help" class="panel hidden">
+    <div class="msg err">This pane isn't running inside Outlook, so there's nothing for it to watch yet.</div>
+    <p><b>The sensor lives inside a message, not in the Apps list.</b> Opening it from Apps, My Apps or the admin centre will always fail — that's Microsoft, not a fault in the add-in.</p>
+    <p>In Outlook:</p>
+    <ol>
+      <li><b>Open any email</b> (the reading pane counts).</li>
+      <li>On the ribbon above the message, click <b>Envelock sensor</b>. On Outlook for Mac and the web it may sit under the <b>…</b> (More apps) menu.</li>
+      <li>The pane opens there and asks for your pairing code.</li>
+      <li><b>Pin it</b> with the pin at the top of the pane, so it stays open as you move between messages.</li>
+    </ol>
+    <p class="muted">Just installed it? Outlook can take up to 12 hours to show a centrally deployed add-in, or a restart of Outlook.</p>
+  </section>
+
   <section id="watching" class="hidden">
     <div id="warning" class="msg err hidden" role="alert"></div>
     <div class="item">

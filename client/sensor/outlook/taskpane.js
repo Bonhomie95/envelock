@@ -200,7 +200,7 @@
     }
 
     function render() {
-      controller.snapshot().then(function (s) {
+      return controller.snapshot().then(function (s) {
         $("loading").classList.add("hidden");
         var e = s.enrollment;
         var paired = e && !e.revoked;
@@ -221,6 +221,13 @@
             ? "Not reporting: " + e.lastError
             : "Connecting…";
         $("device").textContent = (e.label || "This device") + " · " + s.deviceId;
+      }).catch(function (err) {
+        // Without this the pane sits on "Starting…" for ever and the person
+        // reasonably concludes the sensor is broken. Say what happened instead.
+        $("loading").textContent =
+          "The sensor couldn't start: " + (err && err.message ? err.message : String(err));
+        $("loading").className = "msg err";
+        $("loading").classList.remove("hidden");
       });
     }
 
@@ -253,14 +260,47 @@
 
   root.EnvelockOutlook = { createController: createController, mountView: mountView };
 
-  if (root.Office && root.document && !root.__ENVELOCK_TEST__) {
-    root.Office.onReady(function (info) {
-      if (!info || info.host !== root.Office.HostType.Outlook) return;
-      var controller = createController(root.Office, {
-        storage: root.EnvelockSensor.webStorage(root.localStorage),
+  /* Office.onReady only ever fires inside an Office host. Everywhere else —
+     the page's own URL, the Apps list, the admin centre's "Open" — it simply
+     never calls back, and the pane used to sit on "Starting…" with nothing to
+     explain it. Say where the add-in actually lives instead. */
+  function showHelp(doc) {
+    var loading = doc.getElementById("loading");
+    var help = doc.getElementById("help");
+    if (loading) loading.classList.add("hidden");
+    if (help) help.classList.remove("hidden");
+  }
+
+  var NOT_IN_OUTLOOK_MS = 4000;
+
+  if (root.document && !root.__ENVELOCK_TEST__) {
+    var doc = root.document;
+    if (!root.Office || !root.Office.onReady) {
+      showHelp(doc);
+    } else {
+      var ready = false;
+      var giveUp = setTimeout(function () {
+        if (!ready) showHelp(doc);
+      }, NOT_IN_OUTLOOK_MS);
+      root.Office.onReady(function (info) {
+        if (!info || info.host !== root.Office.HostType.Outlook) {
+          showHelp(doc);
+          return;
+        }
+        ready = true;
+        clearTimeout(giveUp);
+        var controller = createController(root.Office, {
+          storage: root.EnvelockSensor.webStorage(root.localStorage),
+        });
+        mountView(controller, doc);
+        controller.start().catch(function (err) {
+          var el = doc.getElementById("result");
+          if (!el) return;
+          el.textContent =
+            "Couldn't reach Envelock: " + (err && err.message ? err.message : String(err));
+          el.className = "msg err";
+        });
       });
-      mountView(controller, root.document);
-      controller.start();
-    });
+    }
   }
 })(typeof globalThis !== "undefined" ? globalThis : this);

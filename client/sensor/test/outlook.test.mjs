@@ -145,3 +145,61 @@ test("a flagged message gets Outlook's red bar; a clean one clears it", async ()
   assert.deepEqual(office.bars.at(-1), { op: "remove", id: "<newsletter@x>", key: bar.key });
   assert.equal((await c.snapshot()).warning, null);
 });
+
+/* The bootstrap, not the controller: what the pane shows when Office never
+ * becomes ready. Reported from the field — the add-in was installed from the
+ * Microsoft 365 admin centre, opened from the Apps list, and the pane sat on
+ * "Starting…" for ever with no pairing form and no explanation, so it looked
+ * like the sensor was broken. */
+function fakeDoc() {
+  const nodes = {
+    loading: { hidden: false, text: "Starting…" },
+    help: { hidden: true, text: "" },
+  };
+  const el = (name) => ({
+    classList: {
+      add: (c) => {
+        if (c === "hidden") nodes[name].hidden = true;
+      },
+      remove: (c) => {
+        if (c === "hidden") nodes[name].hidden = false;
+      },
+    },
+    set textContent(v) {
+      nodes[name].text = v;
+    },
+    set className(_v) {},
+  });
+  return { nodes, getElementById: (id) => (nodes[id] ? el(id) : null) };
+}
+
+async function loadBootstrap(root) {
+  const { readFileSync } = await import("node:fs");
+  const { fileURLToPath } = await import("node:url");
+  const { dirname, join } = await import("node:path");
+  const here = dirname(fileURLToPath(import.meta.url));
+  const src = readFileSync(join(here, "..", "outlook", "taskpane.js"), "utf8");
+  // The IIFE takes `this` as its root when globalThis is shadowed, so call it
+  // with the fake root rather than polluting the real global.
+  new Function("globalThis", src)(root);
+}
+
+test("outside Outlook the pane says where the add-in actually lives", async () => {
+  const root = { document: fakeDoc(), EnvelockSensor: S };
+  await loadBootstrap(root);
+  assert.equal(root.document.nodes.help.hidden, false, "no explanation was shown");
+  assert.equal(root.document.nodes.loading.hidden, true, "it was still 'Starting…'");
+});
+
+test("a non-Outlook Office host is told too, rather than left blank", async () => {
+  let onReady;
+  const root = {
+    document: fakeDoc(),
+    EnvelockSensor: S,
+    Office: { onReady: (fn) => (onReady = fn), HostType: { Outlook: "Outlook" } },
+  };
+  await loadBootstrap(root);
+  assert.equal(root.document.nodes.help.hidden, true, "it gave up before Office answered");
+  onReady({ host: "Excel" });
+  assert.equal(root.document.nodes.help.hidden, false);
+});
