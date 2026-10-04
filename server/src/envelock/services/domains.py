@@ -50,32 +50,76 @@ def domain_control_status(domain: str, token: str, *, method: str) -> str:
     return verification_status(domain, token, method=method)
 
 
-async def revalidate_verified_domains(session: AsyncSession) -> dict:
-    """Re-check every DNS-verified domain and REVOKE (verified_at → None) any whose
-    proof-of-control record has definitively disappeared.
+#: On-access re-checks share a short TTL cache so the dashboard polling `/tenant`
+#: cannot turn into a DNS lookup on every request. DNS has no push — nothing
+#: tells us a TXT record was deleted — so the authoritative check is a lookup;
+#: the cache just bounds how often an *active* tenant triggers one. A revocation
+#: is therefore felt the moment the user next loads the dashboard with a stale
+#: cache entry, not on a fixed background tick. 'unknown' (transient) is never
+#: cached, so a blip is retried immediately rather than held for the TTL.
+_STATUS_TTL_SECONDS = 120.0
+_status_cache: dict[tuple[str, str, str], tuple[str, float]] = {}
 
-    Ownership is not a one-time gate: if the DNS record we verified is later deleted
-    — the domain lapsed, was transferred, or the record was pulled — we must stop
-    trusting that control and make the tenant prove it again. Once revoked, the
-    dashboard's verify-gate blocks the tenant until they re-verify. Only a
-    conclusive 'absent' revokes; a transient/unknown DNS result is left alone so a
-    network blip can never lock a paying customer out. Runs on the scheduler."""
+
+def _cached_control_status(domain: str, token: str, method: str, *, now: float) -> str:
+    key = (domain, token, method)
+    hit = _status_cache.get(key)
+    if hit is not None and now - hit[1] < _STATUS_TTL_SECONDS:
+        return hit[0]
+    status = domain_control_status(domain, token, method=method)
+    if status != "unknown":
+        _status_cache[key] = (status, now)
+    return status
+
+
+async def revalidate_tenant_domains(session: AsyncSession, tenant_id: UUID) -> dict:
+    """Incident-driven re-check of ONE tenant's verified domains, called on
+    dashboard access rather than on a timer.
+
+    The whole point of the TTL cache and the tenant filter is that this is cheap
+    enough to run on every `/tenant` load: the moment a tenant who deleted their
+    DNS proof reloads the dashboard (cache stale), the domain is revoked and the
+    client's verify-gate blocks them — no waiting for the hourly backstop. DNS is
+    resolved off the event loop. Only a conclusive 'absent' revokes."""
+    import asyncio
+    import time
+
     rows = (
-        (await session.execute(select(Domain).where(Domain.verified_at.is_not(None))))
+        (
+            await session.execute(
+                select(Domain).where(
+                    Domain.tenant_id == tenant_id, Domain.verified_at.is_not(None)
+                )
+            )
+        )
         .scalars()
         .all()
     )
+    checkable = [r for r in rows if r.verification_token]
+    if not checkable:
+        return {"revoked": []}
+    now = time.monotonic()
+
+    def _statuses() -> dict:
+        return {
+            r.id: _cached_control_status(
+                r.registrable_domain, r.verification_token or "",
+                r.verification_method or "txt", now=now,
+            )
+            for r in checkable
+        }
+
+    statuses = await asyncio.to_thread(_statuses)
+    return await _revoke_absent(session, rows, statuses)
+
+
+async def _revoke_absent(session: AsyncSession, rows, statuses: dict) -> dict:  # noqa: ANN001
+    """Revoke every row whose pre-computed status is 'absent', then audit and
+    notify. Shared by the scheduled sweep and the on-access path."""
     revoked: list[str] = []
     for row in rows:
-        if not row.verification_token:
-            continue  # nothing to check against — leave it verified
-        status = domain_control_status(
-            row.registrable_domain,
-            row.verification_token,
-            method=row.verification_method or "txt",
-        )
-        if status != "absent":
-            continue  # 'present' or 'unknown' → never revoke
+        if statuses.get(row.id) != "absent":
+            continue
         row.verified_at = None
         revoked.append(row.registrable_domain)
         session.add(
@@ -133,6 +177,34 @@ async def revalidate_verified_domains(session: AsyncSession) -> dict:
                 ),
             )
     return {"revoked": revoked}
+
+
+async def revalidate_verified_domains(session: AsyncSession) -> dict:
+    """The scheduled backstop: re-check EVERY verified domain and revoke any whose
+    proof-of-control record has definitively disappeared.
+
+    Ownership is not a one-time gate — if the DNS record is later deleted (the
+    domain lapsed, was transferred, or the record was pulled) we stop trusting it
+    and make the tenant prove it again. This sweep catches domains of tenants who
+    are not actively using the dashboard; active ones are revoked sooner by
+    `revalidate_tenant_domains` on access. Fresh lookups, no cache, so the
+    backstop is authoritative. Only a conclusive 'absent' revokes; a
+    transient/unknown result is left alone so a blip can never lock anyone out."""
+    rows = (
+        (await session.execute(select(Domain).where(Domain.verified_at.is_not(None))))
+        .scalars()
+        .all()
+    )
+    statuses = {
+        row.id: domain_control_status(
+            row.registrable_domain,
+            row.verification_token,
+            method=row.verification_method or "txt",
+        )
+        for row in rows
+        if row.verification_token
+    }
+    return await _revoke_absent(session, rows, statuses)
 
 
 async def verified_registrable_domains(session: AsyncSession, tenant_id: UUID) -> set[str]:
@@ -194,6 +266,7 @@ __all__ = [
     "domain_control_status",
     "mail_domain_allowed",
     "require_verified_domain",
+    "revalidate_tenant_domains",
     "revalidate_verified_domains",
     "set_domain_verifier",
     "verified_registrable_domains",

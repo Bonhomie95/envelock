@@ -720,3 +720,93 @@ def test_exec_impersonation_from_outside_address() -> None:
     assert a5 is not None
     assert "your company" in a5.summary.lower() and "gmail.com" in a5.summary
     assert a5.tier is AlertTier.HIGH
+
+
+def test_tenant_endpoint_revokes_on_access_when_the_dns_proof_is_gone(
+    client: TestClient,
+) -> None:
+    """The reported bug: delete the TXT record and the dashboard kept working
+    until the hourly sweep. `/tenant` now re-checks on access, so the very next
+    dashboard load revokes and the client's verify-gate blocks the tenant — no
+    waiting for a timer."""
+    from envelock.api import tenants
+    from envelock.services import domains
+
+    h = _auth_header(client, "onaccess@onaccessco.example")
+    _bootstrap(client, h, name="OnAccess", domain="onaccessco.example")
+    tenants.set_domain_verifier(lambda domain, token, method="txt": True)
+    assert client.post(
+        "/api/v1/domains/onaccessco.example/verify", headers=h
+    ).json()["verified"] is True
+
+    # The record is pulled. Clear the short-lived status cache to stand in for
+    # the ordinary case: the last check was more than the TTL ago.
+    domains._status_cache.clear()
+    tenants.set_domain_verifier(lambda domain, token, method="txt": False)
+
+    # A plain dashboard load — no manual sweep — must now report it unverified.
+    body = client.get("/api/v1/tenant", headers=h).json()
+    tenants.set_domain_verifier(None)
+    assert all(
+        not d["verified"]
+        for d in body["domains"]
+        if d["registrable_domain"] == "onaccessco.example"
+    ), body["domains"]
+
+
+def test_on_access_check_is_cached_so_the_dashboard_does_not_hammer_dns(
+    client: TestClient,
+) -> None:
+    """The dashboard polls `/tenant` every 45s; the on-access check must not turn
+    that into a DNS lookup every time. Within the TTL, repeated loads reuse the
+    cached result and do not call the resolver again."""
+    from envelock.api import tenants
+    from envelock.services import domains
+
+    h = _auth_header(client, "cache@cacheco.example")
+    _bootstrap(client, h, name="Cache", domain="cacheco.example")
+    tenants.set_domain_verifier(lambda domain, token, method="txt": True)
+    client.post("/api/v1/domains/cacheco.example/verify", headers=h)
+
+    domains._status_cache.clear()
+    calls = {"n": 0}
+
+    def _counting(domain, token, method="txt"):  # noqa: ANN001, ANN202
+        calls["n"] += 1
+        return True
+
+    tenants.set_domain_verifier(_counting)
+    for _ in range(4):
+        client.get("/api/v1/tenant", headers=h)
+    tenants.set_domain_verifier(None)
+
+    assert calls["n"] == 1, f"the resolver was hit {calls['n']} times across 4 loads"
+
+
+def test_on_access_check_does_not_revoke_on_a_transient_dns_failure(
+    client: TestClient,
+) -> None:
+    """A network blip must never revoke on the request path either — only a
+    conclusive 'absent' does. 'unknown' leaves the domain verified."""
+    from envelock.api import tenants
+    from envelock.services import domains
+
+    h = _auth_header(client, "blip@blipco.example")
+    _bootstrap(client, h, name="Blip", domain="blipco.example")
+    tenants.set_domain_verifier(lambda domain, token, method="txt": True)
+    client.post("/api/v1/domains/blipco.example/verify", headers=h)
+
+    domains._status_cache.clear()
+    # Force a tri-state 'unknown' straight from the status function.
+    domains.set_domain_verifier(None)
+    orig = domains.domain_control_status
+    domains.domain_control_status = lambda domain, token, method="txt": "unknown"  # type: ignore
+    try:
+        body = client.get("/api/v1/tenant", headers=h).json()
+    finally:
+        domains.domain_control_status = orig
+
+    assert any(
+        d["registrable_domain"] == "blipco.example" and d["verified"]
+        for d in body["domains"]
+    ), body["domains"]

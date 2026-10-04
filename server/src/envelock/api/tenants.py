@@ -404,6 +404,15 @@ async def current_tenant(principal: ActiveUser, session: Session) -> dict:
     The dashboard shows this instead of guessing the domain from a mailbox, so a
     tenant with no mailbox connected yet still displays who they are."""
     tenant = await session.get(Tenant, principal.tenant_id)
+    # Re-check domain control on access, not only on the hourly sweep. DNS cannot
+    # notify us when a TXT proof is deleted, so the authoritative check is a
+    # lookup — but running it here (TTL-cached, off the event loop) means a tenant
+    # who pulls their record is revoked the moment they next load the dashboard,
+    # and the client's verify-gate blocks them. Without this the sweep's interval
+    # was the window in which a domain we no longer control still looked verified.
+    from envelock.services.domains import revalidate_tenant_domains
+
+    await revalidate_tenant_domains(session, principal.tenant_id)
     domains = (
         (
             await session.execute(
