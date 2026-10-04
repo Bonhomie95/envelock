@@ -386,3 +386,45 @@ def test_upgrading_essential_to_complete_opens_the_complete_only_door(
         "they paid for Complete and sign-in protection is still refused: "
         f"{opened.status_code} {opened.text[:200]}"
     )
+
+
+def test_a_plan_change_is_confirmed_in_writing(
+    client: TestClient, stripe: _Stripe, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An upgrade charges the card on the spot, so it gets the same courtesy a
+    renewal already had. A downgrade must not claim a charge that never
+    happened — it is a credit."""
+    from envelock.notify import mail
+
+    sent: list[dict] = []
+
+    async def fake_send(*, to, subject, body, html_body=None):  # noqa: ANN001, ANN202
+        sent.append({"to": to, "subject": subject, "body": body})
+        return mail.MailResult(True, "sent")
+
+    monkeypatch.setattr(mail, "send_mail", fake_send)
+    monkeypatch.setattr(mail, "is_configured", lambda: True)
+
+    h, tid = _owner(client, "plan-email.example")
+    _paid(client, tid, "plan-email.example")
+    sent.clear()
+
+    down = client.post("/api/v1/tenant/plan", json={"plan": "essential"}, headers=h)
+    assert down.status_code == 200, down.text[:300]
+    assert sent, "the plan changed and nothing was sent"
+    assert "Essential" in sent[-1]["subject"], sent[-1]["subject"]
+    assert "credited" in sent[-1]["body"].lower(), sent[-1]["body"][:400]
+    assert "card was charged" not in sent[-1]["body"].lower(), sent[-1]["body"][:400]
+
+    sent.clear()
+    up = client.post("/api/v1/tenant/plan", json={"plan": "complete"}, headers=h)
+    assert up.status_code == 200, up.text[:300]
+    assert sent, "the upgrade charged the card and nothing was sent"
+    assert "Complete" in sent[-1]["subject"], sent[-1]["subject"]
+    assert "charged" in sent[-1]["body"].lower(), sent[-1]["body"][:400]
+
+    # Asking for the plan they are already on moves no money and sends nothing.
+    sent.clear()
+    same = client.post("/api/v1/tenant/plan", json={"plan": "complete"}, headers=h)
+    assert same.status_code == 200
+    assert sent == [], sent

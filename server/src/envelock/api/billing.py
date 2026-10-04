@@ -898,6 +898,79 @@ def _invoice_amount(invoice: dict) -> str:
     return f"{symbol}{body}" if symbol else f"{body} {currency}"
 
 
+async def _notify_seats_changed(
+    session: AsyncSession, tenant: Tenant, *, before: int, after: int
+) -> None:
+    """Confirm a seat change in writing, because it moved money.
+
+    Adding seats charges the card the moment the button is pressed. Saying
+    nothing leaves a charge the customer did not expect and cannot check
+    against anything — and if someone else in the workspace made the change,
+    the people who can act on it never hear about it at all.
+    """
+    from envelock.notify.account import app_url, notify_admins
+
+    added = after - before
+    capacity = included_mailbox_seats(tenant.plan) + after
+    if added > 0:
+        noun = "mailbox" if added == 1 else "mailboxes"
+        subject = f"{added} more {noun} added to your Envelock plan"
+        heading = f"{added} {noun} added"
+        money = (
+            "Your card was charged the prorated difference for the rest of this "
+            "billing period. The exact amount is on the invoice in Billing."
+        )
+    else:
+        noun = "mailbox" if added == -1 else "mailboxes"
+        subject = f"{-added} {noun} released from your Envelock plan"
+        heading = f"{-added} {noun} released"
+        money = (
+            "Nothing was charged. The unused time is credited against your next "
+            "invoice."
+        )
+    counts = f"You can now protect {capacity} mailboxes ({before} → {after} extra seats)."
+    await notify_admins(
+        session,
+        tenant.id,
+        subject=subject,
+        heading=heading,
+        preheader=counts,
+        paragraphs=[counts, money],
+        text=f"{counts}\n\n{money}\n\nInvoices and receipts:\n{app_url('/billing')}",
+        cta_label="View invoices",
+        cta_url=app_url("/billing"),
+        footnote="Change plan, seats or card at any time in Billing.",
+    )
+
+
+async def _notify_plan_changed(
+    session: AsyncSession, tenant: Tenant, *, before: str, after: str
+) -> None:
+    """Confirm a plan change in writing. An upgrade is charged on the spot."""
+    from envelock.notify.account import app_url, notify_admins, plan_title
+
+    upgrade = _PLAN_ORDER.index(after) > _PLAN_ORDER.index(before)
+    moved = f"Your workspace moved from {plan_title(before)} to {plan_title(after)}."
+    money = (
+        "Your card was charged the prorated difference for the rest of this billing "
+        "period. The exact amount is on the invoice in Billing."
+        if upgrade
+        else "Nothing was charged. The difference is credited against your next invoice."
+    )
+    await notify_admins(
+        session,
+        tenant.id,
+        subject=f"Your Envelock plan is now {plan_title(after)}",
+        heading=f"Now on {plan_title(after)}",
+        preheader=moved,
+        paragraphs=[moved, money],
+        text=f"{moved}\n\n{money}\n\nInvoices and receipts:\n{app_url('/billing')}",
+        cta_label="View invoices",
+        cta_url=app_url("/billing"),
+        footnote="Change plan, seats or card at any time in Billing.",
+    )
+
+
 async def _notify_renewal_paid(session: AsyncSession, tenant: Tenant, invoice: dict) -> None:
     from envelock.notify.account import app_url, notify_admins, plan_label, plan_title
 
@@ -1150,6 +1223,9 @@ async def set_mailbox_seats(
             current,
             req.extra_mailboxes,
             extra_price,
+        )
+        await _notify_seats_changed(
+            session, tenant, before=current, after=req.extra_mailboxes
         )
     return {
         "extra_mailbox_seats": tenant.extra_mailbox_seats,

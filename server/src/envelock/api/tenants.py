@@ -535,11 +535,13 @@ async def change_plan(req: ChangePlanRequest, principal: OwnerUser, session: Ses
     trial_active = bool(ends and ends > now)
 
     is_paid_target = target not in ("guard",)
+    plan_before: str | None = None
     if tenant.stripe_subscription_id:
         # A paying Stripe customer: the plan IS the subscription. Recording the
         # choice alone let an Essential payer switch to Complete for free.
         from envelock.api.billing import change_subscription_plan
 
+        plan_before = tenant.plan
         await change_subscription_plan(session, tenant, target)
     elif is_paid_target and not (trial_active or tenant.payment_method_ok):
         raise HTTPException(
@@ -549,6 +551,13 @@ async def change_plan(req: ChangePlanRequest, principal: OwnerUser, session: Ses
     else:
         tenant.plan = target
     await session.commit()
+
+    # After the commit: an upgrade charges the card, and a charge the customer
+    # is never told about is one they can only discover on their statement.
+    if plan_before is not None and plan_before != tenant.plan:
+        from envelock.api.billing import _notify_plan_changed
+
+        await _notify_plan_changed(session, tenant, before=plan_before, after=tenant.plan)
 
     subscribed_plan = tenant.plan
     effective_plan = subscribed_plan if (trial_active or tenant.payment_method_ok) else "guard"

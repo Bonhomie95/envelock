@@ -366,3 +366,102 @@ async def test_no_live_subscription_says_so_instead_of_accusing_the_card(
     finally:
         payments.set_default_transport(None)
         get_settings.cache_clear()
+
+
+@pytest.fixture
+def outbox(monkeypatch: pytest.MonkeyPatch) -> list[dict]:
+    """Every account email that actually went out."""
+    from envelock.notify import mail
+
+    sent: list[dict] = []
+
+    async def fake_send(*, to, subject, body, html_body=None):  # noqa: ANN001, ANN202
+        sent.append({"to": to, "subject": subject, "body": body})
+        return mail.MailResult(True, "sent")
+
+    monkeypatch.setattr(mail, "send_mail", fake_send)
+    monkeypatch.setattr(mail, "is_configured", lambda: True)
+    return sent
+
+
+@pytest.mark.asyncio
+async def test_buying_seats_is_confirmed_in_writing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, outbox: list[dict]
+) -> None:
+    """Adding seats charges the card the instant UPDATE is pressed.
+
+    Reported after a real purchase: four seats were bought, the money moved,
+    and nothing arrived. A charge the customer is never told about is one they
+    can only discover on a statement — and if a colleague made the change, the
+    people who can act on it never hear at all.
+    """
+    _env(monkeypatch)
+    payments.set_default_transport(_Stripe("price_cmp_yr"))
+    try:
+        slug = "seats-email"
+        h, _tid = _signup(client, slug)
+        await _give_subscription(slug)
+
+        r = client.put("/api/v1/billing/seats", json={"extra_mailboxes": 4}, headers=h)
+        assert r.status_code == 200, r.text[:300]
+
+        assert outbox, "four seats were charged and nothing was sent"
+        mail_sent = outbox[-1]
+        assert mail_sent["to"] == f"owner@{slug}.example", mail_sent["to"]
+        assert "4" in mail_sent["subject"], mail_sent["subject"]
+        # The number that matters to them is what they can now protect.
+        assert "9 mailboxes" in mail_sent["body"], mail_sent["body"][:400]
+        assert "charged" in mail_sent["body"].lower()
+    finally:
+        payments.set_default_transport(None)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_releasing_seats_does_not_claim_a_charge(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, outbox: list[dict]
+) -> None:
+    """A reduction is a credit. Telling someone their card was charged for
+    giving seats back would be worse than saying nothing."""
+    _env(monkeypatch)
+    payments.set_default_transport(_Stripe("price_cmp_yr"))
+    try:
+        slug = "seats-credit"
+        h, _tid = _signup(client, slug)
+        await _give_subscription(slug)
+        assert client.put(
+            "/api/v1/billing/seats", json={"extra_mailboxes": 4}, headers=h
+        ).status_code == 200
+        outbox.clear()
+
+        r = client.put("/api/v1/billing/seats", json={"extra_mailboxes": 1}, headers=h)
+        assert r.status_code == 200, r.text[:300]
+
+        assert outbox, "seats were released and nothing was sent"
+        body = outbox[-1]["body"]
+        assert "credited" in body.lower(), body[:400]
+        assert "your card was charged" not in body.lower(), body[:400]
+    finally:
+        payments.set_default_transport(None)
+        get_settings.cache_clear()
+
+
+@pytest.mark.asyncio
+async def test_a_no_op_seat_update_sends_nothing(
+    client: TestClient, monkeypatch: pytest.MonkeyPatch, outbox: list[dict]
+) -> None:
+    """Nothing moved, so nothing to confirm. An email saying a change happened
+    when none did is worse than silence."""
+    _env(monkeypatch)
+    payments.set_default_transport(_Stripe("price_cmp_yr"))
+    try:
+        slug = "seats-noop"
+        h, _tid = _signup(client, slug)
+        await _give_subscription(slug)
+
+        r = client.put("/api/v1/billing/seats", json={"extra_mailboxes": 0}, headers=h)
+        assert r.status_code == 200, r.text[:300]
+        assert outbox == [], outbox
+    finally:
+        payments.set_default_transport(None)
+        get_settings.cache_clear()

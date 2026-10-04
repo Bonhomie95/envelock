@@ -136,8 +136,10 @@ function InstallSteps() {
         </p>
         <p className="fg-3 mt-1">
           It will not appear in the Apps list or the admin centre's app launcher — mail
-          add-ins only run inside a message. A central deployment can take a few hours,
-          or a restart of Outlook, to show up.
+          add-ins only run inside a message. A central deployment can take up to 24 hours
+          to show up, and <b>removing</b> one takes 24 to 72 hours — so an add-in you have
+          already removed keeps appearing meanwhile. That is Microsoft's propagation, not
+          a fault. Restarting Outlook often brings a change forward.
         </p>
       </li>
       <li>
