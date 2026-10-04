@@ -79,3 +79,22 @@ it("locks input while a scan is pending and refuses empty scans", async () => {
     screen.getByRole("button", { name: "ANALYSE" }),
   ).toBeDisabled();
 });
+
+it("offers the phishing-link and identical-sender samples and sends their bodies", async () => {
+  const scan = vi.spyOn(api, "analyse").mockResolvedValue(clean);
+  render(<Analyse />);
+
+  await userEvent.click(screen.getByRole("button", { name: /Phishing link/ }));
+  await userEvent.click(screen.getByRole("button", { name: "ANALYSE" }));
+  await screen.findByText("Nothing detected.");
+  expect(scan.mock.calls[0][0].raw_message).toContain("203.0.113.10");
+
+  await userEvent.click(
+    screen.getByRole("button", { name: /Identical sender, wrong address/ }),
+  );
+  await userEvent.click(screen.getByRole("button", { name: "ANALYSE" }));
+  await waitFor(() => expect(scan).toHaveBeenCalledTimes(2));
+  expect(scan.mock.calls[1][0].raw_message).toContain(
+    "billing@secure-mail-portal.example",
+  );
+});

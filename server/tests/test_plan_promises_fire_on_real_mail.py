@@ -149,3 +149,47 @@ def test_an_ordinary_email_produces_nothing_on_any_plan() -> None:
         assert fire(ordinary, plan) == set(), (
             f"{plan}: ordinary mail raised {sorted(fire(ordinary, plan))}"
         )
+
+
+def test_the_phishing_link_simulation_is_caught_from_essential_up() -> None:
+    """The product's own "run a simulation" set now includes a phishing link.
+
+    B-family link inspection is sold from Essential, so the canonical phishing
+    simulation has to fire there — otherwise the demo a customer runs to trust
+    the product would quietly fail on the one attack everyone recognises.
+    """
+    raw = _sims()["B1"]
+    for plan in ("essential", "complete"):
+        assert "B1" in fire(raw, plan), (
+            f"the phishing-link simulation did not fire on {plan}: {sorted(fire(raw, plan))}"
+        )
+    # Guard covers domains, not mailbox content, so it stays silent — on purpose.
+    assert "B1" not in fire(raw, "guard")
+
+
+def test_the_identical_sender_simulation_is_caught_from_essential_up() -> None:
+    """"Two identical invoices, one not really them": same brand on the From
+    line, an address that isn't theirs. A5 (display-name spoof) is the tell, and
+    it is an A-family detection Essential sells."""
+    raw = _sims()["A5"]
+    for plan in ("essential", "complete"):
+        assert "A5" in fire(raw, plan), (
+            f"the identical-sender simulation did not fire on {plan}: {sorted(fire(raw, plan))}"
+        )
+    assert fire(raw, "guard") == set()
+
+
+def test_a_genuine_invoice_from_the_real_vendor_stays_silent() -> None:
+    """The counterpart to the spoof: the same invoice from the vendor's own
+    address must raise nothing, or the simulation proves only that we cry wolf."""
+    genuine = (
+        f'From: "{VENDOR.partition(".")[0].capitalize()} Accounts" <billing@{VENDOR}>\n'
+        f"To: pay@{PROTECTED}\n"
+        "Subject: Invoice 9001\n"
+        "Content-Type: text/plain\n\n"
+        "Please find Invoice 9001 attached. Remit as usual.\n"
+    )
+    for plan in ("essential", "complete"):
+        assert fire(genuine, plan) == set(), (
+            f"{plan}: a genuine vendor invoice raised {sorted(fire(genuine, plan))}"
+        )

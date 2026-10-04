@@ -209,6 +209,15 @@ async def test_simulation_detects_every_scenario(client: TestClient) -> None:
     ).json()
     assert result["passed"] == result["total"], result["runs"]
 
+    # Every run carries a human name so the dashboard never shows a bare hash or
+    # an internal detection code to a customer.
+    names = {r["name"] for r in result["runs"]}
+    assert "" not in names and all(names), result["runs"]
+    # The two attack shapes a customer most expects to be tested are present and
+    # caught: a phishing link, and an invoice from a sender that only looks right.
+    assert "Phishing link" in names, names
+    assert "Identical sender, wrong address" in names, names
+
 
 async def test_quarantine_refuses_on_forwarding_connected_mailbox(
     client: TestClient,

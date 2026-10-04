@@ -60,6 +60,7 @@ import ConnectionAdvisor from "../components/ConnectionAdvisor";
 import { DomainVerify } from "../components/DomainVerify";
 import MfaEnroll from "../components/MfaEnroll";
 import SensorPanel from "../components/SensorPanel";
+import SimulationPanel from "../components/SimulationPanel";
 import TodayPanel, { type HealthIssue } from "../components/TodayPanel";
 import { mailboxIssues } from "../lib/health";
 import VerifyPanel from "../components/VerifyPanel";
@@ -3805,6 +3806,7 @@ export default function Dashboard() {
             </section>
             <aside className="col-span-12 mt-6 space-y-6 lg:col-span-5 lg:mt-0">
               <PushAlerts />
+              {isWorkspaceAdmin && hasDomain && <SimulationPanel domain={domain} />}
             </aside>
           </div>
         )}

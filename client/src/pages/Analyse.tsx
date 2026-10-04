@@ -72,6 +72,38 @@ Following up on the below — please send the payment to the account
 provided earlier today.`,
     ctx: {},
   },
+  phishing: {
+    label: "Phishing link",
+    hint: "A login-stealing link — the address behind the words is a bare IP",
+    body: `From: "IT Helpdesk" <alerts@gemini.com>
+To: admin@acme.com
+Subject: Action required: verify your mailbox
+Content-Type: text/plain
+
+Your mailbox will be suspended within 24 hours. Verify now to keep access:
+
+http://203.0.113.10/account-verify?u=admin
+
+Thank you,
+IT Helpdesk`,
+    ctx: {},
+  },
+  identicalSender: {
+    label: "Identical sender, wrong address",
+    hint: "Looks exactly like the real vendor — but the address isn't theirs",
+    body: `From: "Gemini Accounts" <billing@secure-mail-portal.example>
+To: pay@acme.com
+Subject: Invoice 9001
+Content-Type: text/plain
+
+Hello,
+
+Please find Invoice 9001 attached. Kindly remit as usual.
+
+Regards,
+Gemini Accounts`,
+    ctx: { counterparty_message_count: 47 },
+  },
   clean: {
     label: "Ordinary email",
     hint: "Should produce nothing. Silence is a feature.",

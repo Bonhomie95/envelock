@@ -390,6 +390,8 @@ export interface SimulationResult {
   plan: string | null;
   runs: {
     id: string;
+    /** Human name of the simulated attack ("Supplier changes bank details"). */
+    name: string;
     expected: string;
     detected: string[];
     passed: boolean;

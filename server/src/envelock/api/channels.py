@@ -949,9 +949,11 @@ async def simulate(req: SimulationRequest, principal: AdminUser, session: Sessio
     plan = entitlement.effective_plan(tenant_row) if tenant_row is not None else None
 
     runs: list[SimulationRun] = []
+    names: dict[str, str] = {}
     for sim in simulations(
         protected_domain=req.protected_domain, vendor_domain=req.vendor_domain
     ):
+        names[sim.id] = sim.name
         event = await parse_message_async(
             sim.raw_message.encode(),
             tenant_id=principal.tenant_id,
@@ -998,6 +1000,7 @@ async def simulate(req: SimulationRequest, principal: AdminUser, session: Sessio
         "runs": [
             {
                 "id": r.simulation_id,
+                "name": names.get(r.simulation_id, "Simulated attack"),
                 "expected": r.expected,
                 "detected": r.detected,
                 "passed": r.passed,

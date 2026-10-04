@@ -318,6 +318,36 @@ def simulations(*, protected_domain: str, vendor_domain: str) -> list[Simulation
                 f"Following up on the below, please release the payment."
             ),
         ),
+        Simulation(
+            id=_sim_id("phishing-url"),
+            name="Phishing link",
+            expects="B1",
+            raw_message=(
+                # A reserved TEST-NET-3 address (RFC 5737): a real bare-IP link
+                # shape, but non-routable, so the fixture itself leads nowhere.
+                f'From: "IT Helpdesk" <alerts@{vendor_domain}>\n'
+                f"To: {protected_domain.replace('.', '-')}@{protected_domain}\n"
+                f"Subject: Action required: verify your mailbox\n"
+                f"{header}\nContent-Type: text/plain\n\n"
+                f"Your mailbox will be suspended. Verify here:\n"
+                f"http://203.0.113.10/account-verify?u=admin"
+            ),
+        ),
+        Simulation(
+            id=_sim_id("display-name-spoof"),
+            name="Identical sender, wrong address",
+            expects="A5",
+            raw_message=(
+                # The invoice looks identical to the real vendor's — same brand
+                # name on the From line — but the address behind it is not theirs.
+                f'From: "{vendor_domain.partition(".")[0].capitalize()} Accounts" '
+                f"<billing@secure-mail-portal.example>\n"
+                f"To: pay@{protected_domain}\n"
+                f"Subject: Invoice 9001\n"
+                f"{header}\nContent-Type: text/plain\n\n"
+                f"Please find Invoice 9001 attached. Remit as usual."
+            ),
+        ),
     ]
 
 

@@ -608,3 +608,38 @@ async def test_one_broken_mailbox_does_not_stop_the_others(  # noqa: ANN001
 
     assert totals["mailboxes"] == 3
     assert totals["errors"] == 1
+
+
+def _identical_sender_raw(uid_hint: str = "1") -> bytes:
+    # The "two identical invoices" case: the sender name is the company's own
+    # brand, but the address behind it is not theirs. A5 (display-name spoof)
+    # fires. Benign content; the tell is the mismatch, not the words.
+    return (
+        b'From: "Acme Payments" <billing@acme-secure-portal.example>\r\n'
+        b"To: pay@acme.com\r\n"
+        b"Subject: Invoice 9001\r\n"
+        b"Message-ID: <" + uid_hint.encode() + b"@acme-secure-portal.example>\r\n"
+        b"Content-Type: text/plain\r\n\r\n"
+        b"Please find Invoice 9001 attached. Kindly remit as usual.\r\n"
+    )
+
+
+async def test_an_identical_looking_sender_is_fetched_and_flagged(session):
+    """End-to-end over the worker: an invoice whose From name looks exactly like
+    the company's own, from an address that is not theirs, must be fetched,
+    detected and persisted as an alert — the full poll path, not just run_all."""
+    mailbox = await _connected_mailbox(session)
+    client = FakeImapClient(messages={202: _identical_sender_raw("202")})
+
+    summary = await sync_mailbox(session, mailbox, client_factory=_factory_for(client))
+
+    assert summary["ok"] is True
+    assert summary["fetched"] == 1
+    assert summary["alerted"] == 1, summary
+
+    alerts = (
+        (await session.execute(select(Alert).where(Alert.tenant_id == mailbox.tenant_id)))
+        .scalars()
+        .all()
+    )
+    assert len(alerts) == 1, "the identical-sender message raised no alert through the worker"
