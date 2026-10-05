@@ -386,7 +386,9 @@ async def test_graph_subscription_is_created_then_renewed(session, token, flags)
     assert await ensure_push(session, mailbox, transport=graph) is True
     sub = graph.subscriptions["sub-0"]
     assert sub["changeType"] == "created"
-    assert sub["resource"] == "users/pay@acme.com/mailFolders('inbox')/messages"
+    # /me, not users/{label}: a delegated token cannot subscribe to another
+    # user's folder, and the stored label is often not the real UPN (403).
+    assert sub["resource"] == "me/mailFolders('inbox')/messages"
     assert mailbox.push_subscription_id == "sub-0"
 
     # Plenty of time left: nothing to do.

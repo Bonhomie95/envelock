@@ -92,7 +92,11 @@ class GraphProvider(MailProvider):
         return {
             "changeType": "created,updated",
             "notificationUrl": self.webhook_url,
-            "resource": f"users/{mailbox}/mailFolders('inbox')/messages",
+            # Delegated token → me/..., never users/{label}: the stored label
+            # (e.g. admin@cyberlex.store) is not the account's real UPN, so
+            # users/{label} is "another user" and Graph denies it (403). me/
+            # resolves to the token's own mailbox. Matches the fetch path.
+            "resource": "me/mailFolders('inbox')/messages",
             "expirationDateTime": (datetime.now(UTC) + timedelta(days=2)).isoformat(),
             "clientState": client_state(tenant_id=tenant_id, mailbox=mailbox),
         }
