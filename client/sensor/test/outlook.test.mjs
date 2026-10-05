@@ -269,3 +269,17 @@ test("a slow Outlook load does not leave the 'not in Outlook' help on screen", a
   }
   assert.equal(doc.nodes.help.hidden, true, "the 'not in Outlook' help was left visible inside Outlook");
 });
+
+test("the pane counts the reads it has confirmed, for the live line", async () => {
+  // "Watching" alone read as "nothing happening"; the pane now shows how many
+  // reads it has vouched for. Pairing attests the open message, and each message
+  // opened after adds one.
+  const office = fakeOffice("cfo@acme.example", "<first@x>");
+  const server = envelockServer();
+  const { c } = controller(office, server);
+  await c.pair("ABCD-EFGH", "https://api.envelock.test");
+  assert.equal((await c.snapshot()).vouched, 1, "the open message should be counted at pairing");
+  await office.select("<second@x>");
+  await office.select("<third@x>");
+  assert.equal((await c.snapshot()).vouched, 3);
+});

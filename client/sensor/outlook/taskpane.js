@@ -34,6 +34,7 @@
     });
     var timer = null;
     var listeners = [];
+    var vouched = 0;  // reads this pane has confirmed as the owner's, this session
 
     function notify() {
       listeners.forEach(function (fn) {
@@ -78,6 +79,7 @@
       var id = currentMessageId();
       if (!id) return Promise.resolve(null);
       return client.attest(mailbox, id).then(function (result) {
+        vouched += 1;
         showWarning(result);
         return result;
       });
@@ -169,6 +171,7 @@
           deviceId: both[1],
           watching: Boolean(timer),
           warning: lastWarning,
+          vouched: vouched,
         };
       });
     }
@@ -186,6 +189,15 @@
         listeners.push(fn);
       },
     };
+  }
+
+  function ago(iso) {
+    if (!iso) return null;
+    var secs = Math.max(0, Math.round((Date.now() - new Date(iso).getTime()) / 1000));
+    if (secs < 45) return "just now";
+    if (secs < 90) return "a minute ago";
+    if (secs < 3600) return Math.round(secs / 60) + " min ago";
+    return Math.round(secs / 3600) + "h ago";
   }
 
   function mountView(controller, doc) {
@@ -220,6 +232,14 @@
           : e.lastError
             ? "Not reporting: " + e.lastError
             : "Connecting…";
+        // A visible sign of life, so "Watching" isn't the only feedback: when it
+        // last checked in, and how many reads it has confirmed as yours.
+        var checkin = ago(e.lastBeatAt) || "just now";
+        var n = s.vouched || 0;
+        $("live").textContent =
+          "Last check-in " + checkin + " · " + n + " read" + (n === 1 ? "" : "s") +
+          " confirmed yours this session";
+        $("live").classList.toggle("hidden", !e.live);
         $("device").textContent = (e.label || "This device") + " · " + s.deviceId;
       }).catch(function (err) {
         // Without this the pane sits on "Starting…" for ever and the person
