@@ -1,5 +1,8 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Check, Copy, Laptop, Loader2, Plus, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import {
+  Check, Copy, Laptop, Loader2, Plus, Trash2,
+  Mail, KeyRound, Pin,
+} from "lucide-react";
 import {
   ApiError,
   api,
@@ -102,111 +105,112 @@ function Countdown({ until, onExpired }: { until: string; onExpired: () => void 
   );
 }
 
+function Step({
+  n,
+  icon,
+  children,
+}: {
+  n: number;
+  icon: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <li className="flex gap-3">
+      <span
+        className="flex size-7 shrink-0 items-center justify-center rounded-full border border-[var(--accent)] text-sm font-semibold text-[var(--accent)]"
+        aria-hidden
+      >
+        {n}
+      </span>
+      <div className="min-w-0 flex-1 pt-0.5 text-sm leading-relaxed">
+        <span className="mr-1.5 inline-flex translate-y-0.5 text-[var(--accent)]" aria-hidden>
+          {icon}
+        </span>
+        {children}
+      </div>
+    </li>
+  );
+}
+
+/* Short, visual, Outlook-first. Everything that is a caveat rather than a step
+   (Microsoft's propagation delays, "App launch failed", other mail apps) lives
+   behind an expander, so the happy path is four lines a person can follow at a
+   glance — not three dense paragraphs they have to read to find the one step
+   that matters. */
 function InstallSteps() {
   const anyStore = STORES.chrome || STORES.edge || STORES.firefox;
   return (
-    <ol className="mt-4 space-y-4 text-xs leading-relaxed" role="list">
-      <li>
-        {/* Headed by the APP, not the account type. "Microsoft 365, Exchange or
-            Outlook.com" listed which accounts it works with, and people read
-            that as "web only" and went looking for desktop instructions that
-            were already right here. */}
-        <p className="font-semibold">
-          Outlook desktop app — Windows, Mac, and Outlook on the web
+    <div className="mt-4">
+      <ol className="space-y-3" role="list">
+        <Step n={1} icon={<Copy size={15} />}>
+          Copy the Outlook add-in link
+          <div className="mt-1.5 flex items-center gap-2">
+            <code className="flex-1 truncate rounded bg-[var(--bg-hover)] px-2 py-1 font-mono text-xs">
+              {OUTLOOK_MANIFEST}
+            </code>
+            <CopyButton text={OUTLOOK_MANIFEST} label="Copy the Outlook add-in link" />
+          </div>
+        </Step>
+        <Step n={2} icon={<Plus size={15} />}>
+          In Outlook: <b>Get Add-ins → My add-ins → Add a custom add-in → From URL</b>,
+          and paste it.
+        </Step>
+        <Step n={3} icon={<Mail size={15} />}>
+          <b>Open any email</b>, then click <b>Envelock sensor</b> on the ribbon
+          <span className="fg-3"> (under <b>…</b> on Mac and the web)</span>.
+        </Step>
+        <Step n={4} icon={<KeyRound size={15} />}>
+          Type the code above, then <Pin size={13} className="inline translate-y-0.5" aria-hidden />{" "}
+          <b>pin the pane</b> so it stays open.
+        </Step>
+      </ol>
+
+      <details className="mt-3 text-sm">
+        <summary className="fg-2 cursor-pointer select-none">Not showing up?</summary>
+        <p className="fg-3 mt-2 leading-relaxed">
+          The sensor only lives <b>inside an open email</b> — never in the Apps list or
+          the app launcher, where Microsoft shows “App launch failed”. After a central
+          deployment it can take a few hours to appear (and up to 24–72h to disappear
+          after removal). Restarting Outlook usually brings it forward.
         </p>
-        <p className="fg-2 mt-1">
-          Works with a Microsoft 365, Exchange or Outlook.com account. In Outlook,{" "}
-          <b>Get Add-ins → My add-ins → Add a custom add-in → From URL</b>, and
-          paste this. IT can deploy it to everyone from the Microsoft 365 admin
-          centre with the same address.
-        </p>
-        <div className="mt-2 flex items-center gap-2">
-          <code className="flex-1 truncate font-mono text-[11px]">{OUTLOOK_MANIFEST}</code>
-          <CopyButton text={OUTLOOK_MANIFEST} label="Copy the Outlook add-in address" />
+      </details>
+
+      <details className="mt-2 text-sm">
+        <summary className="fg-2 cursor-pointer select-none">Thunderbird or webmail instead?</summary>
+        <div className="fg-3 mt-2 space-y-2 leading-relaxed">
+          <p>
+            <b>Thunderbird:</b>{" "}
+            {THUNDERBIRD_LISTING ? (
+              <a className="accent underline underline-offset-4" href={THUNDERBIRD_LISTING} target="_blank" rel="noreferrer">
+                get it from addons.thunderbird.net
+              </a>
+            ) : (
+              <>in review — on Thunderbird Daily you can{" "}
+                <a className="accent underline underline-offset-4" href="/downloads/envelock-sensor-thunderbird.xpi" download>
+                  install the add-on from file
+                </a>; on release Thunderbird, use the browser extension for now.
+              </>
+            )}
+          </p>
+          <p>
+            <b>Webmail (Gmail, Outlook web):</b>{" "}
+            {anyStore ? (
+              <span className="inline-flex flex-wrap gap-x-3">
+                {STORES.chrome && <a className="accent underline underline-offset-4" href={STORES.chrome} target="_blank" rel="noreferrer">Chrome</a>}
+                {STORES.edge && <a className="accent underline underline-offset-4" href={STORES.edge} target="_blank" rel="noreferrer">Edge</a>}
+                {STORES.firefox && <a className="accent underline underline-offset-4" href={STORES.firefox} target="_blank" rel="noreferrer">Firefox</a>}
+              </span>
+            ) : (
+              <>
+                in review — for a pilot,{" "}
+                <a className="accent underline underline-offset-4" href="/downloads/envelock-sensor-chrome.zip" download>download it</a>,
+                unzip, open <b>chrome://extensions</b>, turn on <b>Developer mode</b>, choose <b>Load unpacked</b>.
+              </>
+            )}
+          </p>
         </div>
-        {/* The step everyone misses. A mail add-in only runs inside an open
-            message: it is not in the Apps list, and opening it from there or
-            from the admin centre gives Microsoft's "App launch failed", which
-            reads as our bug. Say where it actually is. */}
-        <p className="fg-2 mt-2">
-          Then <b>open any email</b> and click <b>Envelock sensor</b> on the ribbon above
-          the message — on Mac and the web it may be under <b>…</b> (More apps). That is
-          where the pane asks for the code below. <b>Pin it</b> so it stays open between
-          messages.
-        </p>
-        <p className="fg-3 mt-1">
-          It will not appear in the Apps list or the admin centre's app launcher — mail
-          add-ins only run inside a message. A central deployment can take up to 24 hours
-          to show up, and <b>removing</b> one takes 24 to 72 hours — so an add-in you have
-          already removed keeps appearing meanwhile. That is Microsoft's propagation, not
-          a fault. Restarting Outlook often brings a change forward.
-        </p>
-      </li>
-      <li>
-        <p className="font-semibold">Thunderbird</p>
-        {THUNDERBIRD_LISTING ? (
-          <p className="fg-2 mt-1">
-            <a
-              className="accent underline underline-offset-4"
-              href={THUNDERBIRD_LISTING}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Get it from addons.thunderbird.net
-            </a>
-            , then open a message and pair it with the code below.
-          </p>
-        ) : (
-          <p className="fg-2 mt-1">
-            Awaiting review on addons.thunderbird.net. Thunderbird only installs signed
-            add-ons, so the build below works on <b>Thunderbird Daily</b> or a developer
-            build —{" "}
-            <a
-              className="accent underline underline-offset-4"
-              href="/downloads/envelock-sensor-thunderbird.xpi"
-              download
-            >
-              download the add-on
-            </a>
-            , then <b>Add-ons and Themes → ⚙ → Install Add-on From File</b>. On release
-            Thunderbird it will be refused as unverified; use the browser extension with
-            your webmail in the meantime.
-          </p>
-        )}
-      </li>
-      <li>
-        <p className="font-semibold">Webmail in a browser — Gmail, Outlook on the web, your provider's webmail</p>
-        {anyStore ? (
-          <p className="fg-2 mt-1 flex flex-wrap gap-x-3 gap-y-1">
-            {STORES.chrome && (
-              <a className="accent underline underline-offset-4" href={STORES.chrome} target="_blank" rel="noreferrer">
-                Chrome
-              </a>
-            )}
-            {STORES.edge && (
-              <a className="accent underline underline-offset-4" href={STORES.edge} target="_blank" rel="noreferrer">
-                Edge
-              </a>
-            )}
-            {STORES.firefox && (
-              <a className="accent underline underline-offset-4" href={STORES.firefox} target="_blank" rel="noreferrer">
-                Firefox
-              </a>
-            )}
-          </p>
-        ) : (
-          <p className="fg-2 mt-1">
-            The extension is in review with the browser stores. For a pilot on
-            Chrome or Edge now:{" "}
-            <a className="accent underline underline-offset-4" href="/downloads/envelock-sensor-chrome.zip" download>
-              download it
-            </a>
-            , unzip it, open <b>chrome://extensions</b>, turn on <b>Developer mode</b> and
-            choose <b>Load unpacked</b>.
-          </p>
-        )}
-      </li>
-    </ol>
+      </details>
+    </div>
   );
 }
 
