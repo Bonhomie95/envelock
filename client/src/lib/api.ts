@@ -97,7 +97,7 @@ export interface ConnectionPlan {
     aliases: string[];
     notes: string | null;
   };
-  imap: { host: string | null; port: number };
+  imap: { host: string | null; port: number; enablement?: string | null };
   dns: { dmarc_policy: string | null; spf_present: boolean };
   recommended: ConnectMethod;
   alternatives: ConnectMethod[];

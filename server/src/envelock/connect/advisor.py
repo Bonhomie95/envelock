@@ -48,6 +48,12 @@ class Provider:
     imap_host: str | None = None
     imap_port: int = 993
     notes: str | None = None
+    #: Set for providers that ship IMAP OFF by default or require an
+    #: app-specific password — the usual cause of a "correct password, still
+    #: rejected" connect failure. Surfaced in the advisor and on an IMAP auth
+    #: error so the user is told to flip the provider-side switch, not left
+    #: guessing.
+    imap_setup: str | None = None
     methods: tuple[Method, ...] = field(default_factory=tuple)
 
 
@@ -244,6 +250,13 @@ PROVIDERS: tuple[Provider, ...] = (
         name="Zoho Mail",
         mx_patterns=("zoho.com", "zohomail.com", "zoho.eu"),
         imap_host="imappro.zoho.com",
+        imap_setup=(
+            "Zoho ships IMAP turned OFF. Enable it first (Zoho Mail → Settings → "
+            "Mail Accounts → IMAP Access), then create an app-specific password "
+            "(Settings → Security → App Passwords) and use that, not your normal "
+            "password. On a non-US data centre the host is imappro.zoho.eu / .in "
+            "/ .com.au — match your Zoho region."
+        ),
         methods=(_ADMIN_API, _imap("imappro.zoho.com"), _FORWARD),
     ),
     Provider(
@@ -258,6 +271,11 @@ PROVIDERS: tuple[Provider, ...] = (
         name="Fastmail",
         mx_patterns=("messagingengine.com", "fastmail.com"),
         imap_host="imap.fastmail.com",
+        imap_setup=(
+            "Fastmail requires an app password for IMAP — your normal password is "
+            "refused. Create one under Settings → Privacy & Security → App "
+            "Passwords and use that."
+        ),
         methods=(_ADMIN_API, _imap("imap.fastmail.com"), _FORWARD),
     ),
     Provider(
@@ -279,6 +297,10 @@ PROVIDERS: tuple[Provider, ...] = (
         name="Yandex 360",
         mx_patterns=("yandex.net", "yandex.ru", "mx.yandex.net"),
         imap_host="imap.yandex.com",
+        imap_setup=(
+            "Yandex ships IMAP off. Turn it on (Mail → Settings → Email clients → "
+            '"From the imap.yandex.com server via IMAP") and use an app password.'
+        ),
         methods=_standard("imap.yandex.com"),
     ),
     Provider(
@@ -357,6 +379,11 @@ PROVIDERS: tuple[Provider, ...] = (
         name="VK / Mail.ru for Business",
         mx_patterns=("mail.ru", "emx.mail.ru"),
         imap_host="imap.mail.ru",
+        imap_setup=(
+            "Mail.ru requires an app password for external IMAP clients — create "
+            "one in the account security settings and use it instead of your "
+            "normal password."
+        ),
         methods=_standard("imap.mail.ru"),
     ),
     Provider(
@@ -365,6 +392,10 @@ PROVIDERS: tuple[Provider, ...] = (
         aliases=("Worksmobile",),
         mx_patterns=("naver.com", "worksmobile.com"),
         imap_host="imap.worksmobile.com",
+        imap_setup=(
+            "Naver requires IMAP to be enabled in the mailbox settings before an "
+            "external client can connect."
+        ),
         methods=_standard("imap.worksmobile.com"),
     ),
 )
@@ -407,3 +438,22 @@ def imap_host_guess(provider: Provider, domain: str, mx_hosts: list[str]) -> str
         if first.startswith(("mail.", "imap.", "mx.")):
             return first.replace("mx.", "mail.", 1)
     return f"mail.{domain}"
+
+
+def imap_setup_for_host(host: str | None) -> str | None:
+    """The IMAP-enablement caveat for whichever provider owns this host, if any.
+
+    Matched by the host itself (imappro.zoho.com → Zoho) and by the provider's
+    MX patterns appearing in it, so a connect failure can name the provider-side
+    switch to flip rather than only saying "password rejected"."""
+    if not host:
+        return None
+    h = host.lower()
+    for prov in PROVIDERS:
+        if not prov.imap_setup:
+            continue
+        if prov.imap_host and prov.imap_host.lower() in h:
+            return prov.imap_setup
+        if any(pat.lower() in h for pat in prov.mx_patterns):
+            return prov.imap_setup
+    return None

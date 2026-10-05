@@ -305,11 +305,16 @@ async def verify_imap_credentials(
     if ok:
         return ImapVerifyResult(True, "signed in")
     if kind == "auth":
-        return ImapVerifyResult(
-            False,
+        from envelock.connect.advisor import imap_setup_for_host
+
+        base = (
             "the server rejected the username or password — use an app-specific "
-            "password if your provider requires one",
+            "password if your provider requires one"
         )
+        note = imap_setup_for_host(host)
+        # Name the provider-side switch when we know it ships IMAP off or needs an
+        # app password — the common reason a correct password is still rejected.
+        return ImapVerifyResult(False, f"{base}. {note}" if note else base)
     return ImapVerifyResult(
         False,
         "could not reach the IMAP server — check the server, port and the "

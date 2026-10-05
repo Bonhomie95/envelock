@@ -399,6 +399,7 @@ async def providers() -> dict:
                 "aliases": list(p.aliases),
                 "imap_host": p.imap_host,
                 "notes": p.notes,
+                "imap_setup": p.imap_setup,
                 "best_method": p.methods[0].name if p.methods else None,
             }
             for p in PROVIDERS

@@ -159,6 +159,15 @@ export default function ConnectionAdvisor({
               </div>
             )}
 
+            {plan.imap.enablement && (
+              <div className="mt-3 rounded-lg border border-[var(--warn)] bg-[var(--bg-raised)] p-3">
+                <p className="text-xs font-semibold text-[var(--warn)]">
+                  Before you connect over IMAP
+                </p>
+                <p className="fg-2 mt-1 text-xs leading-relaxed">{plan.imap.enablement}</p>
+              </div>
+            )}
+
             {/* DNS posture — free, and worth showing whether or not they connect */}
             <div className="mt-4 flex flex-wrap gap-x-6 gap-y-1 border-t pt-4">
               <span className="mono-xs">

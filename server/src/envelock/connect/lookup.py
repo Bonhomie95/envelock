@@ -135,7 +135,13 @@ def plan_payload(plan: ConnectionPlan) -> dict:
             "aliases": list(plan.provider.aliases),
             "notes": plan.provider.notes,
         },
-        "imap": {"host": plan.imap_host, "port": plan.imap_port},
+        "imap": {
+            "host": plan.imap_host,
+            "port": plan.imap_port,
+            # Present only when the provider ships IMAP off / needs an app
+            # password; the UI shows it before the user hits a login failure.
+            "enablement": plan.provider.imap_setup,
+        },
         "dns": {"dmarc_policy": plan.dmarc, "spf_present": plan.spf},
         "recommended": method_payload(plan.recommended),
         "alternatives": [method_payload(m) for m in plan.alternatives],
