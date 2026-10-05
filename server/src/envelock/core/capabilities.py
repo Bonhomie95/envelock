@@ -212,7 +212,12 @@ _CAPABILITY_GUIDANCE: dict[Capability, tuple[str, str]] = {
     ),
     Capability.READ_SESSIONS: (
         "alert on unknown-IP, new-country and new-device logins",
-        "install the browser/Outlook sensor, or connect via Microsoft 365 / Google Workspace",
+        # The Microsoft mail connect deliberately omits the AuditLog scope (it
+        # needs org-admin consent), so a Microsoft-connected mailbox gets
+        # sign-in visibility from the SENSOR, not from the mail connection.
+        # Google Workspace's connect does include sign-in reports.
+        "install the browser/Outlook sensor (Google Workspace includes this; "
+        "Microsoft 365 sign-in logs need separate org-admin consent)",
     ),
     Capability.READ_SERVER_RULES: (
         "detect malicious mailbox rules and hidden forwarding",
