@@ -22,14 +22,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from envelock.channels.mail import api_enforce, enforce
-from envelock.channels.mail.api_fetch import gmail_fetch_raw, graph_fetch_raw
+from envelock.channels.mail.api_fetch import (
+    gmail_fetch_raw,
+    graph_fetch_raw,
+    graph_read_states,
+)
 from envelock.channels.mail.forward_runner import _recipients
 from envelock.channels.mail.oauth_refresh import current_access_token
 from envelock.channels.mail.parser import parse_message_async
 from envelock.config import get_settings
 from envelock.core.enums import AlertTier, MailboxClass, SourceMechanism
 from envelock.db import get_sessionmaker
-from envelock.models import Domain, Mailbox, Message
+from envelock.models import Domain, Mailbox, MailboxCredential, Message
 from envelock.notify.dispatch import deliver_pending
 from envelock.platform.alerts import AuditAction, record_audit
 from envelock.platform.pipeline import analyse_event
@@ -157,7 +161,65 @@ async def _run_requested_quarantines(
     return done
 
 
+async def _watch_reads_graph(
+    session: AsyncSession,
+    mailbox: Mailbox,
+    cred: MailboxCredential,
+    *,
+    access_token: str,
+    owned: frozenset[str],
+    transport=None,  # noqa: ANN001 — api_fetch.HttpTransport
+) -> dict:
+    """Silent-access (C11) for a Graph mailbox: a message read while none of the
+    owner's sensor devices were open is "someone else opened your mail".
+
+    The IMAP worker has had this for IMAP mailboxes; a Graph mailbox got the
+    sensor's inbound detections but never this poll-time read-watch, so the
+    sensor's headline promise was inert on Microsoft 365. Graph exposes isRead,
+    so the mechanism is the same: snapshot the unread set, and on the next poll
+    anything that left it by being READ (not deleted) is a read to judge.
+    """
+    from envelock.platform import sensor as sensor_rules
+
+    armed = bool(mailbox.silent_access_armed) and await sensor_rules.has_enrolled_sensor(
+        session, mailbox_id=mailbox.id
+    )
+    if not armed:
+        # Drop any stale snapshot so re-arming starts from a fresh baseline
+        # rather than reporting every read since it was switched off.
+        cred.imap_unseen_uids = None
+        return {"observed": 0, "alerted": 0}
+
+    try:
+        states = await graph_read_states(access_token=access_token, transport=transport)
+    except Exception as exc:  # noqa: BLE001 — a failed look is not evidence of a read
+        logger.info("graph read-watch skipped for %s: %s", mailbox.id, exc)
+        return {"observed": 0, "alerted": 0}
+
+    previous = set(cred.imap_unseen_uids or [])
+    current_unread = [st.ref for st in states if not st.is_read]
+    # Read since last poll: was in the unread snapshot, and is present now AND
+    # read. A ref that merely vanished (deleted/moved) is NOT a read, so it is
+    # deliberately not counted — matching the IMAP watch's intent.
+    became_read = [st for st in states if st.is_read and st.ref in previous]
+
+    cred.imap_unseen_uids = current_unread[: sensor_rules.MAX_TRACKED_UNSEEN]
+
+    alerted = 0
+    for st in became_read:
+        verdict = await sensor_rules.evaluate_read(
+            session,
+            mailbox=mailbox,
+            message_ref=st.message_id or f"graph:{st.ref}",
+            owned_domains=owned,
+        )
+        alerted += int(verdict.alerted)
+    return {"observed": len(became_read), "alerted": alerted}
+
+
 async def sync_oauth_mailbox(
+
+
     session: AsyncSession,
     mailbox: Mailbox,
     *,
@@ -263,6 +325,21 @@ async def sync_oauth_mailbox(
         transport=write_transport,
     )
 
+    # Silent-access read-watch. Graph only for now — Gmail's read state is the
+    # UNREAD label and needs its own diff, tracked separately.
+    reads = {"observed": 0, "alerted": 0}
+    if provider != "google":
+        cred = (
+            await session.execute(
+                select(MailboxCredential).where(MailboxCredential.mailbox_id == mailbox.id)
+            )
+        ).scalar_one_or_none()
+        if cred is not None:
+            reads = await _watch_reads_graph(
+                session, mailbox, cred,
+                access_token=access_token, owned=owned, transport=transport,
+            )
+
     mailbox.last_sync_at = datetime.now(UTC)
     mailbox.sync_requested_at = None  # answers any queued push / "Sync now"
     await session.commit()
@@ -272,6 +349,7 @@ async def sync_oauth_mailbox(
         "alerted": alerted,
         "quarantined": quarantined,
         "rewritten": rewritten,
+        "silent_access_alerts": reads["alerted"],
     }
 
 

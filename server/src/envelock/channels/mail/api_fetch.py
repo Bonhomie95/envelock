@@ -69,6 +69,19 @@ class FetchedMessage:
     raw: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class ReadState:
+    """One inbox message's read/unread state, for the silent-access watch.
+
+    `ref` is Graph's message id (the stable snapshot key); `message_id` is the
+    RFC 5322 Message-ID the sensor attests against; `is_read` is the current
+    read flag."""
+
+    ref: str
+    message_id: str | None
+    is_read: bool
+
+
 def _bearer(token: str) -> dict:
     return {"Authorization": f"Bearer {token}"}
 
@@ -200,6 +213,44 @@ async def graph_fetch_raw(
     return out
 
 
+async def graph_read_states(
+    *,
+    access_token: str,
+    limit: int = 200,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> list[ReadState]:
+    """Current read/unread state of recent inbox messages, for C11 silent-access.
+
+    One cheap projection call — id, isRead, internetMessageId — on /me (a
+    delegated token reads its own mailbox; /users/{label} 403s when the stored
+    label is not the account's real UPN). The poller diffs this against the
+    previous snapshot to find messages that were read since the last cycle."""
+    transport = transport or HttpxTransport()
+    headers = _bearer(access_token)
+    body = await _retry(
+        lambda: transport.get_json(
+            f"{GRAPH_API}/me/mailFolders/inbox/messages?$top={limit}"
+            f"&$select=id,isRead,internetMessageId&$orderby=receivedDateTime%20desc",
+            headers=headers,
+        ),
+        backoff=backoff,
+    )
+    out: list[ReadState] = []
+    for m in body.get("value", []) or []:
+        ref = m.get("id")
+        if not ref:
+            continue
+        out.append(
+            ReadState(
+                ref=ref,
+                message_id=(m.get("internetMessageId") or None),
+                is_read=bool(m.get("isRead")),
+            )
+        )
+    return out
+
+
 async def graph_fetch(
     *,
     access_token: str,
@@ -238,4 +289,5 @@ __all__ = [
     "gmail_fetch_raw",
     "graph_fetch",
     "graph_fetch_raw",
+    "graph_read_states",
 ]
