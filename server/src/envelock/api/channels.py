@@ -1180,11 +1180,13 @@ async def backfill(
         s in {SourceMechanism.IMAP_IDLE.value, SourceMechanism.IMAP_POLL.value}
         for s in (mailbox.sources or [])
     )
-    # Graph backfills too now (previously only IMAP ran; a Microsoft 365 mailbox
-    # onboarded with cold A9/A12 baselines). Gmail history needs its own query
-    # path and is not wired yet, so it still returns the plan only.
-    is_graph = SourceMechanism.GRAPH_API.value in (mailbox.sources or [])
-    runnable = is_imap or is_graph
+    # OAuth mailboxes (Microsoft 365 / Gmail) backfill too now — previously only
+    # IMAP ran, so an API-connected mailbox onboarded with cold A9/A12 baselines.
+    is_oauth = any(
+        s in {SourceMechanism.GRAPH_API.value, SourceMechanism.GMAIL_API.value}
+        for s in (mailbox.sources or [])
+    )
+    runnable = is_imap or is_oauth
 
     response = {
         "mailbox": mailbox.address,
@@ -1244,7 +1246,10 @@ async def backfill(
             if live is None:
                 return {"skipped": "mailbox removed"}
             job.progress["mailbox"] = live.address
-            if SourceMechanism.GRAPH_API.value in (live.sources or []):
+            if any(
+                src in {SourceMechanism.GRAPH_API.value, SourceMechanism.GMAIL_API.value}
+                for src in (live.sources or [])
+            ):
                 from envelock.workers.oauth_fetch import backfill_oauth_mailbox
 
                 return await backfill_oauth_mailbox(bg_session, live, days=window)

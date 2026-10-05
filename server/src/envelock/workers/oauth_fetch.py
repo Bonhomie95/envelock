@@ -23,7 +23,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from envelock.channels.mail import api_enforce, enforce
 from envelock.channels.mail.api_fetch import (
+    gmail_fetch_history,
     gmail_fetch_raw,
+    gmail_message_id,
+    gmail_unread_ids,
     graph_fetch_history,
     graph_fetch_raw,
     graph_read_states,
@@ -218,7 +221,58 @@ async def _watch_reads_graph(
     return {"observed": len(became_read), "alerted": alerted}
 
 
+async def _watch_reads_gmail(
+    session: AsyncSession,
+    mailbox: Mailbox,
+    cred: MailboxCredential,
+    *,
+    access_token: str,
+    owned: frozenset[str],
+    transport=None,  # noqa: ANN001 — api_fetch.HttpTransport
+) -> dict:
+    """Silent-access (C11) for a Gmail mailbox. Read state is the UNREAD label,
+    so the snapshot is the set of currently-unread ids; anything that left it is
+    a read, and we fetch just those few messages' Message-ID for the attestation
+    match. A deleted message returns no id and is not counted as a read."""
+    from envelock.platform import sensor as sensor_rules
+
+    armed = bool(mailbox.silent_access_armed) and await sensor_rules.has_enrolled_sensor(
+        session, mailbox_id=mailbox.id
+    )
+    if not armed:
+        cred.imap_unseen_uids = None
+        return {"observed": 0, "alerted": 0}
+
+    try:
+        current_unread = await gmail_unread_ids(access_token=access_token, transport=transport)
+    except Exception as exc:  # noqa: BLE001 — a failed look is not evidence of a read
+        logger.info("gmail read-watch skipped for %s: %s", mailbox.id, exc)
+        return {"observed": 0, "alerted": 0}
+
+    previous = set(cred.imap_unseen_uids or [])
+    current_set = set(current_unread)
+    became_read = [gid for gid in previous if gid not in current_set]
+
+    cred.imap_unseen_uids = current_unread[: sensor_rules.MAX_TRACKED_UNSEEN]
+
+    alerted = observed = 0
+    for gid in became_read:
+        message_id = await gmail_message_id(
+            access_token=access_token, gmail_id=gid, transport=transport
+        )
+        if message_id is None:
+            continue  # gone from the mailbox — a delete is not a read
+        observed += 1
+        verdict = await sensor_rules.evaluate_read(
+            session, mailbox=mailbox, message_ref=message_id, owned_domains=owned,
+        )
+        alerted += int(verdict.alerted)
+    return {"observed": observed, "alerted": alerted}
+
+
 async def sync_oauth_mailbox(
+
+
 
 
     session: AsyncSession,
@@ -326,20 +380,19 @@ async def sync_oauth_mailbox(
         transport=write_transport,
     )
 
-    # Silent-access read-watch. Graph only for now — Gmail's read state is the
-    # UNREAD label and needs its own diff, tracked separately.
+    # Silent-access read-watch — Graph via isRead, Gmail via the UNREAD label.
     reads = {"observed": 0, "alerted": 0}
-    if provider != "google":
-        cred = (
-            await session.execute(
-                select(MailboxCredential).where(MailboxCredential.mailbox_id == mailbox.id)
-            )
-        ).scalar_one_or_none()
-        if cred is not None:
-            reads = await _watch_reads_graph(
-                session, mailbox, cred,
-                access_token=access_token, owned=owned, transport=transport,
-            )
+    cred = (
+        await session.execute(
+            select(MailboxCredential).where(MailboxCredential.mailbox_id == mailbox.id)
+        )
+    ).scalar_one_or_none()
+    if cred is not None:
+        watch = _watch_reads_gmail if provider == "google" else _watch_reads_graph
+        reads = await watch(
+            session, mailbox, cred,
+            access_token=access_token, owned=owned, transport=transport,
+        )
 
     mailbox.last_sync_at = datetime.now(UTC)
     mailbox.sync_requested_at = None  # answers any queued push / "Sync now"
@@ -459,17 +512,25 @@ async def backfill_oauth_mailbox(
     if tok is None:
         return {"ok": False, "reason": "no usable oauth token", "analysed": 0}
     access_token, provider = tok
-    if provider == "google":
-        # Gmail history backfill needs its own query path; not wired yet.
-        return {"ok": False, "reason": "gmail backfill not supported yet", "analysed": 0}
 
-    since_iso = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    since = datetime.now(UTC) - timedelta(days=days)
     try:
-        fetched = await graph_fetch_history(
-            access_token=access_token, since_iso=since_iso, limit=limit, transport=transport,
-        )
+        if provider == "google":
+            fetched = await gmail_fetch_history(
+                access_token=access_token,
+                after_date=since.strftime("%Y/%m/%d"),
+                limit=limit,
+                transport=transport,
+            )
+        else:
+            fetched = await graph_fetch_history(
+                access_token=access_token,
+                since_iso=since.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                limit=limit,
+                transport=transport,
+            )
     except Exception as exc:  # noqa: BLE001 — provider/network errors are non-fatal
-        logger.warning("graph backfill fetch failed for mailbox %s: %s", mailbox.id, exc)
+        logger.warning("oauth backfill fetch failed for mailbox %s: %s", mailbox.id, exc)
         return {"ok": False, "reason": str(exc), "analysed": 0}
 
     owned = await _owned_domains(session, mailbox.tenant_id)
@@ -482,7 +543,10 @@ async def backfill_oauth_mailbox(
             item.raw,
             tenant_id=mailbox.tenant_id,
             mailbox_id=mailbox.id,
-            source=SourceMechanism.GRAPH_API,
+            source=(
+                SourceMechanism.GMAIL_API if provider == "google"
+                else SourceMechanism.GRAPH_API
+            ),
             owned_domains=owned,
             remediable=False,  # never quarantine historical mail
             source_ref=item.ref,

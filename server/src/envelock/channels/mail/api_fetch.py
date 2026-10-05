@@ -145,6 +145,111 @@ async def gmail_fetch_raw(
     return out
 
 
+async def gmail_unread_ids(
+    *,
+    access_token: str,
+    limit: int = 500,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> list[str]:
+    """Gmail ids of messages currently UNREAD in the inbox — the silent-access
+    snapshot. Read state on Gmail is the UNREAD label, so `is:unread` is the
+    whole query; the poller diffs this set between cycles."""
+    transport = transport or HttpxTransport()
+    headers = _bearer(access_token)
+    out: list[str] = []
+    page = ""
+    while len(out) < limit:
+        url = (
+            f"{GMAIL_API}/users/me/messages?maxResults=500"
+            f"&q={quote('in:inbox is:unread')}"
+        )
+        if page:
+            url += f"&pageToken={page}"
+        body = await _retry(lambda u=url: transport.get_json(u, headers=headers), backoff=backoff)
+        for ref in body.get("messages", []) or []:
+            if ref.get("id"):
+                out.append(ref["id"])
+        page = body.get("nextPageToken") or ""
+        if not page:
+            break
+    return out[:limit]
+
+
+async def gmail_message_id(
+    *,
+    access_token: str,
+    gmail_id: str,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> str | None:
+    """The RFC 5322 Message-ID of one Gmail message, for the C11 attestation
+    match. None if the message is gone (a deleted message is not a read) or has
+    no such header."""
+    transport = transport or HttpxTransport()
+    headers = _bearer(access_token)
+    try:
+        detail = await _retry(
+            lambda: transport.get_json(
+                f"{GMAIL_API}/users/me/messages/{gmail_id}"
+                f"?format=metadata&metadataHeaders=Message-ID",
+                headers=headers,
+            ),
+            backoff=backoff,
+        )
+    except Exception:  # noqa: BLE001 — 404 (deleted) or transient; treat as "no read"
+        return None
+    for h in (detail.get("payload") or {}).get("headers", []) or []:
+        if (h.get("name") or "").lower() == "message-id":
+            return h.get("value") or None
+    return None
+
+
+async def gmail_fetch_history(
+    *,
+    access_token: str,
+    after_date: str,
+    limit: int,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> list[FetchedMessage]:
+    """Inbox messages received on or after ``after_date`` (Gmail YYYY/MM/DD), up
+    to ``limit`` — the onboarding backfill over Gmail. Paginates nextPageToken
+    and pulls each message's raw MIME (format=raw)."""
+    transport = transport or HttpxTransport()
+    headers = _bearer(access_token)
+    q = f"in:inbox after:{after_date}"
+    ids: list[str] = []
+    page = ""
+    while len(ids) < limit:
+        url = f"{GMAIL_API}/users/me/messages?maxResults=500&q={quote(q)}"
+        if page:
+            url += f"&pageToken={page}"
+        body = await _retry(lambda u=url: transport.get_json(u, headers=headers), backoff=backoff)
+        for ref in body.get("messages", []) or []:
+            if ref.get("id"):
+                ids.append(ref["id"])
+        page = body.get("nextPageToken") or ""
+        if not page:
+            break
+    ids = ids[:limit]
+
+    out: list[FetchedMessage] = []
+    for mid in ids:
+        detail = await _retry(
+            lambda m=mid: transport.get_json(
+                f"{GMAIL_API}/users/me/messages/{m}?format=raw", headers=headers
+            ),
+            backoff=backoff,
+        )
+        raw_b64 = detail.get("raw")
+        if raw_b64:
+            out.append(
+                FetchedMessage(mid, base64.urlsafe_b64decode(raw_b64.encode() + b"==="))
+            )
+    return out
+
+
 async def gmail_fetch(
     *,
     access_token: str,
@@ -332,6 +437,9 @@ __all__ = [
     "HttpTransport",
     "HttpxTransport",
     "gmail_fetch",
+    "gmail_fetch_history",
+    "gmail_message_id",
+    "gmail_unread_ids",
     "gmail_fetch_raw",
     "graph_fetch",
     "graph_fetch_history",

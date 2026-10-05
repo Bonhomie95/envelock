@@ -791,7 +791,10 @@ async def _run_queued_backfill(mailbox_id, days: int, *, client_factory=None) ->
                 # Graph backfill, not the IMAP one (which would fail for want of
                 # an IMAP credential). The claim loop is source-agnostic, so the
                 # fan-out happens here.
-                if SourceMechanism.GRAPH_API.value in (mailbox.sources or []):
+                if any(
+                    src in {SourceMechanism.GRAPH_API.value, SourceMechanism.GMAIL_API.value}
+                    for src in (mailbox.sources or [])
+                ):
                     from envelock.workers.oauth_fetch import backfill_oauth_mailbox
 
                     outcome = await backfill_oauth_mailbox(session, mailbox, days=days)
