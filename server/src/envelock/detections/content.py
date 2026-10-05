@@ -398,6 +398,40 @@ _BRAND_BAIT = re.compile(
 )
 
 
+#: Query parameters a redirector hides its real destination in. Covers Gmail's
+#: `google.com/url?q=`, Microsoft SafeLinks (`?url=`), Proofpoint and the generic
+#: open-redirect shapes (`?u=`, `?redirect=`, `?target=`, `?dest=`, `?r=`).
+_REDIRECT_PARAMS = ("q", "url", "u", "redirect", "redirect_uri", "target", "dest", "r", "to")
+
+
+def unwrap_redirect(url: str, *, _depth: int = 0) -> str | None:
+    """The real destination hidden inside a redirector link, or None.
+
+    A wrapped link (`https://www.google.com/url?q=http://203.0.113.10/...`) shows
+    a safe host while the true destination sits in a query parameter, so judging
+    it by host alone misses exactly the phishing that arrives through Gmail's
+    wrapper, Microsoft SafeLinks, or any open redirect. Follows one nested wrap
+    (safelinks-over-shortener is real) and stops, so a crafted chain can't loop.
+    """
+    from urllib.parse import parse_qs, unquote, urlsplit
+
+    if _depth > 2:
+        return None
+    try:
+        query = urlsplit(url).query
+    except ValueError:
+        return None
+    if not query:
+        return None
+    params = parse_qs(query)
+    for name in _REDIRECT_PARAMS:
+        for raw in params.get(name, []):
+            inner = unquote(raw).strip()
+            if re.match(r"^https?://", inner, re.IGNORECASE):
+                return unwrap_redirect(inner, _depth=_depth + 1) or inner
+    return None
+
+
 def score_url(url: str, *, sender: str, ctx: DetectionContext) -> list[str]:
     """Reasons a single URL looks like phishing. Shared by B1 and B3 (quishing) so
     a link is judged identically whether it arrived in the body or inside a QR
@@ -416,6 +450,19 @@ def score_url(url: str, *, sender: str, ctx: DetectionContext) -> list[str]:
         reasons.append("bare IP address instead of a hostname")
     if "@" in url.split("//", 1)[-1].split("/", 1)[0]:
         reasons.append("credentials embedded in the URL")
+
+    # Judge the TRUE destination of a redirector-wrapped link, not the safe
+    # wrapper host. Without this, a bare-IP or threat-feed destination hidden
+    # behind google.com/url, SafeLinks or any ?url= redirect scored clean.
+    inner = unwrap_redirect(url)
+    if inner is not None:
+        inner_reasons = score_url(inner, sender=sender, ctx=ctx)
+        if inner_reasons:
+            dest = _host_of(inner)
+            reasons.append(f"redirects to {dest}")
+            for r in inner_reasons:
+                if r not in reasons:
+                    reasons.append(r)
     return reasons
 
 
