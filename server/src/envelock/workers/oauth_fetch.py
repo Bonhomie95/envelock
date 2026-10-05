@@ -92,7 +92,7 @@ async def _write_back(
         link_map=mapping,
         redirect_base=settings.redirect_base,
         banner=banner,
-        mailbox_address=mailbox.address,
+        # Delegated token → /me (see the fetch note); /users/{label} 403s.
         transport=transport,
     )
 
@@ -107,7 +107,7 @@ async def _quarantine(
     return await api_enforce.graph_quarantine(
         access_token=access_token,
         message_id=ref,
-        mailbox_address=mailbox.address,
+        # Delegated token → /me (see the fetch note); /users/{label} 403s.
         transport=transport,
     )
 
@@ -188,9 +188,16 @@ async def sync_oauth_mailbox(
         if provider == "google":
             fetched = await gmail_fetch_raw(access_token=access_token, transport=transport)
         else:
+            # Delegated OAuth token: read as /me, never /users/{address}. The
+            # token IS the signed-in user, and /me resolves to their own mailbox
+            # whatever label we stored. Passing the label built
+            # /users/admin@cyberlex.store, a name Graph does not know when the
+            # account's real UPN is different (e.g. the tenant's .onmicrosoft.com
+            # address) — a 403 on every poll, so nothing was ever fetched.
+            # /users/{upn} is only for app-permission connections, which this
+            # delegated connect is not.
             fetched = await graph_fetch_raw(
                 access_token=access_token,
-                mailbox_address=mailbox.address,
                 transport=transport,
             )
     except Exception as exc:  # noqa: BLE001 — provider/network errors are non-fatal
