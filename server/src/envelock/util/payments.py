@@ -272,9 +272,25 @@ _CCY_CANON = {
 }
 
 
+_URL_IN_TEXT = re.compile(r"https?://\S+", re.I)
+
+
 def extract_invoice_numbers(text: str) -> set[str]:
-    """Invoice references in the text, uppercased — the A13 duplicate-billing key."""
-    return {m.group(1).upper() for m in _INVOICE_RE.finditer(normalise_text(text))}
+    """Invoice references in the text, uppercased — the A13 duplicate-billing key.
+
+    URLs are stripped first and a digit is required: without this the matcher hit
+    the word "invoice" inside a billing URL and captured path fragments
+    ("INVOICE/PAY-", "HTTPS", "ING-AND-PAYMENTS/") as invoice numbers, which then
+    appeared verbatim in the alert title. A real invoice number always carries a
+    digit, so that one condition drops the url-fragment noise while keeping
+    genuine references like INV-2024-001 or 2024/118."""
+    cleaned = _URL_IN_TEXT.sub(" ", normalise_text(text))
+    out: set[str] = set()
+    for m in _INVOICE_RE.finditer(cleaned):
+        num = m.group(1).upper().strip("-/")
+        if any(c.isdigit() for c in num):
+            out.add(num)
+    return out
 
 
 def extract_amounts(text: str) -> list[float]:
