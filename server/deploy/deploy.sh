@@ -192,11 +192,17 @@ chmod o+x "$HOME" "$APPS" "$APPS/client" "$APPS/admin"
 chmod -R a+rX "$APPS/client/dist" "$APPS/admin/dist"
 sudo systemctl restart "$API_UNIT"
 # The worker only exists on a split-custody deployment; restart it if it is there.
-# A file test, not `systemctl list-unit-files | grep -q`: under pipefail that
-# pipeline fails whenever grep exits before the (long) listing is written, and
-# the worker would then silently keep running the previous release.
-if [ -f "/etc/systemd/system/${WORKER_UNIT}.service" ]; then
+# `systemctl cat`, not a fixed file path: the unit can live under /lib, /run, a
+# drop-in, or an enablement symlink, and a bare `[ -f /etc/systemd/system/... ]`
+# then tests false even though systemd knows the unit — which silently left the
+# worker running the PREVIOUS release on every deploy (it 403'd on stale Graph
+# URLs for a full release cycle before this was caught). `systemctl cat` exits 0
+# iff the unit is known, wherever its file is, and needs no pipe under pipefail.
+if systemctl cat "$WORKER_UNIT" >/dev/null 2>&1; then
   sudo systemctl restart "$WORKER_UNIT"
+  log "restarted $WORKER_UNIT"
+else
+  log "no $WORKER_UNIT unit found — skipping (single-process deployment)"
 fi
 
 # ---- 5. Verify ----
