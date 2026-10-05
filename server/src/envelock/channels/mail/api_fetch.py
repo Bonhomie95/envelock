@@ -251,6 +251,52 @@ async def graph_read_states(
     return out
 
 
+async def graph_fetch_history(
+    *,
+    access_token: str,
+    since_iso: str,
+    limit: int,
+    page_size: int = 50,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> list[FetchedMessage]:
+    """Inbox messages received on or after ``since_iso``, up to ``limit`` — the
+    onboarding backfill (E11) over Graph, so A9/A12 baselines are warm on day one.
+
+    Paginates @odata.nextLink (Graph caps a page), reads /me (delegated token),
+    and pulls each message's raw MIME via /$value so the shared parser gets the
+    same fidelity as the live fetch."""
+    transport = transport or HttpxTransport()
+    headers = _bearer(access_token)
+    from urllib.parse import quote
+
+    url = (
+        f"{GRAPH_API}/me/mailFolders/inbox/messages?$top={page_size}&$select=id"
+        f"&$orderby=receivedDateTime%20desc"
+        f"&$filter=receivedDateTime%20ge%20{quote(since_iso)}"
+    )
+    ids: list[str] = []
+    while url and len(ids) < limit:
+        body = await _retry(lambda u=url: transport.get_json(u, headers=headers), backoff=backoff)
+        for ref in body.get("value", []) or []:
+            if ref.get("id"):
+                ids.append(ref["id"])
+        url = body.get("@odata.nextLink") or ""
+    ids = ids[:limit]
+
+    out: list[FetchedMessage] = []
+    for mid in ids:
+        raw = await _retry(
+            lambda m=mid: transport.get_bytes(
+                f"{GRAPH_API}/me/messages/{m}/$value", headers=headers
+            ),
+            backoff=backoff,
+        )
+        if raw:
+            out.append(FetchedMessage(mid, raw))
+    return out
+
+
 async def graph_fetch(
     *,
     access_token: str,
@@ -288,6 +334,7 @@ __all__ = [
     "gmail_fetch",
     "gmail_fetch_raw",
     "graph_fetch",
+    "graph_fetch_history",
     "graph_fetch_raw",
     "graph_read_states",
 ]

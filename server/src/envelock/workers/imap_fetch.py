@@ -787,9 +787,18 @@ async def _run_queued_backfill(mailbox_id, days: int, *, client_factory=None) ->
                 return
             set_current_tenant(mailbox.tenant_id)
             try:
-                outcome = await backfill_mailbox(
-                    session, mailbox, days=days, client_factory=client_factory
-                )
+                # Dispatch by connection: a queued Graph mailbox must run the
+                # Graph backfill, not the IMAP one (which would fail for want of
+                # an IMAP credential). The claim loop is source-agnostic, so the
+                # fan-out happens here.
+                if SourceMechanism.GRAPH_API.value in (mailbox.sources or []):
+                    from envelock.workers.oauth_fetch import backfill_oauth_mailbox
+
+                    outcome = await backfill_oauth_mailbox(session, mailbox, days=days)
+                else:
+                    outcome = await backfill_mailbox(
+                        session, mailbox, days=days, client_factory=client_factory
+                    )
             except Exception as exc:  # noqa: BLE001 — record it; never kill the worker
                 logger.exception("imap: queued backfill failed for mailbox %s", mailbox_id)
                 outcome = {"ok": False, "reason": f"{type(exc).__name__}: {exc}"[:200]}

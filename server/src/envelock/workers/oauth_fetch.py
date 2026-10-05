@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from envelock.channels.mail import api_enforce, enforce
 from envelock.channels.mail.api_fetch import (
     gmail_fetch_raw,
+    graph_fetch_history,
     graph_fetch_raw,
     graph_read_states,
 )
@@ -430,3 +431,71 @@ async def drain_requested(*, transport=None, write_transport=None) -> dict:  # n
 
 
 __all__ = ["drain_requested", "fetch_all_oauth_mailboxes", "sync_oauth_mailbox"]
+
+
+async def backfill_oauth_mailbox(
+    session: AsyncSession,
+    mailbox: Mailbox,
+    *,
+    days: int,
+    limit: int | None = None,
+    transport=None,  # noqa: ANN001 — api_fetch.HttpTransport
+) -> dict:
+    """Onboarding backfill (E11) for a Graph mailbox: pull the last ``days`` of
+    history and run each message through the pipeline so A9 stylometry and A12
+    baselines are warm on day one. Analysis + learning only — historical mail is
+    never quarantined (remediable=False). Mirrors imap_fetch.backfill_mailbox for
+    the OAuth path, which previously had no backfill at all: a Microsoft 365
+    mailbox onboarded with cold baselines and silently stayed that way."""
+    from datetime import timedelta
+
+    from envelock.db import set_current_tenant
+
+    set_current_tenant(mailbox.tenant_id)
+    if limit is None:
+        limit = get_settings().backfill_max_messages
+
+    tok = await current_access_token(session, mailbox.id)
+    if tok is None:
+        return {"ok": False, "reason": "no usable oauth token", "analysed": 0}
+    access_token, provider = tok
+    if provider == "google":
+        # Gmail history backfill needs its own query path; not wired yet.
+        return {"ok": False, "reason": "gmail backfill not supported yet", "analysed": 0}
+
+    since_iso = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        fetched = await graph_fetch_history(
+            access_token=access_token, since_iso=since_iso, limit=limit, transport=transport,
+        )
+    except Exception as exc:  # noqa: BLE001 — provider/network errors are non-fatal
+        logger.warning("graph backfill fetch failed for mailbox %s: %s", mailbox.id, exc)
+        return {"ok": False, "reason": str(exc), "analysed": 0}
+
+    owned = await _owned_domains(session, mailbox.tenant_id)
+    recipients = await _recipients(session, mailbox.tenant_id)
+    analysed = 0
+    for item in fetched:
+        if enforce.is_processed(item.raw):
+            continue
+        event = await parse_message_async(
+            item.raw,
+            tenant_id=mailbox.tenant_id,
+            mailbox_id=mailbox.id,
+            source=SourceMechanism.GRAPH_API,
+            owned_domains=owned,
+            remediable=False,  # never quarantine historical mail
+            source_ref=item.ref,
+        )
+        pr_hist = await analyse_event(
+            session, event, tenant_id=mailbox.tenant_id,
+            owned_domains=owned, recipients=recipients,
+        )
+        # A backfill can surface a live fraud sitting in recent mail — deliver now.
+        if pr_hist.alert_id is not None:
+            await deliver_pending(session, alert_id=pr_hist.alert_id)
+        analysed += 1
+
+    mailbox.backfilled_at = datetime.now(UTC)
+    await session.commit()
+    return {"ok": True, "analysed": analysed, "days": days}
