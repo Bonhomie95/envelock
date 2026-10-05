@@ -203,3 +203,69 @@ test("a non-Outlook Office host is told too, rather than left blank", async () =
   onReady({ host: "Excel" });
   assert.equal(root.document.nodes.help.hidden, false);
 });
+
+
+function memoryLocalStorage() {
+  const m = new Map();
+  return {
+    getItem: (k) => (m.has(k) ? m.get(k) : null),
+    setItem: (k, v) => m.set(k, String(v)),
+    removeItem: (k) => m.delete(k),
+  };
+}
+
+
+test("a slow Outlook load does not leave the 'not in Outlook' help on screen", async () => {
+  // onReady fires late (as a real host does on a slow office.js load). The help
+  // may flash via the timer, but when Outlook becomes ready it must be hidden
+  // and the real pane mounted — not a scary banner above a working form.
+  const doc = fakeDoc();
+  let fire;
+  const office = {
+    onReady: (fn) => {
+      fire = fn;
+    },
+    HostType: { Outlook: "Outlook" },
+    EventType: { ItemChanged: "x" },
+    MailboxEnums: { ItemNotificationMessageType: { ErrorMessage: "e" } },
+    context: {
+      mailbox: {
+        userProfile: { emailAddress: "pay@acme.com" },
+        item: null,
+        addHandlerAsync() {},
+        removeHandlerAsync() {},
+      },
+      diagnostics: { platform: "Mac", version: "16" },
+    },
+  };
+  const root = {
+    document: doc,
+    EnvelockSensor: S,
+    Office: office,
+    localStorage: memoryLocalStorage(),
+    setInterval: () => 0,
+    clearInterval: () => {},
+  };
+  // Force the "not in Outlook" timer to fire BEFORE onReady — the real race on a
+  // slow office.js load. With a fire-immediately setTimeout, giveUp runs showHelp
+  // first (help visible), then the host becomes ready and must hide it again.
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn) => {
+    fn();
+    return 0;
+  };
+  try {
+    await loadBootstrap(root);
+    assert.equal(doc.nodes.help.hidden, false, "guard: the slow-load timer should have shown help first");
+    // hideHelp() runs before mountView, so a mountView throw from this minimal
+    // fake DOM is irrelevant to what we assert: the help must end up hidden.
+    try {
+      fire({ host: "Outlook" });
+    } catch {
+      /* fake DOM lacks the form nodes mountView wires — not what we're testing */
+    }
+  } finally {
+    globalThis.setTimeout = realSetTimeout;
+  }
+  assert.equal(doc.nodes.help.hidden, true, "the 'not in Outlook' help was left visible inside Outlook");
+});

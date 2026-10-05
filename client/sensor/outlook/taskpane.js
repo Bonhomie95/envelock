@@ -271,7 +271,21 @@
     if (help) help.classList.remove("hidden");
   }
 
-  var NOT_IN_OUTLOOK_MS = 4000;
+  function hideHelp(doc) {
+    var help = doc.getElementById("help");
+    if (help) help.classList.add("hidden");
+  }
+
+  /* How long to wait for Office before concluding we are NOT inside Outlook.
+     Office.onReady only fires inside a host, so a timeout is the only signal
+     that we are somewhere else (the Apps list, the page's own URL). It must be
+     GENEROUS: office.js loads from Microsoft's CDN and the host handshake can
+     easily take several seconds on first open or a slow network. The old 4s
+     fired the "not in Outlook" help WHILE Outlook was still starting, then the
+     real pane mounted underneath it — a scary error sitting above a working
+     form, which reads as "broken". A late onReady now also hides the help, so
+     even if the timer wins the race, Outlook becoming ready always corrects it. */
+  var NOT_IN_OUTLOOK_MS = 15000;
 
   if (root.document && !root.__ENVELOCK_TEST__) {
     var doc = root.document;
@@ -289,6 +303,7 @@
         }
         ready = true;
         clearTimeout(giveUp);
+        hideHelp(doc); // in case the timer already showed it on a slow load
         var controller = createController(root.Office, {
           storage: root.EnvelockSensor.webStorage(root.localStorage),
         });
