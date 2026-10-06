@@ -388,13 +388,37 @@ async def oauth_callback(
     mailbox.inactive_detections = inactive_for(caps)
     mailbox.needs_reconnect = False
     mailbox.connection_error = None
+
+    # Which inbox does this token actually read? Delegated OAuth reads /me — the
+    # account that just consented — which can differ from the address the customer
+    # typed. Resolve it NOW so a wrong-account connect is visible on the spot, not
+    # only after the first poll. Best-effort with no backoff: a slow or failed
+    # probe must never hang or fail the connect redirect; the poller re-checks.
+    try:
+        from envelock.channels.mail.api_fetch import gmail_whoami, graph_whoami
+
+        whoami = gmail_whoami if provider == "google" else graph_whoami
+        real = await whoami(access_token=tokens.access_token, backoff=0.0)
+        if real:
+            mailbox.connected_address = real
+    except Exception as exc:  # noqa: BLE001 — identity probe must not block connect
+        logger.info("connect whoami skipped for mailbox %s: %s", mailbox.id, exc)
+
     await session.commit()
 
+    mismatch = bool(
+        mailbox.connected_address
+        and mailbox.connected_address.lower() != mailbox.address.lower()
+    )
     return {
         "connected": True,
         "provider": provider,
         "mode": mode,
         "mailbox": mailbox.address,
+        # The real inbox the token reads + whether it differs from the label, so
+        # the connect UI can warn immediately instead of showing a clean success.
+        "connected_address": mailbox.connected_address,
+        "address_mismatch": mismatch,
         "integration_tier": mailbox.integration_tier,
         "sources": mailbox.sources,
         "has_refresh_token": tokens.refresh_token is not None,
