@@ -1088,6 +1088,24 @@ function MailboxRow({
         </div>
       )}
 
+      {/* The token reads a different inbox than the address shown — "connected"
+          is silently watching the wrong mailbox (delegated OAuth reads whoever
+          consented). The single worst thing to hide, so it is loud. */}
+      {m.address_mismatch && m.connected_address && (
+        <div className="mt-2 flex items-start gap-2 rounded border border-[var(--danger)] bg-[var(--danger)]/10 px-3 py-2">
+          <ShieldAlert size={14} className="mt-0.5 shrink-0 text-[var(--danger)]" aria-hidden />
+          <p className="text-xs leading-relaxed">
+            <span className="font-semibold">Wrong mailbox connected.</span>{" "}
+            Envelock is reading <span className="font-mono">{m.connected_address}</span>,
+            not <span className="font-mono">{m.address}</span>. Mail sent to{" "}
+            <span className="font-mono">{m.address}</span> is not being protected.
+            Reconnect and sign in as <span className="font-mono">{m.address}</span>,
+            or add <span className="font-mono">{m.connected_address}</span> as the
+            mailbox instead.
+          </p>
+        </div>
+      )}
+
       {/* A poll that failed for a transient reason (server unreachable, TLS
           hiccup) is not a reconnect prompt, but it must not be silent either:
           "connected" with no mail arriving is the worst state to hide. */}

@@ -94,8 +94,9 @@ async def test_graph_fetch_hits_me_not_users_label(graph_mailbox, monkeypatch) -
 
     assert result["ok"] is True, result
     assert transport.urls, "the worker never called Graph"
-    listing = transport.urls[0]
-    assert "/me/mailFolders/inbox" in listing, listing
-    assert "/users/" not in listing, (
-        f"delegated fetch used /users/<label> — the 403 bug: {listing}"
+    # The inbox is read via /me (order-independent: a /me whoami probe now runs
+    # first), and NOTHING uses /users/<label> — that was the 403 bug.
+    assert any("/me/mailFolders/inbox" in u for u in transport.urls), transport.urls
+    assert not any("/users/" in u for u in transport.urls), (
+        f"delegated fetch used /users/<label> — the 403 bug: {transport.urls}"
     )

@@ -299,6 +299,10 @@ export interface MailboxRecord {
   last_sync_at?: string | null;
   needs_reconnect?: boolean;
   connection_error?: string | null;
+  /** The inbox the OAuth token actually reads, and whether it differs from
+   *  `address`. A mismatch means "connected" is watching the wrong mailbox. */
+  connected_address?: string | null;
+  address_mismatch?: boolean;
   /** C11 silent-access detection, opted into by the owner. */
   silent_access_armed?: boolean;
   /** Split key custody: work the API handed to the worker and is waiting on. */

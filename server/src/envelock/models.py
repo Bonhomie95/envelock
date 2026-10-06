@@ -385,6 +385,10 @@ class Mailbox(Base, UUIDMixin, TimestampMixin):
     #: outbound watch diffs the bank identifiers in this against the newest sent
     #: message; None means "no baseline learned yet", which is never a change.
     signature_fingerprint: Mapped[str | None] = mapped_column(Text)
+    #: The mailbox address an OAuth token actually resolves to (/me), learned on
+    #: sync. When it differs from `address`, "connected" is silently watching the
+    #: wrong inbox (delegated OAuth reads whoever consented) — the dashboard warns.
+    connected_address: Mapped[str | None] = mapped_column(String(320))
 
     __table_args__ = (UniqueConstraint("tenant_id", "address"),)
 

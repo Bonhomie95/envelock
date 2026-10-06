@@ -250,6 +250,47 @@ async def gmail_fetch_history(
     return out
 
 
+async def gmail_whoami(
+    *,
+    access_token: str,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> str | None:
+    """The actual Gmail address this token reads, lower-cased.
+
+    Delegated OAuth reads the signed-in account's own mailbox, so this is the one
+    source of truth for *which* mailbox is really connected — not the label the
+    customer typed. A mismatch means "connected" is watching the wrong inbox."""
+    transport = transport or HttpxTransport()
+    body = await _retry(
+        lambda: transport.get_json(
+            f"{GMAIL_API}/users/me/profile", headers=_bearer(access_token)
+        ),
+        backoff=backoff,
+    )
+    addr = body.get("emailAddress")
+    return addr.lower() if addr else None
+
+
+async def graph_whoami(
+    *,
+    access_token: str,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> str | None:
+    """The actual Microsoft 365 address this token reads, lower-cased — `mail` if
+    the account has one, else its userPrincipalName. See `gmail_whoami`."""
+    transport = transport or HttpxTransport()
+    body = await _retry(
+        lambda: transport.get_json(
+            f"{GRAPH_API}/me?$select=mail,userPrincipalName", headers=_bearer(access_token)
+        ),
+        backoff=backoff,
+    )
+    addr = body.get("mail") or body.get("userPrincipalName")
+    return addr.lower() if addr else None
+
+
 async def gmail_fetch_outbound(
     *,
     access_token: str,
@@ -494,9 +535,11 @@ __all__ = [
     "gmail_message_id",
     "gmail_unread_ids",
     "gmail_fetch_raw",
+    "gmail_whoami",
     "graph_fetch",
     "graph_fetch_history",
     "graph_fetch_outbound",
     "graph_fetch_raw",
     "graph_read_states",
+    "graph_whoami",
 ]

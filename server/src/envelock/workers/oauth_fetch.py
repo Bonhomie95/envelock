@@ -28,10 +28,12 @@ from envelock.channels.mail.api_fetch import (
     gmail_fetch_raw,
     gmail_message_id,
     gmail_unread_ids,
+    gmail_whoami,
     graph_fetch_history,
     graph_fetch_outbound,
     graph_fetch_raw,
     graph_read_states,
+    graph_whoami,
 )
 from envelock.channels.mail.forward_runner import _recipients
 from envelock.channels.mail.oauth_refresh import current_access_token
@@ -298,6 +300,19 @@ async def sync_oauth_mailbox(
     if tok is None:
         return {"ok": False, "reason": "no usable oauth token", "fetched": 0}
     access_token, provider = tok
+
+    # Which mailbox does this token ACTUALLY read? Delegated OAuth reads /me — the
+    # account that consented — which can differ from the address the customer
+    # typed. Learn it so the dashboard can warn instead of showing a confident
+    # "connected" over the wrong inbox. Best-effort: never fail a sync over it.
+    try:
+        whoami = gmail_whoami if provider == "google" else graph_whoami
+        real = await whoami(access_token=access_token, transport=transport)
+        if real:
+            mailbox.connected_address = real
+    except Exception as exc:  # noqa: BLE001 — identity probe is non-fatal
+        logger.info("whoami skipped for mailbox %s: %s", mailbox.id, exc)
+
     owned = await _owned_domains(session, mailbox.tenant_id)
     recipients = await _recipients(session, mailbox.tenant_id)
     settings = get_settings()

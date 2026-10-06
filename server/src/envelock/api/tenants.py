@@ -686,6 +686,14 @@ def _mailbox_payload(m: Mailbox) -> dict:
         "last_sync_at": m.last_sync_at.isoformat() if m.last_sync_at else None,
         "needs_reconnect": m.needs_reconnect,
         "connection_error": m.connection_error,
+        # The inbox the OAuth token actually reads, and whether it differs from the
+        # address above. A mismatch means "connected" is watching the wrong mailbox
+        # (delegated OAuth reads whoever consented) — surfaced, never silent.
+        "connected_address": m.connected_address,
+        "address_mismatch": bool(
+            m.connected_address
+            and m.connected_address.lower() != m.address.lower()
+        ),
         "silent_access_armed": bool(m.silent_access_armed),
         # Split custody: work the API handed to the worker and is waiting on.
         "sync_pending": m.sync_requested_at is not None,
