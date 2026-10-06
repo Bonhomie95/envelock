@@ -179,6 +179,10 @@ async def test_whole_journey_signup_to_acknowledged_alert(
     assert critical[0]["callback_phone"] == "+1 803 000 0000"
     # The headline is not repeated inside the body.
     assert critical[0]["title"] not in critical[0]["body"]
+    # The alert names the actual email it is about, so the reader can find it in
+    # their inbox rather than guessing which message triggered it.
+    assert critical[0]["message_subject"] == "Re: Invoice 9001"
+    assert "gemini.com" in (critical[0]["message_sender"] or "")
 
     # Acknowledge, and the audit trail records who did it
     acked = client.post(

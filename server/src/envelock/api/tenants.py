@@ -1815,7 +1815,9 @@ async def reject_member(user_id: UUID, principal: AdminUser, session: Session) -
 
 
 # ── Alerts ───────────────────────────────────────────────────────────────────
-def _alert_payload(a: Alert) -> dict:
+def _alert_payload(
+    a: Alert, subject: str | None = None, sender: str | None = None
+) -> dict:
     return {
         "id": str(a.id),
         "tier": a.tier,
@@ -1823,6 +1825,11 @@ def _alert_payload(a: Alert) -> dict:
         "body": a.body,
         "state": a.state,
         "mailbox_id": str(a.mailbox_id) if a.mailbox_id else None,
+        # The actual email this alert is about, so the reader can find it in their
+        # inbox. subject is None under metadata-only mode (we never stored it) and
+        # for non-mail alerts; the UI falls back to the sender, then to nothing.
+        "message_subject": subject,
+        "message_sender": sender,
         "counterparty_domain": a.counterparty_domain,
         "requires_callback": a.requires_callback,
         "callback_phone": a.callback_phone,
@@ -1838,6 +1845,36 @@ def _alert_payload(a: Alert) -> dict:
         "acknowledged_at": a.acknowledged_at.isoformat() if a.acknowledged_at else None,
         "escalated_at": a.escalated_at.isoformat() if a.escalated_at else None,
     }
+
+
+async def _alert_message_map(
+    session: AsyncSession, alert_ids: list[UUID]
+) -> dict[UUID, tuple[str | None, str | None]]:
+    """Subject + sender of the message behind each alert, in one query.
+
+    An alert links to its message through its findings (Finding.message_id); all
+    findings on one alert share the triggering message, so the first hit per alert
+    wins. Returns {alert_id: (subject, sender)}; alerts with no stored mail message
+    (e.g. silent-access/identity alerts) are simply absent."""
+    if not alert_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                Finding.alert_id,
+                Message.subject,
+                Message.sender_display,
+                Message.sender_address,
+            )
+            .join(Message, Message.id == Finding.message_id)
+            .where(Finding.alert_id.in_(alert_ids))
+        )
+    ).all()
+    out: dict[UUID, tuple[str | None, str | None]] = {}
+    for alert_id, subject, display, address in rows:
+        if alert_id is not None and alert_id not in out:
+            out[alert_id] = (subject, display or address)
+    return out
 
 
 async def _assert_alert_access(session: AsyncSession, actor, alert: Alert) -> None:
@@ -1870,7 +1907,11 @@ async def list_alerts(
         .scalars()
         .all()
     )
-    return {"alerts": [_alert_payload(a) for a in rows], "count": len(rows)}
+    meta = await _alert_message_map(session, [a.id for a in rows])
+    return {
+        "alerts": [_alert_payload(a, *meta.get(a.id, (None, None))) for a in rows],
+        "count": len(rows),
+    }
 
 
 @router.post("/alerts/{alert_id}/acknowledge")
@@ -1885,7 +1926,8 @@ async def acknowledge_alert(alert_id: UUID, actor: ActiveUser, session: Session)
     if alert is None:
         raise HTTPException(404, "alert not found")
     await session.commit()
-    return _alert_payload(alert)
+    meta = await _alert_message_map(session, [alert.id])
+    return _alert_payload(alert, *meta.get(alert.id, (None, None)))
 
 
 @router.post("/alerts/{alert_id}/resolve")
@@ -1906,7 +1948,8 @@ async def resolve_alert(
     if alert is None:
         raise HTTPException(404, "alert not found")
     await session.commit()
-    return _alert_payload(alert)
+    meta = await _alert_message_map(session, [alert.id])
+    return _alert_payload(alert, *meta.get(alert.id, (None, None)))
 
 
 @router.post("/alerts/{alert_id}/quarantine")

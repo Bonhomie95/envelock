@@ -110,6 +110,11 @@ export interface AlertRecord {
   body: string;
   state: string;
   mailbox_id: string | null;
+  /** The subject + sender of the email this alert is about, so the reader can
+   *  find it in their inbox. subject is null under metadata-only mode and for
+   *  non-mail alerts; sender falls back to the address. */
+  message_subject?: string | null;
+  message_sender?: string | null;
   counterparty_domain: string | null;
   requires_callback: boolean;
   callback_phone: string | null;

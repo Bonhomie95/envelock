@@ -369,6 +369,23 @@ function AlertRow({
             {alert.title}
           </h3>
 
+          {/* Which email this is about, so the reader can find it in the inbox. */}
+          {(alert.message_subject || alert.message_sender) && (
+            <p
+              className="fg-3 mt-1.5 flex items-center gap-1.5 text-xs"
+              title={
+                (alert.message_subject ?? "(no subject)") +
+                (alert.message_sender ? ` — ${alert.message_sender}` : "")
+              }
+            >
+              <Inbox size={12} aria-hidden className="shrink-0" />
+              <span className="truncate">
+                {alert.message_subject ? `“${alert.message_subject}”` : "(no subject)"}
+                {alert.message_sender ? ` · ${alert.message_sender}` : ""}
+              </span>
+            </p>
+          )}
+
           {/* The one next step stays in view — everything else folds away. */}
           {alert.requires_callback && (
             <VerifyPanel alertId={alert.id} closed={closed} onChanged={onRefresh} />
