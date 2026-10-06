@@ -21,6 +21,18 @@ defaults:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The suite runs twice — plain, and with row-level security enforced. They
+    # used to run back-to-back in one job (~9 min each = most of CI's wall time).
+    # Running them as two PARALLEL jobs halves that. In-process parallelism
+    # (pytest-xdist -n auto) was tried and does not pay off: GitHub runners have
+    # only 2 cores, so the gain is marginal and the CPU contention made a
+    # wall-clock timing test flaky. Separate runners is the fix that fits the
+    # hardware. Lint/types/edge run once (on the plain job) via `if` below.
+    strategy:
+      fail-fast: false
+      matrix:
+        rls: ["0", "1"]
+    name: test (rls=${{ matrix.rls }})
     services:
       postgres:
         image: postgres:17-alpine
@@ -52,12 +64,16 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
 
+      # Lint, edge-worker tests and the type ratchet are environment-independent,
+      # so they run once — on the plain (rls=0) job — not in both matrix legs.
       - name: Lint
+        if: matrix.rls == '0'
         run: ruff check src tests
 
       # The Cloudflare worker that keeps protected links working through an
       # origin outage. Shares signature test vectors with tests/test_link_safety.
       - name: Edge worker tests
+        if: matrix.rls == '0'
         run: node --test deploy/edge/link-fallback.test.mjs
 
       # A ratchet, not a hard gate: `strict = true` was configured for the life
@@ -65,28 +81,21 @@ jobs:
       # code did not meet and no change was measured against. This fails only on
       # NEW errors, so the count can only go down. See scripts/typecheck.py.
       - name: Types (no new errors)
+        if: matrix.rls == '0'
         run: python scripts/typecheck.py
 
+      # The suite. rls=0 is the plain pass; rls=1 runs it again with Postgres
+      # row-level security actually enforced — a different question ("does the
+      # code work when the DB refuses anything the caller did not scope to a
+      # tenant"), whose failure mode is a query quietly returning nothing. That
+      # only proves anything because the CI Postgres role owns the tables and is
+      # neither superuser nor BYPASSRLS (Postgres ignores every policy for those);
+      # conftest asserts that and fails rather than passing vacuously. conftest
+      # points the suite at envelock_test on localhost:5432.
       - name: Test
-        # conftest points the suite at envelock_test on localhost:5432.
-        # -n auto runs it in parallel; conftest gives each worker its own
-        # database (_per_run_dsn), so workers never collide.
-        run: pytest -q -n auto
-
-      # The same suite again, with Postgres row-level security actually enforced.
-      # It is a different question from "does the code work": it asks whether the
-      # code works when the database refuses anything the caller did not scope to
-      # a tenant. The failure mode it catches is a query quietly returning
-      # nothing, which no amount of review finds and no unit test notices.
-      #
-      # This only proves anything because the CI Postgres role owns the tables
-      # and is neither a superuser nor BYPASSRLS — Postgres ignores every policy
-      # for those, FORCE included. conftest asserts that and fails the run
-      # rather than passing vacuously.
-      - name: Test with row-level security enforced
         env:
-          ENVELOCK_TEST_RLS: "1"
-        run: pytest -q -n auto
+          ENVELOCK_TEST_RLS: ${{ matrix.rls }}
+        run: pytest -q
 
   # Proves the production image builds AND that it carries every module the
   # runtime actually imports. `pip install .` omits the dev extra, which is how

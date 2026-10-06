@@ -97,9 +97,11 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
-    # Parallel test runner. The suite is designed for it — conftest gives each
-    # xdist worker its own database (see _per_run_dsn) — and it cuts CI's two
-    # full runs (plain + RLS) from ~9 min each to ~1.5 min.
+    # Parallel test runner for LOCAL use: `pytest -n auto` runs the ~1050-test
+    # suite in ~1.5 min on a multi-core dev machine (conftest gives each worker
+    # its own database, see _per_run_dsn). CI does not use it — GitHub's 2-core
+    # runners see little gain and the contention made a timing test flaky; CI
+    # parallelises across jobs instead (see .github/workflows/server.yml).
     "pytest-xdist>=3.6",
     "ruff>=0.8",
     "mypy>=1.13",
