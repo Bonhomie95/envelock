@@ -278,15 +278,28 @@ async def test_gmail_protected_copy_replaces_the_original_once(
     assert len([m for m in gmail.msgs if m.startswith("copy-")]) == 1
 
 
-async def test_rewrite_stays_off_until_switched_on(session, token) -> None:  # noqa: ANN001
+async def test_rewrite_is_on_by_default_and_has_a_kill_switch(
+    session, token, flags  # noqa: ANN001
+) -> None:
+    """Click-time rewrite now runs by default on the API providers (the promise);
+    the per-provider flag still turns it off."""
     token("google")
     mailbox = await _mailbox(session, "google")
+    # Default on → a clean newsletter's links are routed through the redirector.
     gmail = FakeGmail({"n1": _newsletter("n1")})
-    summary = await oauth_fetch.sync_oauth_mailbox(
+    on = await oauth_fetch.sync_oauth_mailbox(
         session, mailbox, transport=gmail, write_transport=gmail
     )
-    assert summary["rewritten"] == 0
-    assert not [c for c in gmail.calls if c[0] == "POST"]
+    assert on["rewritten"] == 1
+
+    # Kill-switch off → a new message on the same mailbox is not written.
+    flags(ENVELOCK_GMAIL_REWRITE_ENABLED="false")
+    gmail2 = FakeGmail({"n2": _newsletter("n2")})
+    off = await oauth_fetch.sync_oauth_mailbox(
+        session, mailbox, transport=gmail2, write_transport=gmail2
+    )
+    assert off["rewritten"] == 0
+    assert not [c for c in gmail2.calls if c[0] == "POST"]
 
 
 async def test_a_monitored_mailbox_is_never_written_to(

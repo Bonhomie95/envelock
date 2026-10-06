@@ -236,8 +236,10 @@ class Settings(BaseSettings):
     #: a mailbox of your own (LAUNCH-GUIDE step 12), so each provider is switched
     #: on explicitly once you've seen a copy come out right.
     api_quarantine_enabled: bool = True
-    gmail_rewrite_enabled: bool = False
-    graph_rewrite_enabled: bool = False
+    # Click-time link rewrite on the API providers (the IMAP path already does it).
+    # On: delivers the "recheck rewritten links when clicked" promise for M365/Gmail.
+    gmail_rewrite_enabled: bool = True
+    graph_rewrite_enabled: bool = True
     #: Read the owner's Sent folder each sync so A12 (reply-stall) has data and C5
     #: (signature tampering) has a baseline. Read-only — the owner's sent mail is
     #: never rewritten or quarantined. A kill-switch, not a per-provider gate.

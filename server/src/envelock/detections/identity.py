@@ -126,7 +126,10 @@ class _C6Concurrency:
 
     def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
         ev = ctx.identity
-        if ev is None or ev.kind is not IdentityEventKind.SESSION_START:
+        if ev is None or ev.kind not in (
+            IdentityEventKind.SIGN_IN,
+            IdentityEventKind.SESSION_START,
+        ):
             return []
         # Concurrency below the mailbox's known-user count is unremarkable.
         if ctx.active_sessions <= 1:
@@ -204,7 +207,10 @@ class _C11SilentAccess:
 @dataclass(frozen=True)
 class _C12CredentialChange:
     service: str = "C12"
-    requires: frozenset[Capability] = _SESSIONS
+    # Credential/MFA changes come from provider security telemetry (Entra/Google
+    # audit logs), not from a session feed — so it requires that capability and is
+    # honestly inactive until those admin-consent logs are connected.
+    requires: frozenset[Capability] = frozenset({Capability.READ_MFA_STATE})
 
     def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
         ev = ctx.identity

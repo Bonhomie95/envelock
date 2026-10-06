@@ -38,7 +38,11 @@ def haversine_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
 @dataclass(frozen=True)
 class _C3DelegateChange:
     service: str = "C3"
-    requires: frozenset[Capability] = _RULES
+    # A delegate is a standing grant of mailbox access, readable only from provider
+    # audit telemetry (Entra/Google) — not from inbox rules. Requires the grant
+    # capability so it is honestly inactive until those admin-consent logs connect,
+    # rather than falsely advertised on a plain mail connection.
+    requires: frozenset[Capability] = frozenset({Capability.READ_OAUTH_GRANTS})
 
     def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
         ev = ctx.identity

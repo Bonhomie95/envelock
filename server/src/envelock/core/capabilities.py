@@ -60,6 +60,11 @@ class Capability(StrEnum):
 #: configured sources.
 MECHANISM_CAPABILITIES: dict[SourceMechanism, frozenset[Capability]] = {
     # ── Channel 1 ────────────────────────────────────────────────────────────
+    # READ_OAUTH_GRANTS (C4 rogue-app, C3 delegate) is deliberately NOT here: a
+    # delegated mail token cannot enumerate an account's OAuth grants or delegates
+    # — that is directory/audit telemetry needing admin consent (ENTRA_LOGS /
+    # GOOGLE_REPORTS). Claiming it on a plain mail connect advertised a detection
+    # that could never fire, so it is granted only by those admin-log sources.
     SourceMechanism.GRAPH_API: frozenset(
         {
             Capability.READ_INBOUND,
@@ -68,7 +73,6 @@ MECHANISM_CAPABILITIES: dict[SourceMechanism, frozenset[Capability]] = {
             Capability.MODIFY_MESSAGE,
             Capability.READ_FLAGS,
             Capability.READ_SERVER_RULES,
-            Capability.READ_OAUTH_GRANTS,
         }
     ),
     SourceMechanism.GMAIL_API: frozenset(
@@ -79,7 +83,6 @@ MECHANISM_CAPABILITIES: dict[SourceMechanism, frozenset[Capability]] = {
             Capability.MODIFY_MESSAGE,
             Capability.READ_FLAGS,
             Capability.READ_SERVER_RULES,
-            Capability.READ_OAUTH_GRANTS,
         }
     ),
     SourceMechanism.ADMIN_API: frozenset(
