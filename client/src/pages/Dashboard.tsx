@@ -6,6 +6,7 @@ import {
   Bell,
   Check,
   CheckCircle2,
+  ChevronRight,
   Copy,
   FileDown,
   Fingerprint,
@@ -287,6 +288,9 @@ function AlertRow({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // Detail folds away by default: the card reads as one headline + one action,
+  // with the finding prose and AI reasoning behind "Why?" (customer ask: less talk).
+  const [why, setWhy] = useState(false);
   // CONFIRM FRAUD is the one control here that reaches outside this tenant: it
   // reports the counterparty to the cross-tenant graph (E8), so it changes what
   // every other Envelock customer sees. It sat 8px from DISMISS, same size, same
@@ -342,10 +346,11 @@ function AlertRow({
         <span className="mono-xs fg-3 tnum">{reference}</span>
         {alert.amount_at_risk != null && alert.amount_currency && (
           <span
-            className="mono-xs accent tnum"
+            className="mono-xs accent tnum inline-flex items-center gap-1"
             title="The largest sum named in the message that produced this alert"
           >
-            {alert.amount_currency} {alert.amount_at_risk.toLocaleString()}
+            <Banknote size={12} aria-hidden />
+            {alert.amount_currency} {alert.amount_at_risk.toLocaleString()} AT RISK
           </span>
         )}
         <span className="mono-xs fg-3 ml-auto tnum">
@@ -363,12 +368,40 @@ function AlertRow({
           <h3 className="text-sm leading-snug font-semibold text-pretty">
             {alert.title}
           </h3>
-          <p className="fg-2 mt-3 text-sm leading-relaxed whitespace-pre-line">
-            {alert.body}
-          </p>
 
+          {/* The one next step stays in view — everything else folds away. */}
           {alert.requires_callback && (
             <VerifyPanel alertId={alert.id} closed={closed} onChanged={onRefresh} />
+          )}
+
+          {/* "Why?" — finding detail + AI assessment, hidden by default so the
+              card is one headline and one action unless the reader wants more. */}
+          {(alert.body || alert.ai_flagged) && (
+            <div className="mt-3">
+              <button
+                type="button"
+                onClick={() => setWhy((v) => !v)}
+                aria-expanded={why}
+                className="fg-2 mono-xs flex cursor-pointer items-center gap-1 hover:text-[var(--fg)]"
+              >
+                <ChevronRight
+                  size={12}
+                  aria-hidden
+                  className={cn("transition-transform", why && "rotate-90")}
+                />
+                {why ? "HIDE" : "WHY?"}
+              </button>
+              {why && (
+                <>
+                  {alert.body && (
+                    <p className="fg-2 mt-2.5 text-sm leading-relaxed whitespace-pre-line">
+                      {alert.body}
+                    </p>
+                  )}
+                  {alert.ai_flagged && <AiVerdictPanel alertId={alert.id} />}
+                </>
+              )}
+            </div>
           )}
 
           {note && (
@@ -376,8 +409,6 @@ function AlertRow({
               {note}
             </p>
           )}
-
-          {alert.ai_flagged && <AiVerdictPanel alertId={alert.id} />}
 
           <div className="mt-4 flex flex-wrap items-center gap-2">
             {closed ? (
