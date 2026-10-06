@@ -286,6 +286,41 @@ class _A11Dormancy:
         ]
 
 
+#: A reply this many times slower than the counterparty's own normal is the
+#: stall A12 reports — the classic "attacker intercepted the thread and is
+#: buying time" shape. Shared by the ingest-time detection and the sweep so the
+#: threshold has exactly one definition.
+STALL_MULTIPLIER = 3
+
+
+def stall_overdue(median_reply_seconds: int | None, waiting_seconds: float) -> bool:
+    """Whether a payment thread's silence is past this counterparty's baseline."""
+    if not median_reply_seconds:
+        return False
+    return waiting_seconds >= median_reply_seconds * STALL_MULTIPLIER
+
+
+def a12_finding(
+    *, domain: str, waiting_seconds: float, median_reply_seconds: int, verified_phone: str | None
+) -> FindingResult:
+    """The single A12 finding, built identically wherever a stall is detected."""
+    return FindingResult(
+        service="A12",
+        tier=AlertTier.MEDIUM,
+        score=45,
+        summary=(
+            f"{domain} has not replied in {int(waiting_seconds / 3600)}h — well "
+            f"past their usual {int(median_reply_seconds / 3600)}h. Verify by phone."
+        ),
+        evidence={
+            "counterparty": domain,
+            "waiting_seconds": int(waiting_seconds),
+            "usual_seconds": median_reply_seconds,
+            "callback_phone": verified_phone,
+        },
+    )
+
+
 @dataclass(frozen=True)
 class _A12StallDetection:
     """Counterparty silence past their own baseline during a payment thread."""
@@ -300,31 +335,20 @@ class _A12StallDetection:
         # Fires on our own outbound message awaiting a reply.
         if mail.direction is not MailDirection.OUTBOUND:
             return []
-        if not cp.median_reply_seconds or not has_payment_context(_body(ctx)):
+        if not has_payment_context(_body(ctx)):
             return []
 
         now = ctx.now or datetime.now(UTC)
         waiting = (now - mail.occurred_at).total_seconds()
-        threshold = cp.median_reply_seconds * 3
-        if waiting < threshold:
+        if not stall_overdue(cp.median_reply_seconds, waiting):
             return []
 
         return [
-            FindingResult(
-                service="A12",
-                tier=AlertTier.MEDIUM,
-                score=45,
-                summary=(
-                    f"{cp.registrable_domain} has not replied in "
-                    f"{int(waiting / 3600)}h — well past their usual "
-                    f"{int(cp.median_reply_seconds / 3600)}h. Verify by phone."
-                ),
-                evidence={
-                    "counterparty": cp.registrable_domain,
-                    "waiting_seconds": int(waiting),
-                    "usual_seconds": cp.median_reply_seconds,
-                    "callback_phone": cp.verified_phone,
-                },
+            a12_finding(
+                domain=cp.registrable_domain,
+                waiting_seconds=waiting,
+                median_reply_seconds=cp.median_reply_seconds,  # type: ignore[arg-type]
+                verified_phone=cp.verified_phone,
             )
         ]
 
@@ -394,6 +418,16 @@ _SHORTENERS = frozenset(
 _BRAND_BAIT = re.compile(
     r"\b(microsoft|office\s?365|outlook|onedrive|sharepoint|docusign|dropbox|"
     r"paypal|netflix|apple\s?id|amazon|linkedin|whatsapp)\b",
+    re.I,
+)
+
+#: Language that asks the reader to authenticate — the context in which a
+#: brandish or shortened link stops being newsletter noise and becomes a
+#: credential-harvest attempt. Deliberately NOT a brand mention (a newsletter
+#: naming a brand is normal); this is the *action* a phishing page needs.
+_LOGIN_INTENT = re.compile(
+    r"\b(sign\s?in|log\s?in|verify your|confirm your|your password|"
+    r"reset your password|account (?:verification|suspended|locked|disabled))\b",
     re.I,
 )
 
@@ -493,7 +527,27 @@ class _B1PhishingUrls:
 
         if not suspicious:
             return []
+
+        # A "hard" reason means the link itself is dangerous — a threat-feed hit, a
+        # bare IP, embedded credentials, or a redirector pointing at any of those.
+        # A "soft" reason (a brand name in the URL, a link shortener) is routine on
+        # legitimate marketing and welcome mail: a newsletter with a dozen
+        # "microsoft.com" links would otherwise alert MEDIUM every send, which is
+        # exactly the noise P5 says trains people to ignore us. So soft-only
+        # findings alert ONLY alongside payment or sign-in language in the body —
+        # the context in which a brandish link actually matters.
+        hard = any(_is_hard_reason(r) for s in suspicious for r in s["reasons"])
         feed_hit = any("threat feed" in r for s in suspicious for r in s["reasons"])
+        if not hard:
+            # Judge intent on the prose, not the links: a URL like
+            # login.microsoftonline.com contains "login" and would otherwise make
+            # every brandish link self-justify as a sign-in request.
+            prose = _body(ctx)
+            for u in all_urls:
+                prose = prose.replace(u, " ")
+            context = has_payment_context(prose) or bool(_LOGIN_INTENT.search(prose))
+            if not context:
+                return []
         return [
             FindingResult(
                 service="B1",
@@ -507,6 +561,17 @@ class _B1PhishingUrls:
                 evidence={"urls": suspicious[:10]},
             )
         ]
+
+
+#: Reasons that mean the destination is dangerous on its own, independent of the
+#: surrounding message. Everything else score_url can say ("brand name in a URL",
+#: "link shortener") is routine on legitimate mail and only matters in a payment
+#: or sign-in context — see _B1PhishingUrls.
+_HARD_REASON_MARKERS = ("threat feed", "bare IP address", "credentials embedded")
+
+
+def _is_hard_reason(reason: str) -> bool:
+    return any(marker in reason for marker in _HARD_REASON_MARKERS)
 
 
 def _host_of(url: str) -> str:

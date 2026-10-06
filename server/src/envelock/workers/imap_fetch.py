@@ -473,6 +473,18 @@ async def sync_mailbox(
         client_factory=client_factory, pin_sha256=pin, owned=owned,
     )
 
+    # Outbound (Sent folder): A12 reply-stall data + C5 signature watch. Read-only
+    # and best-effort — a Sent-folder quirk must never fail an otherwise good poll.
+    outbound = {"outbound_ingested": 0, "signature_alert": False}
+    if settings.outbound_scan_enabled:
+        outbound = await _scan_sent(
+            session, mailbox,
+            host=host, port=port, security=security, username=username,
+            password=password, access_token=access_token,
+            client_factory=client_factory, pin_sha256=pin, owned=owned,
+            recipients=recipients,
+        )
+
     if result.uidvalidity is not None:
         cred.imap_uidvalidity = result.uidvalidity
     if result.highest_uid is not None:
@@ -495,7 +507,46 @@ async def sync_mailbox(
         "alerts": alerts,
         "reads_observed": reads["observed"],
         "silent_access_alerts": reads["alerted"],
+        "outbound_ingested": outbound["outbound_ingested"],
+        "signature_alert": outbound["signature_alert"],
     }
+
+
+async def _scan_sent(
+    session: AsyncSession,
+    mailbox: Mailbox,
+    *,
+    owned: frozenset[str],
+    recipients: list | None = None,
+    client_factory=None,  # noqa: ANN001
+    **conn,  # noqa: ANN003 — host/port/security/username/password/access_token/pin_sha256
+) -> dict:
+    """Pull the Sent folder and hand it to the shared outbound processor.
+
+    Isolated here (not inline) so a sent-mail failure is contained: the main poll
+    has already committed its work conceptually, and the owner's inbox protection
+    must not hinge on whether their provider exposes a Sent folder over IMAP."""
+    result = await asyncio.to_thread(
+        imap_sync.fetch_sent,
+        limit=20, client_factory=client_factory, **conn,
+    )
+    if not result.ok or not result.messages:
+        if not result.ok:
+            logger.info("imap sent-scan skipped for %s: %s", mailbox.id, result.error)
+        return {"outbound_ingested": 0, "signature_alert": False}
+
+    from envelock.channels.mail.api_fetch import FetchedMessage
+    from envelock.workers.outbound import process_outbound
+
+    source = (
+        SourceMechanism.IMAP_IDLE
+        if mailbox.mailbox_class == MailboxClass.PROTECTED.value
+        else SourceMechanism.IMAP_POLL
+    )
+    fetched = [FetchedMessage(ref=str(m.uid), raw=m.raw) for m in result.messages]
+    return await process_outbound(
+        session, mailbox, fetched, source=source, owned=owned, recipients=recipients,
+    )
 
 
 async def _watch_reads(

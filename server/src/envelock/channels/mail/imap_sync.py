@@ -562,6 +562,71 @@ def fetch_since(
                 client.logout()
 
 
+#: Where providers keep sent mail. Tried in order; the first that exists wins.
+#: Covers Zoho/cPanel ("Sent"), Exchange/Outlook ("Sent Items"), Apple
+#: ("Sent Messages"), Gmail-over-IMAP and dovecot's INBOX-prefixed layout.
+SENT_FOLDER_CANDIDATES = (
+    "Sent",
+    "Sent Items",
+    "Sent Messages",
+    "[Gmail]/Sent Mail",
+    "INBOX.Sent",
+)
+
+
+def fetch_sent(
+    *,
+    host: str,
+    port: int,
+    security: str,
+    username: str,
+    password: str | None = None,
+    access_token: str | None = None,
+    limit: int = 20,
+    timeout: float = 30.0,
+    client_factory: ClientFactory | None = None,
+    pin_sha256: str | None = None,
+) -> FetchResult:
+    """The most recent ``limit`` messages from the owner's Sent folder, newest
+    first — the data A12 (reply-stall) and C5 (signature tampering) need.
+
+    Read-only: the owner's sent mail is never modified. The Sent folder is named
+    differently per provider, so the first of ``SENT_FOLDER_CANDIDATES`` that the
+    server reports as existing is used; if none do, this is a clean no-op rather
+    than an error (not every mailbox exposes a Sent folder over IMAP)."""
+    client: ImapClientLike | None = None
+    try:
+        client = _open(
+            host=host, port=port, security=security, username=username,
+            password=password, access_token=access_token,
+            timeout=timeout, client_factory=client_factory, pin_sha256=pin_sha256,
+        )
+        folder = next(
+            (f for f in SENT_FOLDER_CANDIDATES if client.folder_exists(f)), None
+        )
+        if folder is None:
+            return FetchResult(messages=[], ok=True)
+        client.select_folder(folder, readonly=True)
+        uids = sorted(_as_int_list(client.search(["ALL"])))[-limit:]
+        if not uids:
+            return FetchResult(messages=[], ok=True)
+        raw_by_uid = client.fetch(uids, [BODY_FETCH])
+        messages: list[FetchedMessage] = []
+        for uid in reversed(uids):  # newest first — C5 reads the latest signature
+            raw = _raw_body(raw_by_uid.get(uid) or {})
+            if raw:
+                messages.append(FetchedMessage(uid=int(uid), raw=raw))
+        return FetchResult(messages=messages, ok=True)
+    except _AuthError as exc:
+        return FetchResult(ok=False, error=f"login rejected: {exc}", auth_failed=True)
+    except Exception as exc:  # noqa: BLE001
+        return FetchResult(ok=False, error=_reason(exc))
+    finally:
+        if client is not None:
+            with contextlib.suppress(Exception):
+                client.logout()
+
+
 def quarantine_message(
     *,
     host: str,

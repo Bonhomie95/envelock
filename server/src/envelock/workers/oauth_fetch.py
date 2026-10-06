@@ -24,10 +24,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from envelock.channels.mail import api_enforce, enforce
 from envelock.channels.mail.api_fetch import (
     gmail_fetch_history,
+    gmail_fetch_outbound,
     gmail_fetch_raw,
     gmail_message_id,
     gmail_unread_ids,
     graph_fetch_history,
+    graph_fetch_outbound,
     graph_fetch_raw,
     graph_read_states,
 )
@@ -42,6 +44,7 @@ from envelock.notify.dispatch import deliver_pending
 from envelock.platform.alerts import AuditAction, record_audit
 from envelock.platform.pipeline import analyse_event
 from envelock.workers.enforcement import plan_protected_copy
+from envelock.workers.outbound import process_outbound
 
 logger = logging.getLogger("envelock.oauthfetch")
 
@@ -394,6 +397,21 @@ async def sync_oauth_mailbox(
             access_token=access_token, owned=owned, transport=transport,
         )
 
+    # Outbound (Sent folder): A12 reply-stall data + C5 signature watch. Read-only
+    # and best-effort — a provider hiccup on sent mail must never fail the sync.
+    outbound = {"outbound_ingested": 0, "signature_alert": False}
+    if settings.outbound_scan_enabled:
+        try:
+            if provider == "google":
+                sent = await gmail_fetch_outbound(access_token=access_token, transport=transport)
+            else:
+                sent = await graph_fetch_outbound(access_token=access_token, transport=transport)
+            outbound = await process_outbound(
+                session, mailbox, sent, source=source, owned=owned, recipients=recipients,
+            )
+        except Exception as exc:  # noqa: BLE001 — sent-mail scan is non-fatal
+            logger.info("oauth outbound scan skipped for %s: %s", mailbox.id, exc)
+
     mailbox.last_sync_at = datetime.now(UTC)
     mailbox.sync_requested_at = None  # answers any queued push / "Sync now"
     await session.commit()
@@ -404,6 +422,8 @@ async def sync_oauth_mailbox(
         "quarantined": quarantined,
         "rewritten": rewritten,
         "silent_access_alerts": reads["alerted"],
+        "outbound_ingested": outbound["outbound_ingested"],
+        "signature_alert": outbound["signature_alert"],
     }
 
 

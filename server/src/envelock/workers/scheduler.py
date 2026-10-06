@@ -198,6 +198,15 @@ async def accounting_bills_job() -> dict:
     return await flag_bills_for_new_alerts()
 
 
+async def stall_sweep_job() -> dict:
+    """A12 — raise an alert for payment threads whose counterparty has gone silent
+    past their own baseline. A stall is a function of elapsed time, so it cannot
+    be caught at ingest; it is swept here (see workers/stall_sweep)."""
+    from envelock.workers.stall_sweep import run
+
+    return await run()
+
+
 async def domain_reverify_job() -> dict:
     """Revoke a domain's verification if its DNS proof was deleted — so a domain we
     once trusted can't stay trusted after the customer loses control of it. Only a
@@ -599,6 +608,12 @@ def start(stop: asyncio.Event) -> list[asyncio.Task]:
             _run_forever(
                 "domain_reverify", domain_reverify_job,
                 interval=settings.domain_reverify_seconds, stop=stop,
+            )
+        ),
+        asyncio.create_task(
+            _run_forever(
+                "stall_sweep", stall_sweep_job,
+                interval=settings.stall_sweep_seconds, stop=stop,
             )
         ),
         # The monthly "what we caught and why" digest. Cheap when nothing is due

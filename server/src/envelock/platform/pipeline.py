@@ -469,6 +469,8 @@ async def learn(
     if flagged:
         return
 
+    await _update_reply_latency(session, row, event, tenant_id=tenant_id)
+
     dkim = event.authentication.dkim_domain
     if dkim and dkim not in (row.known_dkim_domains or []):
         row.known_dkim_domains = [*(row.known_dkim_domains or []), dkim]
@@ -559,6 +561,52 @@ async def learn(
                 baseline[key] = ((baseline.get(key, value) * (n - 1)) + value) / n
             profile.features = baseline
             profile.sample_count = n
+
+
+async def _update_reply_latency(
+    session: AsyncSession, row, event: MailEvent, *, tenant_id: UUID  # noqa: ANN001
+) -> None:
+    """Learn how fast this counterparty replies to us, for A12's stall threshold.
+
+    When an inbound message is a reply, its ``In-Reply-To``/``References`` name a
+    message we sent. If we stored that outbound message, the gap between our
+    ``sent_at`` and this reply's arrival is one reply-latency sample. Kept as an
+    EMA on the counterparty (seconds), so a single slow reply can't rewrite
+    "normal" and no reply history has to be retained.
+
+    ponytail: EMA stored in the `median_reply_seconds` column — a cheap proxy for
+    a true rolling median; swap for a real median only if A12 proves too jumpy.
+    """
+    refs = [r for r in (event.in_reply_to, *event.references) if r]
+    if not refs:
+        return
+    parent = (
+        await session.execute(
+            select(Message)
+            .where(
+                Message.tenant_id == tenant_id,
+                Message.direction == MailDirection.OUTBOUND.value,
+                Message.rfc_message_id.in_(refs),
+            )
+            .order_by(Message.sent_at.desc().nullslast())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if parent is None:
+        return
+    sent = _aware(parent.sent_at or parent.received_at)
+    reply_at = _aware(event.occurred_at)
+    if sent is None or reply_at is None:
+        return
+    delta = (reply_at - sent).total_seconds()
+    if delta <= 0:
+        return  # clock skew or our own re-send; not a real reply gap
+    delta_i = int(delta)
+    row.median_reply_seconds = (
+        delta_i
+        if row.median_reply_seconds is None
+        else int(0.7 * row.median_reply_seconds + 0.3 * delta_i)
+    )
 
 
 def _llm_min_confidence() -> float:
@@ -680,7 +728,10 @@ async def analyse_event(
             risk_score=assessment.score if assessment else 0,
             source_ref=event.source_ref,
         )
-        if event.direction is MailDirection.INBOUND:
+        if event.direction in (MailDirection.INBOUND, MailDirection.OUTBOUND):
+            # The amount also tags an OUTBOUND message as part of a payment
+            # thread, which is how the reply-stall sweep (A12) finds the threads
+            # worth watching for silence — nothing else records that intent.
             from envelock.detections.impersonation import mail_text as _mail_text
             from envelock.util.payments import has_payment_context as _is_payment
 

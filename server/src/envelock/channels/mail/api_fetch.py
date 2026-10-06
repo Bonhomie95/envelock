@@ -250,6 +250,22 @@ async def gmail_fetch_history(
     return out
 
 
+async def gmail_fetch_outbound(
+    *,
+    access_token: str,
+    limit: int = 20,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> list[FetchedMessage]:
+    """Recent SENT messages as raw RFC822 — the owner's own outbound mail, which
+    C5 (signature tampering) and A12 (reply-stall) need and nothing else fetches.
+    `in:sent` is the whole query; read-only, never written back to."""
+    return await gmail_fetch_raw(
+        access_token=access_token, query="in:sent newer_than:2d", limit=limit,
+        transport=transport, backoff=backoff,
+    )
+
+
 async def gmail_fetch(
     *,
     access_token: str,
@@ -402,6 +418,42 @@ async def graph_fetch_history(
     return out
 
 
+async def graph_fetch_outbound(
+    *,
+    access_token: str,
+    limit: int = 20,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> list[FetchedMessage]:
+    """Recent SENT messages as raw RFC822 via the Sent Items folder on /me — the
+    owner's own outbound mail for C5 and A12. Delegated token → /me (a stored
+    label that is not the real UPN 403s on /users/{label}); read-only."""
+    transport = transport or HttpxTransport()
+    headers = _bearer(access_token)
+    listing = await _retry(
+        lambda: transport.get_json(
+            f"{GRAPH_API}/me/mailFolders/sentitems/messages?$top={limit}&$select=id"
+            f"&$orderby=sentDateTime%20desc",
+            headers=headers,
+        ),
+        backoff=backoff,
+    )
+    out: list[FetchedMessage] = []
+    for ref in listing.get("value", []) or []:
+        msg_id = ref.get("id")
+        if not msg_id:
+            continue
+        raw = await _retry(
+            lambda mid=msg_id: transport.get_bytes(
+                f"{GRAPH_API}/me/messages/{mid}/$value", headers=headers
+            ),
+            backoff=backoff,
+        )
+        if raw:
+            out.append(FetchedMessage(msg_id, raw))
+    return out
+
+
 async def graph_fetch(
     *,
     access_token: str,
@@ -438,11 +490,13 @@ __all__ = [
     "HttpxTransport",
     "gmail_fetch",
     "gmail_fetch_history",
+    "gmail_fetch_outbound",
     "gmail_message_id",
     "gmail_unread_ids",
     "gmail_fetch_raw",
     "graph_fetch",
     "graph_fetch_history",
+    "graph_fetch_outbound",
     "graph_fetch_raw",
     "graph_read_states",
 ]

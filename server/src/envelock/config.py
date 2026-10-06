@@ -238,6 +238,10 @@ class Settings(BaseSettings):
     api_quarantine_enabled: bool = True
     gmail_rewrite_enabled: bool = False
     graph_rewrite_enabled: bool = False
+    #: Read the owner's Sent folder each sync so A12 (reply-stall) has data and C5
+    #: (signature tampering) has a baseline. Read-only — the owner's sent mail is
+    #: never rewritten or quarantined. A kill-switch, not a per-provider gate.
+    outbound_scan_enabled: bool = True
     #: Public origin of the click-time redirector, used to build rewritten links.
     #: Must be reachable from the recipient's device. Empty = this API's own
     #: local origin (dev). Production: a short dedicated domain or the API host.
@@ -336,6 +340,10 @@ class Settings(BaseSettings):
     #: revoke verification if the record was deleted (so access re-gates on the
     #: verify step). Hourly — deletion is rare and revocation is high-impact.
     domain_reverify_seconds: int = 3600
+    #: How often the A12 reply-stall sweep runs. Hourly is ample: the threshold is
+    #: multiples of a counterparty's reply time (hours to days), so a tighter cycle
+    #: would only re-scan the same not-yet-overdue threads.
+    stall_sweep_seconds: int = 3600
     #: How often the monthly-digest job WAKES UP, not how often a customer gets
     #: one — the due date lives on the tenant row, so this only decides how
     #: promptly a due digest goes out. Six-hourly: a digest arriving a few hours

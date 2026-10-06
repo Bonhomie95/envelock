@@ -381,6 +381,10 @@ class Mailbox(Base, UUIDMixin, TimestampMixin):
     #: the worker and read by the dashboard. The in-memory job registry cannot
     #: carry this across processes.
     backfill_state: Mapped[dict | None] = mapped_column(JsonDict)
+    #: Last-seen outbound signature block, for C5 (signature tampering). The
+    #: outbound watch diffs the bank identifiers in this against the newest sent
+    #: message; None means "no baseline learned yet", which is never a change.
+    signature_fingerprint: Mapped[str | None] = mapped_column(Text)
 
     __table_args__ = (UniqueConstraint("tenant_id", "address"),)
 
