@@ -69,7 +69,9 @@ jobs:
 
       - name: Test
         # conftest points the suite at envelock_test on localhost:5432.
-        run: pytest -q
+        # -n auto runs it in parallel; conftest gives each worker its own
+        # database (_per_run_dsn), so workers never collide.
+        run: pytest -q -n auto
 
       # The same suite again, with Postgres row-level security actually enforced.
       # It is a different question from "does the code work": it asks whether the
@@ -84,7 +86,7 @@ jobs:
       - name: Test with row-level security enforced
         env:
           ENVELOCK_TEST_RLS: "1"
-        run: pytest -q
+        run: pytest -q -n auto
 
   # Proves the production image builds AND that it carries every module the
   # runtime actually imports. `pip install .` omits the dev extra, which is how
