@@ -185,7 +185,9 @@ class _Google:
         # modify (not readonly): label-quarantine, and insert the protected copy
         # + trash the original. It does NOT allow permanent deletion or sending.
         "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/admin.reports.audit.readonly",
+        # Read filters + auto-forwarding so a malicious external-forward or
+        # finance-hiding filter raises C1/C2. Read-only; user-consentable.
+        "https://www.googleapis.com/auth/gmail.settings.basic",
     )
     #: Gmail's IMAP XOAUTH2 needs the full-mail scope; the API path does not.
     imap_scopes: tuple[str, ...] = ("https://mail.google.com/",)

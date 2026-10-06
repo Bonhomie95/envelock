@@ -405,12 +405,22 @@ async def sync_oauth_mailbox(
             select(MailboxCredential).where(MailboxCredential.mailbox_id == mailbox.id)
         )
     ).scalar_one_or_none()
+    rules = {"rules_new": 0, "rules_alerted": 0}
     if cred is not None:
         watch = _watch_reads_gmail if provider == "google" else _watch_reads_graph
         reads = await watch(
             session, mailbox, cred,
             access_token=access_token, owned=owned, transport=transport,
         )
+        # Server-side rule watch (C1 external forward / C2 finance-hiding).
+        if settings.rule_scan_enabled:
+            from envelock.workers.mailbox_rules import watch_rules
+
+            rules = await watch_rules(
+                session, mailbox, cred,
+                provider=provider, access_token=access_token,
+                owned=owned, recipients=recipients, transport=transport,
+            )
 
     # Outbound (Sent folder): A12 reply-stall data + C5 signature watch. Read-only
     # and best-effort — a provider hiccup on sent mail must never fail the sync.
@@ -439,6 +449,7 @@ async def sync_oauth_mailbox(
         "silent_access_alerts": reads["alerted"],
         "outbound_ingested": outbound["outbound_ingested"],
         "signature_alert": outbound["signature_alert"],
+        "rule_alerts": rules["rules_alerted"],
     }
 
 

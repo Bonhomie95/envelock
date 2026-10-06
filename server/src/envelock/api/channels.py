@@ -156,7 +156,11 @@ _OAUTH_SOURCES: dict[str, list[SourceMechanism]] = {
     # cannot read sign-in logs, so the mailbox must NOT claim ENTRA_LOGS: its
     # protection level reflects what we can actually deliver.
     "microsoft": [SourceMechanism.GRAPH_API],
-    "google": [SourceMechanism.GMAIL_API, SourceMechanism.GOOGLE_REPORTS],
+    # GOOGLE_REPORTS (sign-in logs / MFA state) was claimed here but nothing reads
+    # Google's Reports API, so a Gmail mailbox advertised sign-in and MFA coverage
+    # it never delivered. Dropped — like Microsoft's ENTRA_LOGS above — so the
+    # protection level stays honest. Those login detections come from the sensor.
+    "google": [SourceMechanism.GMAIL_API],
 }
 
 

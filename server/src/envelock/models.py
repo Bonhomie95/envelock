@@ -436,6 +436,10 @@ class MailboxCredential(Base, UUIDMixin, TimestampMixin):
     #: about. Bounded to the most recent `sensor.MAX_TRACKED_UNSEEN`. Only kept
     #: for mailboxes with silent-access detection armed.
     imap_unseen_uids: Mapped[list | None] = mapped_column(JsonDict)
+    #: Ids of server-side rules/filters already seen, so only a NEWLY-created rule
+    #: (external forward, finance-hiding) raises C1/C2 — not pre-existing ones on
+    #: every poll. Set by the mailbox-rule watch.
+    rule_ids: Mapped[list | None] = mapped_column(JsonDict)
     #: OAuth access-token expiry (Tier 1). Plaintext so the refresh scheduler can
     #: find due tokens without decrypting the sealed credential.
     token_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

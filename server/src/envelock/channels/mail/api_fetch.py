@@ -291,6 +291,60 @@ async def graph_whoami(
     return addr.lower() if addr else None
 
 
+async def graph_message_rules(
+    *,
+    access_token: str,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> list[dict]:
+    """Inbox rules on /me (needs MailboxSettings.Read, already in the connect
+    scope). Feeds C1 (external forwarding) and C2 (rules that hide finance mail).
+    Returns the raw rule objects; the watcher interprets actions/conditions."""
+    transport = transport or HttpxTransport()
+    body = await _retry(
+        lambda: transport.get_json(
+            f"{GRAPH_API}/me/mailFolders/inbox/messageRules", headers=_bearer(access_token)
+        ),
+        backoff=backoff,
+    )
+    return list(body.get("value", []) or [])
+
+
+async def gmail_filters(
+    *,
+    access_token: str,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> list[dict]:
+    """Gmail filters (needs gmail.settings.basic). Each carries a `criteria` and an
+    `action` (forward / addLabelIds / removeLabelIds) — the C1/C2 inputs."""
+    transport = transport or HttpxTransport()
+    body = await _retry(
+        lambda: transport.get_json(
+            f"{GMAIL_API}/users/me/settings/filters", headers=_bearer(access_token)
+        ),
+        backoff=backoff,
+    )
+    return list(body.get("filter", []) or [])
+
+
+async def gmail_auto_forwarding(
+    *,
+    access_token: str,
+    transport: HttpTransport | None = None,
+    backoff: float = 0.5,
+) -> dict:
+    """Mailbox-level auto-forwarding (needs gmail.settings.basic). `{enabled,
+    emailAddress}` — an enabled external address is the C1 Critical case."""
+    transport = transport or HttpxTransport()
+    return await _retry(
+        lambda: transport.get_json(
+            f"{GMAIL_API}/users/me/settings/autoForwarding", headers=_bearer(access_token)
+        ),
+        backoff=backoff,
+    )
+
+
 async def gmail_fetch_outbound(
     *,
     access_token: str,
@@ -529,9 +583,11 @@ __all__ = [
     "FetchedMessage",
     "HttpTransport",
     "HttpxTransport",
+    "gmail_auto_forwarding",
     "gmail_fetch",
     "gmail_fetch_history",
     "gmail_fetch_outbound",
+    "gmail_filters",
     "gmail_message_id",
     "gmail_unread_ids",
     "gmail_fetch_raw",
@@ -540,6 +596,7 @@ __all__ = [
     "graph_fetch_history",
     "graph_fetch_outbound",
     "graph_fetch_raw",
+    "graph_message_rules",
     "graph_read_states",
     "graph_whoami",
 ]

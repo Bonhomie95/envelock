@@ -89,7 +89,7 @@ Three independent channels feed one normalised event stream:
 
 - **Mail** — Graph/Gmail APIs, admin APIs, direct IMAP, or a forwarded copy
 - **Identity** — provider sign-in logs, or the client sensor on the device
-- **External** — Certificate Transparency, zone files, RDAP, DMARC reports
+- **External** — Certificate Transparency and RDAP (domain registration data)
 
 Each channel has a fallback that works everywhere: every mail system supports
 forwarding, the sensor runs on the device rather than the server, and the

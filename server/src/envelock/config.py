@@ -242,6 +242,11 @@ class Settings(BaseSettings):
     #: (signature tampering) has a baseline. Read-only — the owner's sent mail is
     #: never rewritten or quarantined. A kill-switch, not a per-provider gate.
     outbound_scan_enabled: bool = True
+    #: Read server-side rules/filters each sync so a newly-created external-forward
+    #: (C1) or finance-hiding (C2) rule raises an alert — the headline account-
+    #: takeover signal. Read-only; needs MailboxSettings.Read (Graph, already in
+    #: scope) / gmail.settings.basic (Gmail). Kill-switch.
+    rule_scan_enabled: bool = True
     #: Public origin of the click-time redirector, used to build rewritten links.
     #: Must be reachable from the recipient's device. Empty = this API's own
     #: local origin (dev). Production: a short dedicated domain or the API host.
