@@ -20,6 +20,7 @@ import {
   Users,
   Workflow,
 } from "lucide-react";
+import { ThreatFlow } from "../components/ThreatFlow";
 import { PLAN_TIERS } from "../lib/plans";
 import { useScrollReveal } from "../lib/useScrollReveal";
 import { api, auth, type ScanResult } from "../lib/api";
@@ -342,6 +343,7 @@ export default function Landing() {
             requests and decide what to do next.
           </p>
         </div>
+        <ThreatFlow />
         <div className="coverage-grid">
           {COVERAGE.map(({ icon: Icon, name, text }, i) => (
             <article key={name}>
