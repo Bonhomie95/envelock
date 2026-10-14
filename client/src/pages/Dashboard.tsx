@@ -585,7 +585,10 @@ function AppPasswordNotice() {
           <p className="fg-2 mt-1 text-xs leading-relaxed">
             Most providers reject your normal password over IMAP once two-factor is
             on. Create an <span className="font-semibold">app-specific password</span>{" "}
-            first, then paste it when connecting.
+            first, then paste it when connecting. The app-password page is blank
+            until two-step verification is turned on — and some Google Workspace or
+            Microsoft 365 accounts disable app passwords, in which case connect over
+            the provider&rsquo;s own sign-in (Connect Google / Microsoft) instead.
           </p>
           <button
             onClick={() => setOpen((o) => !o)}

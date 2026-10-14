@@ -192,6 +192,15 @@ export default function ResetPassword() {
             >
               NO EMAIL? RESET WITH AN AUTHENTICATOR CODE
             </button>
+            {/* A genuinely-unregistered person gets the same (deliberately
+                account-neutral) message above; this gives them a way forward
+                without the app ever confirming whether an account exists. */}
+            <p className="fg-3 text-center text-sm">
+              Never had an Envelock account?{" "}
+              <Link to="/signup" className="accent font-semibold">
+                Create one
+              </Link>
+            </p>
           </div>
         )}
 
