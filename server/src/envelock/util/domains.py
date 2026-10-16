@@ -19,18 +19,27 @@ except Exception:  # pragma: no cover
 
 #: Confusable pairs we normalise before comparison. Covers the founding brief's
 #: "a to e, I to l, l to I, g to q" plus the Unicode homoglyphs that matter.
+# Visually-confusable characters folded to the Latin letter they imitate, so a
+# domain spelled with them collapses to the same skeleton as the real one. Keyed
+# on the lowercase glyph (skeleton() lowercases first). Covers the three scripts
+# an attacker actually registers a lookalike in — ASCII leetspeak, Cyrillic and
+# Greek — because a fraudster only needs one glyph we miss to slip a cousin
+# domain past the comparison.
 _SKELETON_MAP = str.maketrans(
     {
+        # Digits / punctuation standing in for letters.
         "0": "o", "1": "l", "3": "e", "4": "a", "5": "s", "6": "g", "7": "t",
-        "8": "b", "9": "g", "|": "l", "!": "i",
-        "і": "i", "І": "i",  # Cyrillic
-        "е": "e", "Е": "e",
-        "а": "a", "А": "a",
-        "о": "o", "О": "o",
-        "с": "c", "С": "c",
-        "р": "p", "Р": "p",
-        "ѕ": "s", "ԛ": "q", "ԁ": "d", "һ": "h", "ѵ": "v", "х": "x",
-        "ɡ": "g", "ı": "i", "ȷ": "j",
+        "8": "b", "9": "g", "|": "l", "!": "i", "ı": "i", "ȷ": "j",
+        # Cyrillic → Latin.
+        "а": "a", "в": "b", "с": "c", "ԁ": "d", "е": "e", "ё": "e", "ԍ": "g",
+        "ɡ": "g", "һ": "h", "і": "i", "ї": "i", "ј": "j", "к": "k", "ӏ": "l",
+        "м": "m", "н": "h", "о": "o", "р": "p", "ԛ": "q", "ѕ": "s", "т": "t",
+        "у": "y", "ԝ": "w", "ѵ": "v", "х": "x",
+        # Greek → Latin.
+        "α": "a", "β": "b", "γ": "y", "δ": "o", "ε": "e", "ζ": "z", "η": "n",
+        "θ": "o", "ι": "i", "κ": "k", "μ": "m", "ν": "v", "ο": "o", "π": "n",
+        "ρ": "p", "ς": "c", "σ": "o", "τ": "t", "υ": "u", "φ": "o", "χ": "x",
+        "ω": "w",
     }
 )
 

@@ -669,6 +669,11 @@ export default function Suppliers() {
   }, [rows, filter]);
 
   const covered = rows?.filter((c) => c.needs.length === 0).length ?? 0;
+  // Coverage needs both halves. Breaking it out stops "0/4" reading as a bug
+  // when every supplier has an account but none has a number yet — and names
+  // the half that's missing across the whole list.
+  const withAccount = rows?.filter((c) => !c.needs.includes("bank_details")).length ?? 0;
+  const withNumber = rows?.filter((c) => !c.needs.includes("callback_number")).length ?? 0;
 
   function row(c: Counterparty) {
     const open = expanded === c.domain;
@@ -764,12 +769,25 @@ export default function Suppliers() {
                 {rows ? `${covered}/${rows.length}` : "—"}
               </div>
               <div className="sect-label mt-1">Suppliers fully covered</div>
+              {/* The two halves, so a 0 up top reads as "one piece missing",
+                  not "broken". A supplier flips to covered on its own the
+                  moment both are in — there is no button to press. */}
+              {rows && rows.length > 0 && (
+                <div className="fg-3 mono-xs mt-2 flex flex-wrap gap-x-4 gap-y-1">
+                  <span>
+                    {withAccount}/{rows.length} have an account
+                  </span>
+                  <span>
+                    {withNumber}/{rows.length} have a number to ring
+                  </span>
+                </div>
+              )}
             </div>
             <p className="fg-3 max-w-sm text-xs leading-relaxed">
-              A supplier is covered once we hold both an account and a number to
-              ring. With one missing, a bank-change email from them is still
-              caught — but your team has nothing trustworthy to verify it
-              against.
+              A supplier counts as covered once it has both an account and a
+              number to ring — it happens automatically, nothing to click. With
+              one missing, a bank-change email from them is still caught; your
+              team just has nothing trustworthy to verify it against.
             </p>
           </>
         )}

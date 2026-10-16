@@ -241,9 +241,15 @@
     }
 
     function isExtensionPage(sender) {
-      if (!sender || sender.tab) return false;
+      /* The settings page opens in its own tab (options_ui.open_in_tab), so it
+         carries a sender.tab exactly like a web page — identifying it by the
+         *absence* of a tab rejected every enrol/status/remove it sent, which is
+         the "no answer from the extension" the options page then showed. Match
+         on the extension's own URL instead: a web page's content script always
+         has a web-origin URL and never matches, which is what keeps it out. */
+      if (!sender || !sender.url) return false;
       var base = api.runtime.getURL ? api.runtime.getURL("") : null;
-      return !base || !sender.url || sender.url.indexOf(base) === 0;
+      return !!base && sender.url.indexOf(base) === 0;
     }
 
     function onMessage(msg, sender, sendResponse) {

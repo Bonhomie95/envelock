@@ -134,6 +134,22 @@ test("a web page cannot enrol or remove through a content script", async () => {
   assert.equal(status.enrollments.length, 1, "still enrolled");
 });
 
+test("the settings page is answered even though it runs in a tab", async () => {
+  const { bg, api } = await setup();
+  let reply;
+  const handled = bg.onMessage(
+    { type: "status" },
+    // options_ui.open_in_tab: a real tab, URL on the extension's own origin.
+    { tab: { id: 2 }, url: api.runtime.getURL("options.html") },
+    (r) => {
+      reply = r;
+    },
+  );
+  assert.equal(handled, true);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(reply.ok, true);
+});
+
 test("an unknown 'other webmail' address is refused before anything is sent", async () => {
   const api = fakeChrome();
   const server = envelockServer();
