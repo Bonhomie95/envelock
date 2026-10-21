@@ -39,7 +39,7 @@ from envelock.platform.alerts import raise_alert
 from envelock.platform.graph import GRAPH
 from envelock.platform.remediation import can_remediate as _can_remediate
 from envelock.risk.engine import RiskAssessment, assess
-from envelock.util.domains import registrable_domain
+from envelock.util.domains import is_free_mail, registrable_domain
 from envelock.util.payments import (
     extract_amounts,
     extract_bank_identifiers,
@@ -242,7 +242,11 @@ async def build_context(
 
         # Check the FROM domain against free public blocklists. A hit adds it to the
         # malicious set so B1 (URLs) and B7 (sender reputation) fire on it.
-        if sender_domain and sender_domain not in owned_domains:
+        # Free-mail providers are excluded: gmail.com et al. are shared by billions
+        # and do appear on spam feeds, so blocklisting the registrable domain would
+        # flag every message from the provider. A bad free-mail *account* is caught
+        # by the content and identity detections, not by reputation of the domain.
+        if sender_domain and sender_domain not in owned_domains and not is_free_mail(sender_domain):
             from envelock.channels.external.reputation import check_sender_domain
 
             rep = await check_sender_domain(sender_domain)

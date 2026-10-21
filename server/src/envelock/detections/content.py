@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from envelock.core.capabilities import Capability
 from envelock.core.enums import AlertTier, MailDirection
 from envelock.detections.base import DetectionContext, FindingResult, register
-from envelock.util.domains import registrable_domain
+from envelock.util.domains import is_free_mail, registrable_domain
 from envelock.util.payments import extract_bank_identifiers, has_payment_context
 
 _INBOUND = frozenset({Capability.READ_INBOUND})
@@ -184,8 +184,6 @@ class _A5DisplayNameSpoof:
         for known in comparison:
             brand = known.partition(".")[0]
             if len(brand) >= 4 and brand in display and sender != known:
-                from envelock.util.domains import is_free_mail
-
                 free = is_free_mail(sender)
                 return [
                     FindingResult(
@@ -833,7 +831,9 @@ class _B7SenderReputation:
         if mail is None or not _external(ctx):
             return []
         sender = registrable_domain(mail.sender.domain)
-        if sender not in ctx.malicious_domains:
+        # Never pin "on a threat feed" on a free-mail provider — the registrable
+        # domain is shared by billions, so it names the provider, not a bad actor.
+        if sender not in ctx.malicious_domains or is_free_mail(sender):
             return []
         return [
             FindingResult(

@@ -240,6 +240,24 @@ def _ctx(raw: str, counterparty=None, malicious=frozenset()) -> DetectionContext
     )
 
 
+FREEMAIL_SENDER = """\
+From: "Ola Amos" <ola.amos@gmail.com>
+To: pay@acme.com
+Subject: Hello
+Content-Type: text/plain
+
+Just checking in.
+"""
+
+
+def test_freemail_sender_is_never_flagged_as_a_threat_feed_hit() -> None:
+    # gmail.com (and every free-mail provider) turns up on spam feeds, but the
+    # registrable domain names the provider, not the sender — B7 must not fire,
+    # or every Gmail sender reads CRITICAL.
+    findings = run_all(_ctx(FREEMAIL_SENDER, malicious=frozenset({"gmail.com"})))
+    assert "B7" not in {f.service for f in findings}
+
+
 NOVEL_LOOKALIKE_BEC = """\
 From: "Gemini Accounts" <billing@gemìni.com>
 To: pay@acme.com

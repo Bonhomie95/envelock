@@ -191,8 +191,11 @@ def test_complete_includes_five_and_checkout_sells_the_rest(
     assert form["line_items[0][price]"] == "price_cmp"
     assert form["line_items[1][price]"] == "price_cmp_seat"
     assert form["line_items[1][quantity]"] == "3"
-    # The signup trial is still running, so the first charge waits for its end.
-    assert int(form["subscription_data[trial_end]"]) > time.time() + 48 * 3600
+    # The signup trial is still running, so the first charge waits for its end —
+    # a deferred billing anchor, not a Stripe trial, so the button reads "Subscribe".
+    assert int(form["subscription_data[billing_cycle_anchor]"]) > time.time() + 48 * 3600
+    assert form["subscription_data[proration_behavior]"] == "none"
+    assert "subscription_data[trial_end]" not in form
 
 
 def test_paid_checkout_grants_the_seats_and_blocks_a_second_checkout(

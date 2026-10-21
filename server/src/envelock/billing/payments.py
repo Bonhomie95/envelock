@@ -341,8 +341,13 @@ class _Stripe:
                 form[f"line_items[{i}][quantity]"] = str(qty)
         if trial_end:
             # First charge when Envelock's own trial ends, not today — the
-            # billing page promises exactly that.
-            form["subscription_data[trial_end]"] = str(trial_end)
+            # billing page promises exactly that. Done with a future billing-cycle
+            # anchor rather than a Stripe trial: the subscription starts active, so
+            # Checkout's button reads "Subscribe" instead of "Start trial" for a
+            # customer who is already mid-trial, while proration_behavior=none
+            # leaves the gap until the anchor unbilled (no charge today).
+            form["subscription_data[billing_cycle_anchor]"] = str(trial_end)
+            form["subscription_data[proration_behavior]"] = "none"
         for k, v in (metadata or {}).items():
             form[f"metadata[{k}]"] = v
             # Mirror onto the subscription so it's visible after the session expires.
