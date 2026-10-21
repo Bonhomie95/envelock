@@ -29,9 +29,50 @@ from envelock.notify.ladder import (
     Rung,
     should_escalate_to_sms,
 )
-from envelock.notify.senders import Dispatcher, notification_from_alert
+from envelock.notify.senders import Dispatcher, Notification, SendResult, notification_from_alert
 from envelock.obs.metrics import observe_delivery
 from envelock.platform import alerts as alert_svc
+
+#: Push-service responses that mean the subscription is dead for good — the
+#: browser unsubscribed, cleared its data, or the endpoint expired. We delete the
+#: row so it stops failing on every future alert (and a stale one no longer
+#: starves a live sibling subscription on another device).
+_PUSH_GONE_MARKERS = ("410", "404", "gone", "unsubscribed", "expired", "not found")
+
+
+async def _push_to_all(
+    session: AsyncSession,
+    dispatcher: Dispatcher,
+    note: Notification,
+    user_id: UUID | None,
+) -> SendResult:
+    """Send one Web Push per registered subscription for the user — every device,
+    not just the first row — and prune any that come back permanently gone.
+    Delivered if at least one subscription accepted it."""
+    subs = (
+        (
+            await session.execute(
+                select(PushSubscription).where(PushSubscription.user_id == user_id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    if not subs:
+        return SendResult(Rung.L1_PUSH, False, "no destination")
+    delivered = False
+    last_error = "web push failed"
+    for sub in subs:
+        result = await dispatcher.push.send(
+            note, to=sub.endpoint, keys={"p256dh": sub.p256dh, "auth": sub.auth}
+        )
+        if result.delivered:
+            delivered = True
+            continue
+        last_error = result.reason
+        if any(m in result.reason.lower() for m in _PUSH_GONE_MARKERS):
+            await session.delete(sub)
+    return SendResult(Rung.L1_PUSH, delivered, "web push sent" if delivered else last_error)
 
 
 async def _destination(
@@ -118,17 +159,8 @@ async def deliver_pending(
             if report is not None:
                 note = replace(note, report=report)
         if rung is Rung.L1_PUSH:
-            # Web Push needs the subscription's encryption keys, not just the
-            # endpoint — fetch them and hand them to the sender.
-            sub = (
-                await session.execute(
-                    select(PushSubscription).where(
-                        PushSubscription.user_id == row.user_id
-                    )
-                )
-            ).scalars().first()
-            keys = {"p256dh": sub.p256dh, "auth": sub.auth} if sub else None
-            result = await dispatcher.push.send(note, to=dest, keys=keys)
+            # Every registered device, and dead subscriptions pruned as we go.
+            result = await _push_to_all(session, dispatcher, note, row.user_id)
         else:
             result = await dispatcher.sender(rung).send(note, to=dest)
         if result.delivered:

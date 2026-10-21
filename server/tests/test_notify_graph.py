@@ -115,6 +115,62 @@ async def test_deliver_pending_sends_in_app_and_skips_unconfigured(session) -> N
 
 
 @pytest.mark.asyncio
+async def test_push_reaches_every_device_and_prunes_the_dead_one(session) -> None:
+    """A user with two browsers must be pushed on both, and a 410 Gone
+    subscription must be deleted so it stops failing forever."""
+    from sqlalchemy import select
+
+    from envelock.models import PushSubscription
+    from envelock.notify.ladder import Recipient
+    from envelock.notify.senders import Rung, SendResult
+
+    tenant, admin = await _tenant_with_admin(session, email="push@acme.com")
+    for ep in ("https://live.example/ok", "https://dead.example/gone"):
+        session.add(
+            PushSubscription(
+                id=uuid4(), tenant_id=tenant.id, user_id=admin.id,
+                endpoint=ep, p256dh="k", auth="a",
+            )
+        )
+    await session.flush()
+
+    class _FakePush:
+        rung = Rung.L1_PUSH
+        configured = True
+        sent: list[str] = []
+
+        async def send(self, note, *, to, keys=None):  # noqa: ANN001, ARG002
+            self.sent.append(to)
+            if "dead" in to:
+                return SendResult(Rung.L1_PUSH, False, "web push failed: 410 Gone")
+            return SendResult(Rung.L1_PUSH, True, "web push sent")
+
+    dispatcher = Dispatcher()
+    fake = _FakePush()
+    dispatcher.push = fake  # type: ignore[assignment]
+
+    alert = await alert_svc.raise_alert(
+        session, tenant_id=tenant.id, mailbox_id=None,
+        assessment=_assessment(AlertTier.CRITICAL), findings=[],
+        recipients=[Recipient(
+            user_id=str(admin.id), is_admin=True, has_push_subscription=True,
+            out_of_band_email=None, phone=None, has_sensor=True,
+        )],
+        counterparty_domain="vendor.com",
+    )
+    await session.flush()
+
+    touched = await deliver_pending(session, alert_id=alert.id, dispatcher=dispatcher)
+
+    assert set(fake.sent) == {"https://live.example/ok", "https://dead.example/gone"}
+    # One live delivery is enough to call the rung sent.
+    assert {d.rung: d.status for d in touched}["L1"] == "sent"
+    # The dead subscription is gone; the live one remains.
+    left = (await session.execute(select(PushSubscription.endpoint))).scalars().all()
+    assert left == ["https://live.example/ok"]
+
+
+@pytest.mark.asyncio
 async def test_resolving_a_critical_feeds_the_e8_graph(session) -> None:
     GRAPH.clear()
     tenant, admin = await _tenant_with_admin(session, email="b@acme.com")
