@@ -394,6 +394,18 @@ export default function SensorPanel({
       {mailboxes.some((m) => byMailbox.has(m.id)) && (
         <div className="border-t px-5 py-3.5">
           <p className="sect-label">Silent-access alerts</p>
+          {/* A device is paired but the C11 switch is still off for at least one
+              mailbox — point out the capability it unlocks. Deliberately not
+              auto-armed: a mailbox also read on a phone with no sensor would
+              alert on every read, so it stays the owner's call. */}
+          {isAdmin &&
+            mailboxes.some((m) => byMailbox.has(m.id) && !m.silent_access_armed) && (
+              <p className="fg-2 mt-1.5 text-xs leading-relaxed">
+                A device is paired — turn this on to be warned the moment your
+                mail is read while none of your devices are open. Leave it off
+                for a mailbox you also read on a phone with no sensor.
+              </p>
+            )}
           <ul className="mt-2 space-y-2" role="list">
             {mailboxes
               .filter((m) => byMailbox.has(m.id))

@@ -169,9 +169,12 @@ def _iso(value: str | None) -> datetime | None:
 # ── Tier 1: Google Workspace ─────────────────────────────────────────────────
 class GmailProvider(MailProvider):
     source = SourceMechanism.GMAIL_API
+    # Must match the scopes the live OAuth flow requests (channels/mail/oauth.py).
+    # admin.reports.audit.readonly was dropped — we never used the audit log — and
+    # requesting a scope you don't use is a guaranteed verification rejection.
     SCOPES = (
         "https://www.googleapis.com/auth/gmail.modify",
-        "https://www.googleapis.com/auth/admin.reports.audit.readonly",
+        "https://www.googleapis.com/auth/gmail.settings.basic",
     )
 
     def __init__(self) -> None:
