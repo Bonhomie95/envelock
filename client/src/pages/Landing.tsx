@@ -253,7 +253,7 @@ const COVERAGE = [
   {
     icon: Fingerprint,
     name: "Account takeover",
-    text: "Surface unusual sign-ins, forwarding rules, and unexplained mailbox access with supported integrations.",
+    text: "Catch new forwarding rules, silent reads, and mail sent while you're away — even on plain IMAP, through the Envelock sensor, with no provider sign-in logs required.",
   },
 ];
 
