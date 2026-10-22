@@ -103,3 +103,35 @@ def test_a11_flags_a_dormant_thread_revived_with_a_payment_request() -> None:
     )
     mail = _mail(in_reply_to="<old-thread@supplier.com>")
     assert "A11" in _services(_ctx(mail, counterparty=cp))
+
+
+def _sent(**over) -> MailEvent:
+    over.setdefault("sent_at", datetime.now(UTC))
+    return _mail(direction=MailDirection.OUTBOUND, **over)
+
+
+def _away_ctx(mail: MailEvent, **over):
+    kw = {"silent_access_armed": True, "has_sensor": True, "active_sessions": 0}
+    kw.update(over)
+    return _ctx(mail, **kw)
+
+
+def test_c15_flags_a_send_while_no_device_was_present() -> None:
+    assert "C15" in _services(_away_ctx(_sent()))
+
+
+def test_c15_silent_when_a_device_is_present() -> None:
+    assert "C15" not in _services(_away_ctx(_sent(), active_sessions=1))
+
+
+def test_c15_silent_when_not_armed() -> None:
+    assert "C15" not in _services(_away_ctx(_sent(), silent_access_armed=False))
+
+
+def test_c15_silent_without_a_sensor() -> None:
+    assert "C15" not in _services(_away_ctx(_sent(), has_sensor=False))
+
+
+def test_c15_silent_on_the_historical_backfill() -> None:
+    old = _sent(sent_at=datetime.now(UTC) - timedelta(days=3))
+    assert "C15" not in _services(_away_ctx(old))

@@ -138,11 +138,14 @@ async def build_context(
     known_devices: set[str] = set()
     previous: PreviousSession | None = None
     mfa_enabled: bool | None = None
+    silent_access_armed = False
+    has_sensor = False
 
     if mailbox_id is not None:
         mailbox = await session.get(Mailbox, mailbox_id)
         if mailbox is not None:
             sources |= {SourceMechanism(s) for s in (mailbox.sources or []) if s}
+            silent_access_armed = bool(mailbox.silent_access_armed)
 
         sessions = (
             (
@@ -166,6 +169,7 @@ async def build_context(
         active_sessions = sum(
             1 for s in sessions if s.ended_at is None and is_live(s.last_seen_at)
         )
+        has_sensor = bool(sessions)
         known_devices = {s.device_fingerprint for s in sessions if s.device_fingerprint}
         if sessions:
             latest = sessions[0]
@@ -392,6 +396,8 @@ async def build_context(
         counterparty=counterparty,
         thread_history=thread_history,
         active_sessions=active_sessions,
+        silent_access_armed=silent_access_armed,
+        has_sensor=has_sensor,
         known_devices=frozenset(known_devices),
         previous_session=previous,
         sender_baseline=baseline,

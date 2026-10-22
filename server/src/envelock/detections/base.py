@@ -65,8 +65,15 @@ class DetectionContext:
     counterparty: CounterpartyState | None = None
     #: Prior messages sharing this message's thread key (oldest first, capped).
     thread_history: tuple[ThreadMessage, ...] = ()
-    #: Live sensor sessions at `event.occurred_at`, for C11.
+    #: Live sensor sessions at `event.occurred_at`, for C11 and C15.
     active_sessions: int = 0
+    #: Whether this mailbox has opted into silent-access alerts (C11 reads, C15
+    #: sends). Off by default; a mailbox also used on an unsensored phone would
+    #: otherwise alert on its owner's own activity.
+    silent_access_armed: bool = False
+    #: Whether a sensor has ever reported on this mailbox. Without one, "no device
+    #: present" is meaningless (it is always true), so the away-detections require it.
+    has_sensor: bool = False
     #: Known device fingerprints for this mailbox, for C10.
     known_devices: frozenset[str] = frozenset()
     #: Prior sign-in, for C7/C8 travel analysis.

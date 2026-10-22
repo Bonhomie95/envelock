@@ -312,7 +312,7 @@ export default function SensorPanel({
       await api.patchMailbox(m.id, { silent_access_armed: armed });
       toast.success(
         armed
-          ? `${m.address}: a read with none of its devices present will now raise an alert.`
+          ? `${m.address}: a read or send with none of its devices present will now raise an alert.`
           : `${m.address}: silent-access alerts are off.`,
       );
       await onChanged();
@@ -343,7 +343,7 @@ export default function SensorPanel({
         <p className="fg-2 mt-2 text-xs leading-relaxed">
           Install the Envelock sensor where you read mail. It tells Envelock
           which devices are yours, so a sign-in from somewhere new — or a message
-          read while none of them were open — raises an alert.
+          read or sent while none of them were open — raises an alert.
         </p>
         {!planIncludesIdentity && (
           <p className="fg-3 mt-2 text-xs leading-relaxed">
@@ -402,8 +402,10 @@ export default function SensorPanel({
             mailboxes.some((m) => byMailbox.has(m.id) && !m.silent_access_armed) && (
               <p className="fg-2 mt-1.5 text-xs leading-relaxed">
                 A device is paired — turn this on to be warned the moment your
-                mail is read while none of your devices are open. Leave it off
-                for a mailbox you also read on a phone with no sensor.
+                mail is read or sent while none of your devices are open (how
+                Envelock spots a stranger in a mailbox even on a plain IMAP host
+                with no sign-in log). Leave it off for a mailbox you also use on
+                a phone with no sensor.
               </p>
             )}
           <ul className="mt-2 space-y-2" role="list">
@@ -495,8 +497,8 @@ export default function SensorPanel({
 
       <ConfirmDialog
         open={arming !== null}
-        title="Alert when this mailbox is read with none of its devices present?"
-        body={`Only turn this on if ${arming?.address ?? "this mailbox"} is read exclusively on devices with the Envelock sensor. A read anywhere else — a phone's mail app, a colleague's laptop — will look exactly like an intruder, because to Envelock it is one.`}
+        title="Alert when this mailbox is used with none of its devices present?"
+        body={`Only turn this on if ${arming?.address ?? "this mailbox"} is read and sent from exclusively on devices with the Envelock sensor. A read or send anywhere else — a phone's mail app, a colleague's laptop — will look exactly like an intruder, because to Envelock it is one.`}
         confirmLabel="Turn on"
         busy={busy}
         onConfirm={() => arming && void setArmed(arming, true)}

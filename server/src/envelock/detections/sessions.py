@@ -10,9 +10,10 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 
 from envelock.core.capabilities import Capability
-from envelock.core.enums import AlertTier, IdentityEventKind
+from envelock.core.enums import AlertTier, IdentityEventKind, MailDirection
 from envelock.detections.base import DetectionContext, FindingResult, register
 from envelock.util.domains import registrable_domain
 
@@ -373,8 +374,60 @@ class _C14CounterpartyTravel:
         ]
 
 
+@dataclass(frozen=True)
+class _C15OutboundWhileAway:
+    """A message sent from the mailbox while none of the owner's sensor devices
+    were present — the IMAP-friendly "someone else is logged in" signal.
+
+    True sign-in logs need provider audit telemetry a small IMAP host does not
+    offer. But a *send* is an action only a logged-in session can take, and the
+    sensor already tells us whether any of the owner's devices were open. A send
+    with nobody present is therefore strong evidence of account takeover, with no
+    provider support required. Mirrors C11 (silent read): opt-in per mailbox, and
+    only meaningful where a sensor reports presence.
+    """
+
+    service: str = "C15"
+    requires: frozenset[Capability] = frozenset({Capability.READ_OUTBOUND})
+
+    #: Judge only recently-sent mail. The first Sent-folder sync backfills the
+    #: whole history; without this every old message would read as "sent while
+    #: away". A real intruder's send is recent and caught on the next poll.
+    RECENT_WINDOW = timedelta(hours=2)
+
+    def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
+        mail = ctx.mail
+        if mail is None or mail.direction is not MailDirection.OUTBOUND:
+            return []
+        if not ctx.silent_access_armed or not ctx.has_sensor or ctx.active_sessions > 0:
+            return []
+        now = ctx.now or datetime.now(UTC)
+        if mail.sent_at is None or now - mail.sent_at > self.RECENT_WINDOW:
+            return []
+        to = ", ".join(a.address for a in mail.recipients_to[:3]) or "someone"
+        return [
+            FindingResult(
+                service="C15",
+                tier=AlertTier.CRITICAL,
+                score=92,
+                summary=(
+                    "A message was sent from your account while none of your "
+                    "devices were signed in. Someone else may be in this mailbox "
+                    "— change the password now."
+                ),
+                evidence={
+                    "subject": mail.subject,
+                    "recipients": to,
+                    "sent_at": mail.sent_at.isoformat(),
+                    "active_sessions": ctx.active_sessions,
+                },
+            )
+        ]
+
+
 C3 = register(_C3DelegateChange())
 C5 = register(_C5SignatureTampering())
+C15 = register(_C15OutboundWhileAway())
 C7 = register(_C7ImpossibleTravel())
 C8 = register(_C8LocationChange())
 C9 = register(_C9NetworkClassification())

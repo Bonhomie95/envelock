@@ -353,14 +353,15 @@ class Mailbox(Base, UUIDMixin, TimestampMixin):
     needs_reconnect: Mapped[bool] = mapped_column(Boolean, default=False)
     #: Human-readable reason for needs_reconnect, surfaced to the admin.
     connection_error: Mapped[str | None] = mapped_column(String(255))
-    #: C11 silent-access detection, opted into per mailbox.
+    #: Silent-access detection (C11 reads, C15 sends), opted into per mailbox.
     #:
-    #: C11 fires when a message flips to read while no Envelock-covered device is
-    #: signed in. That is exactly right for a mailbox read only on covered
-    #: devices, and a false-alarm machine for one also read on a phone with no
-    #: sensor — every evening read would page the owner. Only the person who
-    #: knows how the mailbox is used can make that call, so it is off until they
-    #: do. See `platform/sensor.py`.
+    #: Fires when a message flips to read (C11), or is sent (C15), while no
+    #: Envelock-covered device is signed in — the IMAP-friendly "someone else is
+    #: in your mailbox" signal, since a small host offers no sign-in log. Exactly
+    #: right for a mailbox used only on covered devices, and a false-alarm machine
+    #: for one also used on a phone with no sensor — every evening read would page
+    #: the owner. Only the person who knows how the mailbox is used can make that
+    #: call, so it is off until they do. See `platform/sensor.py`.
     silent_access_armed: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
     )
