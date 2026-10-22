@@ -59,7 +59,7 @@ def test_the_detection_catalogue_is_the_size_we_think_it_is() -> None:
     by_family: dict[str, int] = {}
     for service in registry():
         by_family[service[0]] = by_family.get(service[0], 0) + 1
-    assert by_family == {"A": 15, "B": 9, "C": 14}, by_family
+    assert by_family == {"A": 15, "B": 9, "C": 15}, by_family
 
 
 # ── Guard: "Free · Domain monitoring" ────────────────────────────────────────
@@ -149,8 +149,8 @@ def test_essential_does_not_get_complete_only_identity_detection() -> None:
 # ── Complete: "Broader detection across email and identity" ──────────────────
 def test_complete_delivers_account_takeover_detection() -> None:
     """Pricing page, Complete: "Account-takeover alerts with integrations".
-    Landing page: "Surface unusual sign-ins, forwarding rules, and unexplained
-    mailbox access with supported integrations."
+    Landing page: "Catch new forwarding rules, silent reads, and mail sent while
+    you're away — even on plain IMAP, through the Envelock sensor."
     """
     c = _family(COMPLETE, "C")
     for service, what in (
@@ -160,9 +160,10 @@ def test_complete_delivers_account_takeover_detection() -> None:
         ("C7", "impossible travel between sign-ins"),
         ("C10", "a sign-in from a device never seen before"),
         ("C11", "mail read while none of the tenant's devices were open"),
+        ("C15", "mail sent while none of the tenant's devices were open"),
     ):
         assert service in c, f"Complete does not surface {what} ({service})"
-    assert len(c) == 14, f"Complete is missing identity detections: {sorted(c)}"
+    assert len(c) == 15, f"Complete is missing identity detections: {sorted(c)}"
 
 
 def test_complete_is_a_strict_superset_of_essential() -> None:
