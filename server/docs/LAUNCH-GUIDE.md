@@ -573,8 +573,10 @@ firewall. If you are testing on EC2, use the **HTTP ingest** (`POST
 pipeline.
 
 The address each tenant forwards to is `t-<token>@in.envelock.org`, shown in
-the connect flow along with the rule to create. Tell customers to **forward a
-copy, not redirect** — the original must still be delivered.
+the connect flow along with the rule to create. `<token>` is the tenant's
+secret `ingest_token`, never the DNS verification token (that one is public).
+Tell customers to **forward a copy, not redirect** — the original must still be
+delivered.
 
 ---
 

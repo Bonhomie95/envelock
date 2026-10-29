@@ -497,7 +497,7 @@ async def register(req: RegisterRequest, request: Request, session: Session) -> 
         # here — otherwise a squatter's unverified signup would hold the
         # company's unique domain claim forever.
         if reg and not is_free_mail(reg) and not _gs().require_email_verification:
-            from envelock.channels.mail.ingest import new_ingest_token
+            from envelock.util.dns_verify import new_verification_token
 
             session.add(
                 Domain(
@@ -505,7 +505,7 @@ async def register(req: RegisterRequest, request: Request, session: Session) -> 
                     tenant_id=tenant.id,
                     name=reg,
                     registrable_domain=reg,
-                    verification_token=new_ingest_token(),
+                    verification_token=new_verification_token(),
                 )
             )
     try:
@@ -1046,7 +1046,7 @@ async def verify_email(req: VerifyEmailRequest, session: Session) -> dict:
                 )
             ).first()
             if reg and not is_free_mail(reg) and has_domain is None:
-                from envelock.channels.mail.ingest import new_ingest_token
+                from envelock.util.dns_verify import new_verification_token
 
                 try:
                     async with session.begin_nested():
@@ -1056,7 +1056,7 @@ async def verify_email(req: VerifyEmailRequest, session: Session) -> dict:
                                 tenant_id=tenant.id,
                                 name=reg,
                                 registrable_domain=reg,
-                                verification_token=new_ingest_token(),
+                                verification_token=new_verification_token(),
                             )
                         )
                         await session.flush()

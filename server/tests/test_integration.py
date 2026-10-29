@@ -315,6 +315,38 @@ async def test_ingest_requires_a_known_mailbox(client: TestClient) -> None:
     assert response.status_code == 404
 
 
+async def test_forwarding_address_is_a_secret_not_the_dns_token(client: TestClient) -> None:
+    """The DNS challenge is public, so the forwarding address must not be built
+    from it. A tenant that forwarded before the change is told until an admin
+    confirms the rule is updated."""
+    from uuid import UUID
+
+    from conftest import platform_sessionmaker
+    from sqlalchemy import update
+
+    from envelock.models import Tenant
+
+    h = auth(sign_in(client))
+    boot = client.post(
+        "/api/v1/tenants/bootstrap", json={"name": "Acme", "domain": "acme.com"}, headers=h
+    ).json()
+    dns_token = boot["verification"]["record"].removeprefix("envelock-verify=")
+    shown = client.get("/api/v1/ingest-address", headers=h).json()["ingest_address"]
+    assert shown == boot["ingest_address"]
+    assert dns_token not in shown
+
+    async with platform_sessionmaker()() as s:
+        await s.execute(
+            update(Tenant)
+            .where(Tenant.id == UUID(boot["tenant_id"]))
+            .values(forwarding_rule_stale=True)
+        )
+        await s.commit()
+    assert client.get("/api/v1/tenant", headers=h).json()["forwarding_rule_stale"] is True
+    assert client.post("/api/v1/ingest-address/confirm", headers=h).status_code == 200
+    assert client.get("/api/v1/tenant", headers=h).json()["forwarding_rule_stale"] is False
+
+
 async def test_public_endpoints_need_no_session(client: TestClient) -> None:
     """Channel 3 works before signup — that is why Guard can be free."""
     assert client.get("/api/v1/retention/schedule").status_code == 200

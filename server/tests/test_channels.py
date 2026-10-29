@@ -153,15 +153,21 @@ async def test_forwarding_runner_resolves_tenant_and_runs_pipeline(session, tena
     from envelock.channels.mail.ingest import ingest_address
     from envelock.models import Alert, Domain, Mailbox, Tenant
 
-    token = "fwdtoken12345678"  # noqa: S105 — ingest token, not a secret
-    session.add(Tenant(id=tenant_id, name="Acme", plan="complete", payment_method_ok=True))
+    token = "fwdtoken12345678"  # noqa: S105 — a test fixture
+    dns_token = "dnstoken12345678"  # noqa: S105 — published in DNS, never a credential
+    session.add(
+        Tenant(
+            id=tenant_id, name="Acme", plan="complete", payment_method_ok=True,
+            ingest_token=token,
+        )
+    )
     await session.flush()
     session.add(
         Domain(
             tenant_id=tenant_id,
             name="acme.com",
             registrable_domain="acme.com",
-            verification_token=token,
+            verification_token=dns_token,
         )
     )
     session.add(
@@ -176,12 +182,15 @@ async def test_forwarding_runner_resolves_tenant_and_runs_pipeline(session, tena
 
     # Tenant identification from the private ingest address.
     assert await resolve_tenant_by_token(token) == tenant_id
+    assert await resolve_tenant_by_token(token.upper()) == tenant_id
     assert await resolve_tenant_by_token("nope00000000") is None  # noqa: S106
+    assert await resolve_tenant_by_token(dns_token) is None
 
     ingest = build_forwarding_ingest()
     rcpt = ingest_address(token)
     assert (await ingest.handle_rcpt(rcpt)).accepted
     assert not (await ingest.handle_rcpt(ingest_address("unknown0000000"))).accepted
+    assert not (await ingest.handle_rcpt(ingest_address(dns_token))).accepted
 
     def _raw(body: str, extra: str = "") -> bytes:
         return (

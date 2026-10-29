@@ -2,13 +2,13 @@
 
 Every mail system supports forwarding, so this is the path that makes coverage
 universal. The address is per-tenant (`t-<token>@in.envelock.org`) so a message
-identifies its tenant without any credential.
+identifies its tenant without any credential. The token is the tenant's secret
+`Tenant.ingest_token`, never the domain's public DNS challenge token.
 """
 
 from __future__ import annotations
 
 import re
-import secrets
 from dataclasses import dataclass
 from uuid import UUID
 
@@ -19,10 +19,6 @@ _TENANT_RE = re.compile(r"^t-([A-Za-z0-9_-]{8,})@", re.I)
 
 def ingest_address(token: str) -> str:
     return f"t-{token}@{get_settings().ingest_domain}"
-
-
-def new_ingest_token() -> str:
-    return secrets.token_urlsafe(12)
 
 
 def tenant_token_from(recipient: str) -> str | None:

@@ -286,21 +286,33 @@ async def test_an_armed_lookalike_alerts_its_admins_once(db, monkeypatch) -> Non
 async def test_forwarded_mail_reaches_its_tenant(db) -> None:  # noqa: ANN001
     from test_imap_live import _phishing_raw
 
-    from envelock.channels.mail.forward_runner import (
-        resolve_tenant_by_token,
-        run_forwarded_message,
-    )
-    from envelock.models import Domain
+    from envelock.channels.mail.forward_runner import build_forwarding_ingest
+    from envelock.channels.mail.ingest import ingest_address
+    from envelock.models import Alert, Domain
 
     tenant_id, domain, _ = await _tenant_with_mailbox()
     async with get_sessionmaker()() as s:
         token = (
+            await s.execute(select(Tenant.ingest_token).where(Tenant.id == tenant_id))
+        ).scalar_one()
+        dns_token = (
             await s.execute(select(Domain.verification_token).where(Domain.name == domain))
         ).scalar_one()
 
-    assert await resolve_tenant_by_token(token) == tenant_id, (
+    ingest = build_forwarding_ingest()
+    # The DNS challenge token is published for anyone to read; an address built
+    # from it used to inject straight into this tenant's pipeline.
+    public = ingest_address(dns_token)
+    assert not (await ingest.handle_rcpt(public)).accepted
+    assert not (await ingest.handle_data(recipient=public, raw=_phishing_raw("f0"))).accepted
+
+    address = ingest_address(token)
+    assert (await ingest.handle_rcpt(address)).accepted, (
         "the ingest token resolved to nothing — every forwarded message would be dropped"
     )
-    result = await run_forwarded_message(tenant_id, _phishing_raw("f1"))
-    dropped = ("no mailbox connected", "tenant not entitled (trial lapsed?)")
-    assert result.get("reason") not in dropped, result
+    assert (await ingest.handle_data(recipient=address, raw=_phishing_raw("f1"))).accepted
+    async with get_sessionmaker()() as s:
+        alerts = (
+            await s.execute(select(Alert.id).where(Alert.tenant_id == tenant_id))
+        ).scalars().all()
+    assert len(alerts) == 1, "the forwarded phish never reached its tenant's pipeline"

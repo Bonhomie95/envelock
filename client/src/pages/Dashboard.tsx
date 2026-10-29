@@ -1281,6 +1281,85 @@ function ImapProbeReport({
   );
 }
 
+/* The forwarding address used to be built from the token the customer published
+   in DNS, so anyone could send mail through it. It is now a private one, and the
+   old address refuses mail — so a workspace that already forwarded must update
+   its rule. Shown to admins until one confirms. */
+function ForwardingAddressChanged({ onDone }: { onDone: () => Promise<void> }) {
+  const [address, setAddress] = useState<string | null>(null);
+  const [copied, setCopied] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.ingestAddress().then(
+      (r) => setAddress(r.ingest_address),
+      () => setNote("Could not load your forwarding address. Refresh to try again."),
+    );
+  }, []);
+
+  async function confirm() {
+    setBusy(true);
+    setNote(null);
+    try {
+      await api.confirmForwardingRule();
+      await onDone();
+    } catch (e) {
+      setNote(e instanceof ApiError ? e.message : "Could not save that. Try again.");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="space-y-2.5">
+      <p className="text-sm font-semibold">Your forwarding address has changed</p>
+      <p className="fg-3 text-xs leading-relaxed">
+        The old address was built from the public DNS record that verifies your
+        domain, so anyone could send mail through it. It no longer accepts mail.
+        In your mail provider, change the forwarding rule on every mailbox you
+        forward to this private address:
+      </p>
+      <div className="flex items-center gap-2">
+        <code className="font-mono flex-1 text-xs break-all">{address ?? "…"}</code>
+        <Button
+          size="sm"
+          variant="line"
+          disabled={!address}
+          onClick={() => {
+            if (!address) return;
+            void navigator.clipboard.writeText(address);
+            setCopied(true);
+            setTimeout(() => setCopied(false), 2000);
+          }}
+        >
+          {copied ? (
+            <>
+              <Check size={12} aria-hidden /> COPIED
+            </>
+          ) : (
+            <>
+              <Copy size={12} aria-hidden /> COPY
+            </>
+          )}
+        </Button>
+      </div>
+      {note && (
+        <p role="alert" className="text-xs text-[var(--danger)]">
+          {note}
+        </p>
+      )}
+      <Button size="sm" variant="accent" disabled={busy || !address} onClick={confirm}>
+        {busy ? (
+          <Loader2 size={12} className="animate-spin" aria-hidden />
+        ) : (
+          <Check size={12} aria-hidden />
+        )}
+        I'VE UPDATED THE RULE
+      </Button>
+    </div>
+  );
+}
+
 /* Connect a mailbox using the RIGHT method for its actual mail provider — detected
    from the domain's MX records, not from whichever OAuth apps this deployment
    happens to have configured. A Google/Microsoft domain gets one-click OAuth; any
@@ -3244,6 +3323,7 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Oversight | null>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [mfaOpen, setMfaOpen] = useState(false);
+  const [forwardingOpen, setForwardingOpen] = useState(false);
   const [mailboxQuery, setMailboxQuery] = useState("");
   const [filter, setFilter] = useState<"open" | "all">("open");
   const [loading, setLoading] = useState(true);
@@ -3582,6 +3662,12 @@ export default function Dashboard() {
       text: "Two-factor sign-in is off — a stolen password is enough to get in.",
       action: { label: "Turn it on", onClick: () => setMfaOpen(true) },
     });
+  if (isWorkspaceAdmin && tenant?.forwarding_rule_stale)
+    issues.push({
+      id: "forwarding-address",
+      text: "Your forwarding address changed — mail sent to the old one is refused until you update your forwarding rule.",
+      action: { label: "Show new address", onClick: () => setForwardingOpen(true) },
+    });
   if (isWorkspaceAdmin && tenant && tenant.pending_members > 0)
     issues.push({
       id: "pending",
@@ -3637,6 +3723,17 @@ export default function Dashboard() {
             unavailable={!!error}
           />
         </div>
+
+        {isWorkspaceAdmin && tenant?.forwarding_rule_stale && forwardingOpen && (
+          <div className="panel rise mt-4 p-5">
+            <ForwardingAddressChanged
+              onDone={async () => {
+                setForwardingOpen(false);
+                await load();
+              }}
+            />
+          </div>
+        )}
 
         {me && !me.mfa_enabled && mfaOpen && (
           <div className="panel rise mt-4 p-5">

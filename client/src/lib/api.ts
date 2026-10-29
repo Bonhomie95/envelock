@@ -459,6 +459,9 @@ export interface TenantInfo {
   primary_domain: string | null;
   //: Colleagues who self-registered and are awaiting an admin's approval.
   pending_members: number;
+  /** The forwarding address changed under a tenant that already forwarded
+   *  mail; the old one is refused until an admin updates the rule. */
+  forwarding_rule_stale?: boolean;
 }
 
 export interface AccountingConnectionInfo {
@@ -1415,6 +1418,12 @@ export const api = {
       warning: string;
       limitation: string;
     }>("/api/v1/ingest-address"),
+
+  // An admin has pointed the forwarding rule at the current address.
+  confirmForwardingRule: () =>
+    request<{ forwarding_rule_stale: boolean }>("/api/v1/ingest-address/confirm", {
+      method: "POST",
+    }),
 
   oversight: () => request<Oversight>("/api/v1/oversight"),
 

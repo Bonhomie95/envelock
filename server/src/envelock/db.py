@@ -174,6 +174,11 @@ _RUNTIME_COLUMNS: tuple[str, ...] = (
     "ALTER TABLE messages ADD COLUMN IF NOT EXISTS payment_currency varchar(8)",
     "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS "
     "extra_mailbox_seats integer NOT NULL DEFAULT 0",
+    # The secret forwarding-address token (migration ca05700c40c5). The generic
+    # reconcile's nullable ADD would leave every tenant with no working address;
+    # a volatile default mints a distinct token per existing row instead.
+    "ALTER TABLE tenants ADD COLUMN IF NOT EXISTS ingest_token varchar(64) "
+    "NOT NULL DEFAULT replace(gen_random_uuid()::text, '-', '')",
     "ALTER TABLE mailbox_credentials ADD COLUMN IF NOT EXISTS "
     "imap_security varchar(16) DEFAULT 'ssl'",
     "ALTER TABLE mailbox_credentials ADD COLUMN IF NOT EXISTS imap_username varchar(320)",

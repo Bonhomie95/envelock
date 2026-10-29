@@ -141,27 +141,25 @@ def test_running_migrations_does_not_silence_the_application() -> None:
 
 
 
-def test_the_sealing_migration_encrypts_secrets_already_stored(monkeypatch) -> None:
-    """Stored before encryption at rest, authenticator seeds and webhook signing
-    keys are plain text. Upgrading must seal every one of them — and leave each
-    still readable through the model."""
+@contextlib.contextmanager
+def _scratch_db(monkeypatch, label: str):  # noqa: ANN001, ANN202
+    """A throwaway database for migrating populated data. Yields `sql(*steps)`,
+    which runs statements on one connection and returns the last one's rows.
+    Row-level security is forced, so it opts into system scope."""
     from sqlalchemy import text
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from envelock.config import get_settings
     from envelock.db import _normalise_dsn
-    from envelock.security.fields import PREFIX, open_field
 
     base_url = _normalise_dsn(get_settings().postgres_dsn)
     if "@" not in base_url or "/" not in base_url.rsplit("@", 1)[1]:
         pytest.skip("non-standard DSN; migration apply-test skipped")
     prefix, _ = base_url.rsplit("/", 1)
-    tmp_db = f"envelock_migseal_{uuid.uuid4().hex[:10]}"
+    tmp_db = f"envelock_{label}_{uuid.uuid4().hex[:10]}"
     tmp_url, admin_url = f"{prefix}/{tmp_db}", f"{prefix}/postgres"
 
     async def _sql(url: str, *steps: tuple[str, dict]) -> list:
-        """Run statements on one connection; the last one's rows come back.
-        Row-level security is forced, so the session opts into system scope."""
         eng = create_async_engine(url, isolation_level="AUTOCOMMIT")
         try:
             async with eng.connect() as conn:
@@ -181,22 +179,43 @@ def test_the_sealing_migration_encrypts_secrets_already_stored(monkeypatch) -> N
     try:
         monkeypatch.setenv("ENVELOCK_POSTGRES_DSN", tmp_url)
         get_settings.cache_clear()
-        from alembic import command
+        yield lambda *steps: asyncio.run(_sql(tmp_url, *steps))
+    finally:
+        get_settings.cache_clear()
+        with contextlib.suppress(Exception):
+            asyncio.run(_sql(admin_url, (f'DROP DATABASE IF EXISTS "{tmp_db}" WITH (FORCE)', {})))
 
-        try:
-            command.upgrade(_config(), "e0f1a2b3c4d5")
-        except Exception as exc:  # noqa: BLE001
-            if "permission denied to create role" in str(exc).lower():
-                pytest.skip("role lacks CREATEROLE for the RLS migration")
-            raise
 
+def _upgrade(revision: str) -> None:
+    from alembic import command
+
+    try:
+        command.upgrade(_config(), revision)
+    except Exception as exc:  # noqa: BLE001
+        if "permission denied to create role" in str(exc).lower():
+            pytest.skip("role lacks CREATEROLE for the RLS migration")
+        raise
+
+
+_INSERT_TENANT = (
+    "INSERT INTO tenants (id, name, plan, billing_term, payment_method_ok, is_active,"
+    " created_at, updated_at) VALUES (:t, 'Old Co', 'guard', 'monthly', false, true,"
+    " now(), now())"
+)
+
+
+def test_the_sealing_migration_encrypts_secrets_already_stored(monkeypatch) -> None:
+    """Stored before encryption at rest, authenticator seeds and webhook signing
+    keys are plain text. Upgrading must seal every one of them — and leave each
+    still readable through the model."""
+    from envelock.security.fields import PREFIX, open_field
+
+    with _scratch_db(monkeypatch, "migseal") as sql:
+        _upgrade("e0f1a2b3c4d5")
         seed, hook = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP", "whsec_plain-signing-key"
         tid = str(uuid.uuid4())
-        asyncio.run(_sql(
-            tmp_url,
-            ("INSERT INTO tenants (id, name, plan, billing_term, payment_method_ok, is_active,"
-             " created_at, updated_at) VALUES (:t, 'Old Co', 'guard', 'monthly', false, true,"
-             " now(), now())", {"t": tid}),
+        sql(
+            (_INSERT_TENANT, {"t": tid}),
             ("INSERT INTO users (id, tenant_id, email, role, is_admin, status,"
              " must_change_password, mfa_enabled, recovery_hashes, known_devices,"
              " phone_verified, totp_secret, created_at, updated_at) VALUES (gen_random_uuid(),"
@@ -210,18 +229,49 @@ def test_the_sealing_migration_encrypts_secrets_already_stored(monkeypatch) -> N
             ("INSERT INTO webhook_endpoints (id, tenant_id, url, secret, events, active,"
              " created_at, updated_at) VALUES (gen_random_uuid(), :t, 'https://siem.example',"
              " :hook, '{}', true, now(), now())", {"t": tid, "hook": hook}),
-        ))
+        )
 
-        command.upgrade(_config(), "head")
+        _upgrade("head")
 
-        stored = asyncio.run(_sql(tmp_url, (
+        stored = sql((
             "SELECT totp_secret FROM users UNION ALL SELECT totp_secret FROM staff_accounts"
             " UNION ALL SELECT secret FROM webhook_endpoints", {},
-        )))
-        values = [v for (v,) in stored]
-        assert len(values) == 3 and all(v.startswith(PREFIX) for v in values), values
-        assert [open_field(v) for v in values] == [seed, seed, hook]
-    finally:
-        get_settings.cache_clear()
-        with contextlib.suppress(Exception):
-            asyncio.run(_sql(admin_url, (f'DROP DATABASE IF EXISTS "{tmp_db}" WITH (FORCE)', {})))
+        ))
+    values = [v for (v,) in stored]
+    assert len(values) == 3 and all(v.startswith(PREFIX) for v in values), values
+    assert [open_field(v) for v in values] == [seed, seed, hook]
+
+
+def test_the_ingest_token_migration_gives_every_tenant_a_secret(monkeypatch) -> None:
+    """Existing tenants each get their own secret forwarding token — never the
+    DNS token they published — and only those already forwarding mail are
+    flagged to update their rule."""
+    with _scratch_db(monkeypatch, "migingest") as sql:
+        _upgrade("f1a2b3c4d5e6")
+        forwarding, other = str(uuid.uuid4()), str(uuid.uuid4())
+        for tid, sources in ((forwarding, ["imap_idle", "forward_ingest"]), (other, ["imap_idle"])):
+            sql(
+                (_INSERT_TENANT, {"t": tid}),
+                ("INSERT INTO domains (id, tenant_id, name, registrable_domain,"
+                 " verification_token, is_defensive, created_at, updated_at) VALUES"
+                 " (gen_random_uuid(), :t, :d, :d, :tok, false, now(), now())",
+                 {"t": tid, "d": f"{tid[:8]}.example", "tok": f"dns{tid[:8]}"}),
+                ("INSERT INTO mailboxes (id, tenant_id, address, mailbox_class,"
+                 " integration_tier, sources, protection_level, inactive_detections,"
+                 " is_shared, known_user_count, is_active, created_at, updated_at) VALUES"
+                 " (gen_random_uuid(), :t, :a, 'protected', 4, :s,"
+                 " 'limited', '{}', false, 1, true, now(), now())",
+                 {"t": tid, "a": f"pay@{tid[:8]}.example", "s": sources}),
+            )
+
+        _upgrade("head")
+
+        rows = sql((
+            "SELECT t.id::text, t.ingest_token, t.forwarding_rule_stale, d.verification_token"
+            " FROM tenants t JOIN domains d ON d.tenant_id = t.id", {},
+        ))
+    tokens = {tid: token for tid, token, _, _ in rows}
+    assert len(set(tokens.values())) == 2, rows
+    assert all(len(t) == 32 and int(t, 16) >= 0 for t in tokens.values()), rows
+    assert all(token != dns for _, token, _, dns in rows), rows
+    assert {tid: stale for tid, _, stale, _ in rows} == {forwarding: True, other: False}

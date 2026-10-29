@@ -14,6 +14,7 @@ The check is a live DNS resolution; nothing here trusts anything the client send
 from __future__ import annotations
 
 import logging
+import secrets
 
 from envelock.util.domains import registrable_domain
 
@@ -98,6 +99,12 @@ def _rdata_values(answers, rdtype: str) -> list[str]:
         else:
             out.append(str(rdata))
     return out
+
+
+def new_verification_token() -> str:
+    """The challenge token. Public by design — the customer publishes it — so it
+    must never double as a credential. It once did, as the forwarding address."""
+    return secrets.token_urlsafe(12)
 
 
 def txt_record_value(token: str) -> str:

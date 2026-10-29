@@ -25,7 +25,7 @@ from envelock.auth.security import (
 )
 from envelock.billing import features as plan_features
 from envelock.billing.pricing import extra_mailbox_cents, included_mailbox_seats
-from envelock.channels.mail.ingest import ingest_address, new_ingest_token, onboarding_instructions
+from envelock.channels.mail.ingest import ingest_address, onboarding_instructions
 from envelock.core.capabilities import (
     capabilities_for,
     protection_advice,
@@ -92,6 +92,7 @@ from envelock.services.domains import (
 from envelock.services.domains import (
     verify_domain_control as _verify_domain_control,
 )
+from envelock.util.dns_verify import new_verification_token
 from envelock.util.domains import is_free_mail, registrable_domain
 from envelock.util.payments import normalise_identifier
 
@@ -314,7 +315,7 @@ async def bootstrap(req: BootstrapRequest, principal: AdminUser, session: Sessio
             tenant_id=principal.tenant_id,
             name=reg,
             registrable_domain=reg,
-            verification_token=new_ingest_token(),
+            verification_token=new_verification_token(),
         )
         session.add(domain)
 
@@ -328,7 +329,7 @@ async def bootstrap(req: BootstrapRequest, principal: AdminUser, session: Sessio
             "host": f"_envelock.{reg}",
             "type": "TXT",
         },
-        "ingest_address": ingest_address(domain.verification_token or ""),
+        "ingest_address": ingest_address(existing.ingest_token),
     }
 
 
@@ -358,7 +359,7 @@ async def domain_verification_challenge(
     if row is None:
         raise HTTPException(404, "domain not found on this account")
     if not row.verification_token:
-        row.verification_token = new_ingest_token()
+        row.verification_token = new_verification_token()
         await session.commit()
     reg = row.registrable_domain
     token = row.verification_token
@@ -480,6 +481,9 @@ async def current_tenant(principal: ActiveUser, session: Session) -> dict:
         "plan": effective_plan,
         "subscribed_plan": subscribed_plan,
         "pending_members": pending_members,
+        # The forwarding address moved off the public DNS token and mail to the
+        # old one is refused; an admin must update the rule (and confirm).
+        "forwarding_rule_stale": bool(tenant and tenant.forwarding_rule_stale),
         "trial_ended": bool(ends and not trial_active and not paid),
         "billing": {
             # A live Stripe subscription: plan and seat changes update it in
@@ -2903,10 +2907,19 @@ async def report_lookalike(
 
 @router.get("/ingest-address")
 async def get_ingest_address(principal: AdminUser, session: Session) -> dict:
-    domain = (
-        await session.execute(
-            select(Domain).where(Domain.tenant_id == principal.tenant_id).limit(1)
-        )
-    ).scalar_one_or_none()
-    token = (domain.verification_token if domain else None) or new_ingest_token()
-    return onboarding_instructions(token)
+    tenant = await session.get(Tenant, principal.tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "tenant not found")
+    return onboarding_instructions(tenant.ingest_token)
+
+
+@router.post("/ingest-address/confirm")
+async def confirm_forwarding_rule(principal: AdminUser, session: Session) -> dict:
+    """An admin has pointed the forwarding rule at the current address, so the
+    dashboard stops asking (see `Tenant.forwarding_rule_stale`)."""
+    tenant = await session.get(Tenant, principal.tenant_id)
+    if tenant is None:
+        raise HTTPException(404, "tenant not found")
+    tenant.forwarding_rule_stale = False
+    await session.commit()
+    return {"forwarding_rule_stale": False}

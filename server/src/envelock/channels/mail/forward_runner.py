@@ -27,7 +27,7 @@ from envelock.channels.mail.ingest import ForwardingIngest
 from envelock.channels.mail.parser import parse_message_async
 from envelock.core.enums import SourceMechanism
 from envelock.db import get_sessionmaker
-from envelock.models import Domain, Mailbox, PushSubscription, User
+from envelock.models import Domain, Mailbox, PushSubscription, Tenant, User
 from envelock.notify.dispatch import deliver_pending
 from envelock.notify.ladder import Recipient
 from envelock.platform.pipeline import analyse_event
@@ -36,9 +36,11 @@ from envelock.platform.pipeline import analyse_event
 async def resolve_tenant_by_token(token: str) -> UUID | None:
     """Map an ingest-address token back to its tenant.
 
-    The token is the domain's `verification_token`, minted at bootstrap and
-    embedded in `t-<token>@<ingest_domain>`. No token, no tenant — a forwarded
-    copy carries no other credential, which is the whole point of the scheme.
+    The token is the tenant's secret `ingest_token`, embedded in
+    `t-<token>@<ingest_domain>`. No token, no tenant — a forwarded copy carries
+    no other credential, which is the whole point of the scheme. It used to be
+    the domain's `verification_token`, which every customer publishes in DNS;
+    addresses built from that are refused like any unknown one.
     """
     from envelock.db_rls import system_scope
 
@@ -47,12 +49,13 @@ async def resolve_tenant_by_token(token: str) -> UUID | None:
     # forwarded message was dropped as "unknown address".
     with system_scope("forward ingest: resolve the ingest token"):
         async with get_sessionmaker()() as session:
-            domain = (
+            return (
                 await session.execute(
-                    select(Domain).where(Domain.verification_token == token).limit(1)
+                    # Lowercase hex: a mail system that folds the address's case
+                    # must not lose the tenant.
+                    select(Tenant.id).where(Tenant.ingest_token == token.lower())
                 )
             ).scalar_one_or_none()
-    return domain.tenant_id if domain else None
 
 
 def _may_hear_about(user: User, mailbox_address: str | None) -> bool:
@@ -142,7 +145,6 @@ async def run_forwarded_message(tenant_id: UUID, raw: bytes) -> dict:
         # Same seat-cap enforcement as the pollers: a lapsed unpaid trial must
         # not keep live protection through its forwarding address either.
         from envelock.billing.entitlement import mailbox_entitled
-        from envelock.models import Tenant
 
         tenant = await session.get(Tenant, tenant_id)
         if tenant is None or not mailbox_entitled(tenant):

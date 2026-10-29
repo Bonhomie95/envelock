@@ -267,8 +267,8 @@ def test_member_list_is_scoped(tenants) -> None:
 
 # ── Domains ──────────────────────────────────────────────────────────────────
 def test_cannot_read_another_tenants_domain_verification(tenants) -> None:
-    """The verification token is the ingest secret: whoever holds it can inject
-    mail into that tenant's pipeline."""
+    """Another tenant's domain challenge is none of B's business, even though the
+    token itself ends up in public DNS once published."""
     a, b, client = tenants
     resp = client.get(
         f"/api/v1/domains/{a.domain}/verification", headers=b.headers
@@ -280,8 +280,7 @@ def test_cannot_read_another_tenants_domain_verification(tenants) -> None:
         )
         assert mine.status_code == 200
         assert token != str(mine.json()), (
-            "tenant B read tenant A's domain verification token — that token "
-            "authenticates forwarded mail into A's pipeline"
+            "tenant B read tenant A's domain verification challenge"
         )
     else:
         _assert_denied(resp, "GET domain verification")
