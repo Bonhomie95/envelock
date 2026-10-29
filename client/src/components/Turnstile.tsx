@@ -75,8 +75,9 @@ export function Turnstile({
       })
       .catch(() => {
         if (!live) return;
-        // Cloudflare unreachable. The server fails open in the same situation,
-        // so say so quietly rather than blocking the form.
+        // Cloudflare unreachable from this browser. The server only fails open
+        // when IT cannot reach Cloudflare; a missing token is refused, so say
+        // what to do rather than promising the form will go through.
         setFailed(true);
         onToken(null);
       });
@@ -93,7 +94,8 @@ export function Turnstile({
       <div ref={host} />
       {failed && (
         <p className="fg-3 mt-2 text-xs">
-          The anti-spam check couldn&rsquo;t load. You can still continue.
+          The anti-spam check couldn&rsquo;t load, and the form needs it. Check your
+          connection, then reload the page.
         </p>
       )}
     </div>

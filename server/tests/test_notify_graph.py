@@ -266,7 +266,8 @@ async def test_unverified_phone_is_never_an_sms_destination(session) -> None:
     )
     await session.flush()
 
-    recipients = await _tenant_recipients(session, tenant.id)
+    # The member hears about their own mailbox only, so ask about that one.
+    recipients = await _tenant_recipients(session, tenant.id, "verified@acme.com")
     phones = {r.phone for r in recipients}
     assert "+1 415 555 0142" in phones  # verified survives
     assert "+1 415 555 0199" not in phones  # unverified is dropped
@@ -314,3 +315,53 @@ async def test_resolving_internal_mail_never_poisons_the_graph(session) -> None:
             session, alert_id=alert.id, tenant_id=tenant.id, actor_id=uuid4(), dismissed=False
         )
     assert GRAPH.lookup("acme.com") is None  # own domain never on the graph
+
+
+async def test_an_smtp_refusal_is_a_failed_delivery_not_a_crash(monkeypatch) -> None:  # noqa: ANN001
+    """aiosmtplib raises its own exception types, not smtplib's. Uncaught, a
+    refused recipient escaped deliver_pending and the escalation job, which then
+    re-sent its SMS every cycle because the step it had sent was never recorded."""
+    import aiosmtplib
+
+    from envelock.config import get_settings
+    from envelock.notify.senders import EmailSender, Notification
+
+    monkeypatch.setenv("ENVELOCK_SMTP_HOST", "smtp.example.com")
+    monkeypatch.setenv("ENVELOCK_SMTP_FROM", "alerts@envelock.org")
+    get_settings.cache_clear()
+    sender = EmailSender()
+
+    async def _refused(message):  # noqa: ANN001, ANN202, ARG001
+        raise aiosmtplib.SMTPDataError(554, "Message rejected: address not verified")
+
+    monkeypatch.setattr(sender, "_deliver", _refused)
+    note = Notification(
+        alert_id=uuid4(), tenant_id=uuid4(), tier=AlertTier.HIGH, title="t", body="b"
+    )
+    result = await sender.send(note, to="it@acme.com")
+    assert result.delivered is False
+    assert "554" in result.reason
+
+
+async def test_only_active_people_in_scope_hear_about_an_alert(session) -> None:  # noqa: ANN001
+    """Anyone can register on a customer's domain; a pending account used to get
+    the full report of every High and Critical. Members hear only about their
+    own mailbox — the same line the dashboard draws."""
+    from envelock.channels.mail.forward_runner import _recipients
+    from envelock.models import User
+
+    tenant, admin = await _tenant_with_admin(session, email="it@scope.com")
+    users = {
+        email: User(id=uuid4(), tenant_id=tenant.id, email=email, role=role, status=status)
+        for email, role, status in (
+            ("pending@scope.com", "member", "pending"),
+            ("gone@scope.com", "admin", "suspended"),
+            ("cfo@scope.com", "member", "active"),
+            ("clerk@scope.com", "member", "active"),
+        )
+    }
+    session.add_all(users.values())
+    await session.flush()
+
+    heard = {r.user_id for r in await _recipients(session, tenant.id, "cfo@scope.com")}
+    assert heard == {str(admin.id), str(users["cfo@scope.com"].id)}

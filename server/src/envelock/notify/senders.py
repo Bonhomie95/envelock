@@ -11,7 +11,6 @@ rung rather than failing at send time.
 from __future__ import annotations
 
 import json
-import smtplib
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -150,6 +149,12 @@ class PushSender(Sender):
                 vapid_private_key=self.private_key,
                 vapid_claims={"sub": self.subject},
                 ttl=notification.tier is AlertTier.CRITICAL and 86400 or 3600,
+                # High urgency: delivered now, not batched for a sleeping device.
+                headers={"Urgency": "high"},
+                # pywebpush waits forever by default. A push service that never
+                # answers would hold this mailbox's sync — and the poll cycle
+                # waiting on it — indefinitely.
+                timeout=10,
             )
         except Exception as exc:  # noqa: BLE001 — a dead subscription is not fatal
             return SendResult(self.rung, False, f"web push failed: {exc}")
@@ -254,7 +259,11 @@ class EmailSender(Sender):
         message = self.build(notification, to=to)
         try:
             await self._deliver(message)
-        except (smtplib.SMTPException, OSError, RuntimeError) as exc:
+        # Any failure is a failed delivery, reported — never raised. aiosmtplib's
+        # errors (a refused recipient, a 554, rotated credentials) are not
+        # smtplib's, so they used to escape: the escalation job died after
+        # sending its SMS but before recording it, and re-sent it every minute.
+        except Exception as exc:  # noqa: BLE001
             if notification.tier is AlertTier.CRITICAL and self.has_fallback:
                 try:
                     await self._deliver_via_relay(message)

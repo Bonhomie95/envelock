@@ -730,6 +730,9 @@ export default function App() {
             {/* A supplier answering our "did you change your details?" text —
               not our customer, so no marketing chrome at all. */}
             <Route path="/v/:token" element={<LazySupplierVerify />} />
+            {/* Every alert push and email links to /alerts or /alerts/<id>; the
+                queue lives on the dashboard, so those links landed on 404. */}
+            <Route path="/alerts/*" element={<Navigate to="/dashboard" replace />} />
             <Route element={<MarketingLayout />}>
               <Route path="/" element={<Landing />} />
               <Route path="/signin" element={<SignIn />} />

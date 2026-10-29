@@ -151,3 +151,21 @@ def test_neither_class_survives_metadata_only_mode() -> None:
 
     assert policy_for(DataClass.LINK_TOKEN).metadata_only_mode is False
     assert policy_for(DataClass.LINK_CLICK).metadata_only_mode is False
+
+
+async def test_an_expired_alert_with_a_verdict_and_payment_check_is_purged(session) -> None:  # noqa: ANN001
+    """Deliveries were the only alert children cleared first. A payment check
+    or an AI verdict on an expired alert failed the delete — and the run."""
+    from envelock.models import Alert, LlmVerdictRecord, PaymentVerification
+
+    tenant = await _tenant(session)
+    alert = Alert(tenant_id=tenant.id, tier="high", title="old", body="...", created_at=_aged(800))
+    session.add(alert)
+    await session.flush()
+    session.add(LlmVerdictRecord(tenant_id=tenant.id, alert_id=alert.id, verdict="fraud"))
+    session.add(PaymentVerification(tenant_id=tenant.id, alert_id=alert.id, channel="call"))
+    await session.commit()
+
+    counts = await purge_expired(session)
+    assert counts["alert"] == 1
+    assert (await session.execute(select(Alert))).scalars().all() == []

@@ -161,6 +161,65 @@ def test_graph_push_accepts_a_state_we_signed(
     assert called == [("cfo@acme.test", tenant)]
 
 
+async def test_a_long_address_still_gets_a_graph_subscription(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Graph refuses a clientState over 128 characters. Built from the address,
+    every mailbox with an address over 58 characters was refused a subscription
+    and sat on the fallback poll for good."""
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    from envelock.api._webhook_auth import verify_client_state
+    from envelock.config import get_settings
+    from envelock.models import Mailbox
+    from envelock.workers.push_subscriptions import _graph
+
+    monkeypatch.setenv("ENVELOCK_MS_WEBHOOK_URL", "https://api.example/api/v1/webhooks/graph")
+    get_settings.cache_clear()
+    sent: list[dict] = []
+
+    class _Graph:
+        async def request(self, method, url, *, headers=None, json=None):  # noqa: ANN001, ANN202, ARG002
+            sent.append(json)
+            return {"id": "sub-1", "expirationDateTime": "2030-01-01T00:00:00Z"}
+
+    mailbox = Mailbox(
+        id=uuid4(), tenant_id=uuid4(),
+        address="accounts.payable.notifications@a-very-long-company-name.example",
+    )
+    await _graph(mailbox, "token", _Graph(), datetime.now(UTC))
+
+    state = sent[0]["clientState"]
+    assert len(state) <= 128, len(state)
+    assert verify_client_state(state) == (mailbox.tenant_id, str(mailbox.id))
+
+
+async def test_graph_push_naming_a_mailbox_id_flags_that_mailbox(client: TestClient) -> None:
+    from uuid import uuid4
+
+    from conftest import platform_sessionmaker as get_sessionmaker
+
+    from envelock.api._webhook_auth import client_state
+    from envelock.models import Mailbox, Tenant
+
+    tenant_id, mailbox_id = uuid4(), uuid4()
+    async with get_sessionmaker()() as session:
+        session.add(Tenant(id=tenant_id, name="Push Co", plan="complete"))
+        await session.flush()
+        session.add(
+            Mailbox(id=mailbox_id, tenant_id=tenant_id, address="ap@pushco.example", is_active=True)
+        )
+        await session.commit()
+
+    state = client_state(tenant_id=tenant_id, mailbox=str(mailbox_id))
+    r = client.post("/api/v1/webhooks/graph", json={"value": [{"clientState": state}]})
+    assert r.status_code == 202
+
+    async with get_sessionmaker()() as session:
+        assert (await session.get(Mailbox, mailbox_id)).sync_requested_at is not None
+
+
 def test_gmail_push_requires_our_token(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -303,7 +303,7 @@ async def evaluate_read(
     if deliver:
         from envelock.channels.mail.forward_runner import _recipients
 
-        recipients = await _recipients(session, mailbox.tenant_id)
+        recipients = await _recipients(session, mailbox.tenant_id, mailbox.address)
 
     result = await analyse_event(
         session,

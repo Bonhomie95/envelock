@@ -80,6 +80,9 @@ export default function SignIn() {
      renders nothing here and the server accepts the request unchallenged. */
   const [captchaSiteKey, setCaptchaSiteKey] = useState<string | null>(null);
   const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  // A solved challenge is single-use: remount the widget after every submit
+  // so a retry (or the sign-in after signup) gets a fresh one.
+  const [captchaRound, setCaptchaRound] = useState(0);
   const [confirmPassword, setConfirmPassword] = useState("");
   const passwordsMatch = mode !== "signup" || password === confirmPassword;
   const [domain, setDomain] = useState("");
@@ -217,6 +220,8 @@ export default function SignIn() {
       }
     } finally {
       setBusy(false);
+      setCaptchaToken(null);
+      setCaptchaRound((n) => n + 1);
     }
   }
 
@@ -608,7 +613,7 @@ export default function SignIn() {
                 </div>
               )}
 
-              <Turnstile siteKey={captchaSiteKey} onToken={setCaptchaToken} />
+              <Turnstile key={captchaRound} siteKey={captchaSiteKey} onToken={setCaptchaToken} />
 
               <Button
                 type="submit"

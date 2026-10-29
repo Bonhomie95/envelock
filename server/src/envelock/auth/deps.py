@@ -100,12 +100,22 @@ async def optional_principal(
 
 async def _live_user(principal: Principal):  # noqa: ANN202 — models.User
     """Load the caller's current row. The token is a 15-minute snapshot; every
-    authorisation decision has to be made against what is true now."""
+    authorisation decision has to be made against what is true now.
+
+    That includes the workspace: an operator's SUSPEND set a flag nothing read,
+    so the console said SUSPENDED while the tenant's users carried on as normal.
+    """
     from envelock.db import get_sessionmaker
-    from envelock.models import User
+    from envelock.models import Tenant, User
 
     async with get_sessionmaker()() as session:
-        return await session.get(User, principal.user_id)
+        user = await session.get(User, principal.user_id)
+        tenant = await session.get(Tenant, user.tenant_id) if user and user.tenant_id else None
+    if tenant is not None and tenant.is_active is False:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN, "this workspace is suspended — contact Envelock support"
+        )
+    return user
 
 
 def require_role(minimum: Role):
@@ -209,12 +219,7 @@ async def active_actor(
     """Load the caller and require an *active* account. A pending colleague can
     hold a session (to see the "awaiting approval" screen) but reaches no tenant
     data until an admin approves them."""
-    # Imported here to avoid a module import cycle (models → db → config).
-    from envelock.db import get_sessionmaker
-    from envelock.models import User
-
-    async with get_sessionmaker()() as session:
-        user = await session.get(User, principal.user_id)
+    user = await _live_user(principal)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
     if user.status != "active":

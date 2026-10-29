@@ -74,8 +74,11 @@ async def _graph(
                         mailbox.push_subscription_id, exc)
     from envelock.channels.mail.providers import GraphProvider
 
+    # Named by id, not address: Graph caps clientState at 128 characters, and
+    # tenant + signature already take 70 — any address over 58 characters got
+    # every subscription refused, leaving that mailbox on the fallback poll.
     payload: dict[str, Any] = GraphProvider().subscription_body(
-        mailbox=mailbox.address, tenant_id=mailbox.tenant_id
+        mailbox=str(mailbox.id), tenant_id=mailbox.tenant_id
     )
     # New mail only: "updated" fired on every read/flag/move, including the
     # moves our own quarantine makes.

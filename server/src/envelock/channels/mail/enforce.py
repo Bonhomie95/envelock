@@ -49,8 +49,8 @@ def _stamp_key() -> bytes:
     return b"envelock-dev-stamp"
 
 
-def _stamp_for(message_id: str | None) -> str:
-    """HMAC of the Message-ID under the server secret.
+def _stamp_for(message_id: str | None, mailbox_id: object) -> str:
+    """HMAC of the mailbox and Message-ID under the server secret.
 
     The stamp used to be the bare header name, and `is_processed` looked for that
     string anywhere in the first 16KB. Anyone could add `X-Envelock-Protected: v1`
@@ -58,9 +58,16 @@ def _stamp_for(message_id: str | None) -> str:
     it: no analysis, no alert, no quarantine. A keyed stamp cannot be forged from
     outside, and it is bound to the Message-ID so one stamp cannot be replayed onto
     another message.
+
+    It is bound to the mailbox too. The stamped copy lands in the customer's own
+    mailbox, where they can read it, so a stamp over the Message-ID alone could
+    be lifted by any customer and replayed — with that Message-ID — onto a
+    phishing mail to someone else's mailbox, which would then skip analysis.
     """
     mac = hmac.new(
-        _stamp_key(), f"protected:{(message_id or '').strip()}".encode(), hashlib.sha256
+        _stamp_key(),
+        f"protected:{mailbox_id}:{(message_id or '').strip()}".encode(),
+        hashlib.sha256,
     ).hexdigest()[:40]
     return f"{_STAMP_VERSION}; sig={mac}"
 
@@ -132,6 +139,7 @@ def build_protected_copy(
     *,
     link_map: dict[str, str],
     redirect_base: str,
+    mailbox_id: object,
     banner: Banner | None = None,
 ) -> bytes:
     """The delivered message, with links rewritten and the banner injected.
@@ -179,7 +187,7 @@ def build_protected_copy(
 
     if isinstance(msg, EmailMessage):
         del msg[PROCESSED_HEADER]
-        msg[PROCESSED_HEADER] = _stamp_for(msg.get("Message-ID"))
+        msg[PROCESSED_HEADER] = _stamp_for(msg.get("Message-ID"), mailbox_id)
     return msg.as_bytes(policy=policy.SMTP)
 
 
@@ -192,12 +200,12 @@ def _header_block(raw: bytes) -> bytes:
     return head
 
 
-def is_processed(raw: bytes) -> bool:
+def is_processed(raw: bytes, mailbox_id: object) -> bool:
     """True only when this raw message carries a valid stamp from THIS server.
 
     Headers only (never the body), and the signature must verify against the
-    message's own Message-ID. A forged, copied or unsigned stamp reads as "not
-    ours", so the message is analysed like any other.
+    message's own Message-ID in THIS mailbox. A forged, copied or unsigned stamp
+    reads as "not ours", so the message is analysed like any other.
     """
     from email.parser import BytesHeaderParser
 
@@ -205,7 +213,7 @@ def is_processed(raw: bytes) -> bool:
     stamps = headers.get_all(PROCESSED_HEADER) or []
     if not stamps:
         return False
-    expected = _stamp_for(headers.get("Message-ID"))
+    expected = _stamp_for(headers.get("Message-ID"), mailbox_id)
     return any(hmac.compare_digest(str(v).strip(), expected) for v in stamps)
 
 

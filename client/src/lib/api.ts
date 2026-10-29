@@ -699,6 +699,22 @@ async function download(path: string, fallbackName: string, _retried = false): P
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// A 401 from these answers a password, code or link the person just typed — not
+// a dead session. Treating it as one replayed the wrong guess (counting it twice
+// toward the lockout) and then signed them out, losing the form they were on.
+const SESSION_ONLY_AUTH = [
+  "/auth/me",
+  "/auth/logout",
+  "/auth/mfa/enroll",
+  "/auth/phone/start",
+  "/auth/verify-email/resend",
+];
+
+function checksCredentials(path: string, init?: RequestInit): boolean {
+  if (path === "/api/v1/tenant" && init?.method === "DELETE") return true;
+  return path.includes("/auth/") && !SESSION_ONLY_AUTH.some((p) => path.includes(p));
+}
+
 async function request<T>(path: string, init?: RequestInit, _retried = false): Promise<T> {
   if (!_retried) await ensureFreshToken(path);
   const headers: Record<string, string> = {
@@ -711,13 +727,7 @@ async function request<T>(path: string, init?: RequestInit, _retried = false): P
 
   // Access token expired mid-session → refresh once and replay the request, so a
   // 15-minute-old tab doesn't fail with "expired". Don't loop the refresh call.
-  if (
-    res.status === 401 &&
-    !_retried &&
-    auth.refreshToken &&
-    !path.includes("/auth/refresh") &&
-    !path.includes("/auth/login")
-  ) {
+  if (res.status === 401 && !_retried && auth.refreshToken && !checksCredentials(path, init)) {
     if (await tryRefresh()) return request<T>(path, init, true);
   }
 
@@ -726,11 +736,7 @@ async function request<T>(path: string, init?: RequestInit, _retried = false): P
   // two tabs racing the rotating refresh token). Clear it and send the user to
   // sign in, rather than surfacing a cryptic 401 on whatever they just clicked
   // (which reads like "wrong password" on, say, the IMAP test).
-  if (
-    res.status === 401 &&
-    !path.includes("/auth/login") &&
-    !path.includes("/auth/refresh")
-  ) {
+  if (res.status === 401 && !checksCredentials(path, init)) {
     auth.clear();
     if (
       typeof window !== "undefined" &&
@@ -775,6 +781,9 @@ async function request<T>(path: string, init?: RequestInit, _retried = false): P
     }
     throw new ApiError(res.status, detail, structured);
   }
+  // No body (e.g. DELETE /sensor/devices/{id}): parsing one threw, so a
+  // successful removal was reported as a failure.
+  if (res.status === 204) return undefined as T;
   return res.json() as Promise<T>;
 }
 
@@ -1077,6 +1086,13 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  /** Push a test notification to this user's browsers now; `delivered` is what
+   *  the push service answered. */
+  pushTest: () =>
+    request<{ delivered: boolean; detail: string }>("/api/v1/push/test", {
+      method: "POST",
+    }),
+
   // E10 — per-counterparty risk profiles.
   counterparties: () =>
     request<{ counterparties: Counterparty[] }>("/api/v1/counterparties"),
@@ -1255,6 +1271,9 @@ export const api = {
   // The alert's evidence record (PDF) — for an insurer, a bank or the police.
   downloadEvidence: (alertId: string) =>
     download(`/api/v1/alerts/${alertId}/evidence.pdf`, "envelock-evidence.pdf"),
+
+  // The export the docs promise administrators (the CEF/JSONL feeds are for SIEMs).
+  exportAlertsCsv: () => download("/api/v1/export/alerts.csv", "envelock-alerts.csv"),
 
   quarantineAlert: (id: string) =>
     request<{

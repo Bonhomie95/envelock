@@ -212,7 +212,9 @@ class RequestGuardMiddleware(BaseHTTPMiddleware):
             )
 
         path = request.url.path
-        if path.startswith(("/api/", "/r/")):
+        # /ready is public and dials Postgres and Redis on every call — an
+        # amplifier unthrottled. Monitors poll it far below the default limit.
+        if path.startswith(("/api/", "/r/")) or path == "/ready":
             bucket = _bucket_for(path)
             allowed, retry_after = await active_limiter().acheck(
                 bucket, client_identity(request)

@@ -235,6 +235,7 @@ async def graph_replace(
     link_map: dict[str, str],
     redirect_base: str,
     banner: enforce.Banner | None,
+    mailbox_id: object = None,
     mailbox_address: str | None = None,
     transport: WriteTransport | None = None,
 ) -> bool:
@@ -287,7 +288,10 @@ async def graph_replace(
             "importance": msg.get("importance") or "normal",
             "categories": msg.get("categories") or [],
             "internetMessageHeaders": [
-                {"name": enforce.PROCESSED_HEADER, "value": enforce._stamp_for(internet_id)}  # noqa: SLF001
+                {  # noqa: SLF001
+                    "name": enforce.PROCESSED_HEADER,
+                    "value": enforce._stamp_for(internet_id, mailbox_id),
+                }
             ],
             "singleValueExtendedProperties": props,
         }

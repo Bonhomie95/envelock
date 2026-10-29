@@ -268,7 +268,7 @@ async def test_gmail_protected_copy_replaces_the_original_once(
     copy = gmail.msgs[copy_id]
     assert "INBOX" in copy["labelIds"] and copy["threadId"] == "t-n1"
     assert b"/r/" in copy["raw"] and b"shipping-weekly.example/issue/42" not in copy["raw"]
-    assert enforce.is_processed(copy["raw"])
+    assert enforce.is_processed(copy["raw"], mailbox.id)
 
     # The next cycle sees our copy in the inbox and leaves it alone.
     second = await oauth_fetch.sync_oauth_mailbox(

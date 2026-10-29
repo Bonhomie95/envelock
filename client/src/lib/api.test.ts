@@ -99,6 +99,28 @@ describe("expired access tokens", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("treats a wrong password as a wrong password, not a dead session", async () => {
+    // Refreshing replayed the typo (two strikes toward the lockout) and then
+    // signed the person out of the form they were filling in.
+    auth.set(fakeToken(), "refresh-token");
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: "password is incorrect" }, 401));
+
+    await expect(
+      api.changePassword({ current_password: "typo", new_password: "a-long-new-passphrase" }),
+    ).rejects.toMatchObject({ status: 401, message: "password is incorrect" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(auth.signedIn).toBe(true);
+  });
+
+  it("treats a wrong password on account deletion the same way", async () => {
+    auth.set(fakeToken(), "refresh-token");
+    fetchMock.mockResolvedValueOnce(jsonResponse({ detail: "password is incorrect" }, 401));
+
+    await expect(api.deleteTenant({ password: "typo" })).rejects.toBeInstanceOf(ApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(auth.signedIn).toBe(true);
+  });
+
   it("clears the session when the refresh itself is rejected", async () => {
     auth.set(fakeToken(), "stale-refresh");
     fetchMock
@@ -107,6 +129,14 @@ describe("expired access tokens", () => {
 
     await expect(api.counterparties()).rejects.toBeInstanceOf(ApiError);
     expect(auth.signedIn).toBe(false);
+  });
+});
+
+describe("responses without a body", () => {
+  it("a 204 from removing a device resolves instead of throwing", async () => {
+    auth.set(fakeToken(), "refresh-token");
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+    await expect(api.revokeSensorDevice("dev-1")).resolves.toBeUndefined();
   });
 });
 

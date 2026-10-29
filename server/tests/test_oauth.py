@@ -141,12 +141,15 @@ def test_callback_exchanges_code_and_flips_mailbox_to_tier1(
         cb = client.get(
             "/api/v1/connect/oauth/microsoft/callback",
             params={"code": "the-auth-code", "state": auth["state"]},
-        ).json()
+            follow_redirects=False,
+        )
 
-        assert cb["connected"] is True
-        assert cb["integration_tier"] == 1
-        assert "graph_api" in cb["sources"]
-        assert cb["has_refresh_token"] is True
+        # The customer's browser lands here, so it goes back to the dashboard
+        # with the outcome — not to a raw JSON page on the API host.
+        assert cb.status_code == 302
+        location = cb.headers["location"]
+        assert location.startswith("https://app.envelock.org/dashboard?")
+        assert "tab=mailboxes" in location and "connected=" in location
         # The real token endpoint was called with the authorization code.
         assert fake.calls and fake.calls[0][1]["code"] == "the-auth-code"
 
@@ -162,8 +165,19 @@ def test_callback_rejects_a_forged_state(client: TestClient, configured_ms: None
     r = client.get(
         "/api/v1/connect/oauth/microsoft/callback",
         params={"code": "x", "state": "forged.state"},
+        follow_redirects=False,
     )
-    assert r.status_code == 400
+    assert r.status_code == 302
+    assert "connect_error=" in r.headers["location"]
+    assert "connected=" not in r.headers["location"]
+
+    # Whatever a crafted link puts in `error`, the dashboard shows fixed text.
+    r = client.get(
+        "/api/v1/connect/oauth/microsoft/callback",
+        params={"error": "Call 555-0100 to restore your account"},
+        follow_redirects=False,
+    )
+    assert "555" not in r.headers["location"]
 
 
 def test_stored_oauth_token_is_encrypted_at_rest(

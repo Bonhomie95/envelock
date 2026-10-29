@@ -128,14 +128,15 @@ async def submit_contact(req: ContactRequest, request: Request) -> dict:
     # silence. Best effort: their message is already delivered, which is the
     # part that matters, so a failure here is logged and not surfaced.
     try:
+        # Fixed text only. Echoing the caller's subject and message let anyone
+        # send their own words to any address, DKIM-signed by us — spam and
+        # phishing on the reputation our alerts and password resets rely on.
         await send_mail(
             to=req.email,
-            subject=f"We received your message — {req.subject}",
+            subject="We received your message",
             body=(
                 "Thanks — we've got your message and will come back to you.\n\n"
-                f"Topic: {label}\nSubject: {req.subject}\n\n"
-                "For reference, this is what you sent:\n\n"
-                f"{req.message}\n"
+                f"Topic: {label}\n"
             ),
             html_body=branded_email(
                 heading="We received your message",
@@ -143,7 +144,6 @@ async def submit_contact(req: ContactRequest, request: Request) -> dict:
                 paragraphs=[
                     "Thanks — we've got your message and will come back to you.",
                     f"Topic: {label}",
-                    f"Subject: {req.subject}",
                 ],
                 footnote="This is a copy for your records; no reply is needed.",
             ),

@@ -214,6 +214,10 @@ class HostedCheckoutProvider(PaymentProvider, Protocol):
         transport: Transport | None = ...,
     ) -> dict: ...
 
+    async def cancel_subscription(
+        self, subscription_id: str, *, transport: Transport | None = ...
+    ) -> dict: ...
+
     async def create_billing_portal_session(
         self,
         *,
@@ -448,6 +452,18 @@ class _Stripe:
             f"https://api.stripe.com/v1/subscriptions/{subscription_id}",
             headers=self._headers(),
             data=form,
+        )
+
+    async def cancel_subscription(
+        self, subscription_id: str, *, transport: Transport | None = None
+    ) -> dict:
+        """End a subscription now: no further invoices."""
+        if not self.is_configured():
+            raise PaymentError("Stripe is not configured on this deployment")
+        return await _transport(transport).request(
+            "DELETE",
+            f"https://api.stripe.com/v1/subscriptions/{subscription_id}",
+            headers=self._headers(),
         )
 
     async def create_billing_portal_session(

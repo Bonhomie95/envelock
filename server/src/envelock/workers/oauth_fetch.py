@@ -13,6 +13,7 @@ this for real-time delivery; polling is the always-correct fallback.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any
@@ -94,7 +95,8 @@ async def _write_back(
         return False
     if provider == "google":
         new_raw = enforce.build_protected_copy(
-            raw, link_map=mapping, redirect_base=settings.redirect_base, banner=banner
+            raw, link_map=mapping, redirect_base=settings.redirect_base,
+            mailbox_id=mailbox.id, banner=banner,
         )
         return await api_enforce.gmail_replace(
             access_token=access_token, message_id=ref, new_raw=new_raw, transport=transport
@@ -105,6 +107,7 @@ async def _write_back(
         link_map=mapping,
         redirect_base=settings.redirect_base,
         banner=banner,
+        mailbox_id=mailbox.id,
         # Delegated token → /me (see the fetch note); /users/{label} 403s.
         transport=transport,
     )
@@ -314,7 +317,7 @@ async def sync_oauth_mailbox(
         logger.info("whoami skipped for mailbox %s: %s", mailbox.id, exc)
 
     owned = await _owned_domains(session, mailbox.tenant_id)
-    recipients = await _recipients(session, mailbox.tenant_id)
+    recipients = await _recipients(session, mailbox.tenant_id, mailbox.address)
     settings = get_settings()
     protected = mailbox.mailbox_class == MailboxClass.PROTECTED.value
     source = SourceMechanism.GMAIL_API if provider == "google" else SourceMechanism.GRAPH_API
@@ -342,7 +345,7 @@ async def sync_oauth_mailbox(
     alerted = quarantined = rewritten = 0
     for item in fetched:
         # Our own protected copy — never re-analyse or re-rewrite it.
-        if enforce.is_processed(item.raw):
+        if enforce.is_processed(item.raw, mailbox.id):
             continue
         event = await parse_message_async(
             item.raw,
@@ -386,6 +389,8 @@ async def sync_oauth_mailbox(
                 banner_allowed=tier is AlertTier.HIGH, transport=write_transport,
             ):
                 rewritten += 1
+            # Commit before notifying, so whoever opens the push finds the alert.
+            await session.commit()
             await deliver_pending(session, alert_id=pr.alert_id)
         elif protected and event.urls and await _write_back(
             session, **common, raw=item.raw, event=event, pr=pr, owned=owned,
@@ -454,7 +459,12 @@ async def sync_oauth_mailbox(
 
 
 async def _oauth_mailboxes(session: AsyncSession, *, requested_only: bool = False) -> list[UUID]:
-    query = select(Mailbox).where(Mailbox.is_active.is_(True))
+    # A mailbox waiting on a reconnect cannot be read; trying anyway hit the
+    # provider's token endpoint every cycle (every 5 s once a push had flagged
+    # it). The 30-minute refresh job still retries it and clears the flag.
+    query = select(Mailbox).where(
+        Mailbox.is_active.is_(True), Mailbox.needs_reconnect.is_not(True)
+    )
     if requested_only:
         query = query.where(Mailbox.sync_requested_at.is_not(None))
     rows = (await session.execute(query)).scalars().all()
@@ -464,6 +474,12 @@ async def _oauth_mailboxes(session: AsyncSession, *, requested_only: bool = Fals
     from envelock.workers.imap_fetch import _entitled_only
 
     return [m.id for m in await _entitled_only(session, candidates)]
+
+
+#: One sync at a time per mailbox: the fallback poll and the push drain are
+#: separate jobs, and both can pick the same mailbox in the same second — two
+#: syncs would each analyse, alert on and rewrite the same new message.
+_SYNC_LOCKS: dict[UUID, asyncio.Lock] = {}
 
 
 async def _sync_ids(ids: list[UUID], *, transport=None, write_transport=None) -> dict:  # noqa: ANN001
@@ -479,8 +495,9 @@ async def _sync_ids(ids: list[UUID], *, transport=None, write_transport=None) ->
         # every cycle, and no OAuth (Microsoft 365 / Gmail) mailbox was ever
         # polled. The two have to nest, not share a clause.
         summary: dict | None = None
+        lock = _SYNC_LOCKS.setdefault(mailbox_id, asyncio.Lock())
         with system_scope("oauth poll: load mailbox"):
-            async with sessionmaker() as session:
+            async with lock, sessionmaker() as session:
                 mailbox = await session.get(Mailbox, mailbox_id)
                 if mailbox is None:
                     continue
@@ -580,10 +597,10 @@ async def backfill_oauth_mailbox(
         return {"ok": False, "reason": str(exc), "analysed": 0}
 
     owned = await _owned_domains(session, mailbox.tenant_id)
-    recipients = await _recipients(session, mailbox.tenant_id)
+    recipients = await _recipients(session, mailbox.tenant_id, mailbox.address)
     analysed = 0
     for item in fetched:
-        if enforce.is_processed(item.raw):
+        if enforce.is_processed(item.raw, mailbox.id):
             continue
         event = await parse_message_async(
             item.raw,
@@ -601,9 +618,13 @@ async def backfill_oauth_mailbox(
             session, event, tenant_id=mailbox.tenant_id,
             owned_domains=owned, recipients=recipients,
         )
+        # Commit per message — see imap_fetch.backfill_mailbox for why one
+        # transaction for the whole scan stalled live mail.
+        await session.commit()
         # A backfill can surface a live fraud sitting in recent mail — deliver now.
         if pr_hist.alert_id is not None:
             await deliver_pending(session, alert_id=pr_hist.alert_id)
+            await session.commit()
         analysed += 1
 
     mailbox.backfilled_at = datetime.now(UTC)

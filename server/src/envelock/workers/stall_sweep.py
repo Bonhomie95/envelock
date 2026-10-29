@@ -18,13 +18,14 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import and_, select
+from sqlalchemy import exists, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import aliased
 
 from envelock.core.enums import MailDirection
 from envelock.db import get_sessionmaker
 from envelock.detections.content import a12_finding, stall_overdue
-from envelock.models import Counterparty, Finding, Message
+from envelock.models import Counterparty, Finding, Mailbox, Message
 from envelock.risk.engine import assess
 from envelock.util.domains import registrable_domain
 
@@ -48,6 +49,11 @@ async def sweep_stalled_payment_threads(
     at = now or datetime.now(UTC)
     floor = at - timedelta(days=LOOKBACK_DAYS)
 
+    # Threads already alerted on or already answered are excluded HERE, not in
+    # the loop: filtered after the LIMIT, the same oldest 500 settled threads
+    # were re-read every hour once the platform held more than that, and newer
+    # threads were not looked at until they were nearly 30 days old.
+    reply = aliased(Message)
     candidates = (
         (
             await session.execute(
@@ -57,6 +63,14 @@ async def sweep_stalled_payment_threads(
                     Message.payment_amount.is_not(None),
                     Message.sent_at.is_not(None),
                     Message.sent_at >= floor,
+                    Message.thread_key.is_not(None),
+                    ~exists().where(Finding.message_id == Message.id, Finding.service == "A12"),
+                    ~exists().where(
+                        reply.tenant_id == Message.tenant_id,
+                        reply.thread_key == Message.thread_key,
+                        reply.direction == MailDirection.INBOUND.value,
+                        reply.received_at > Message.sent_at,
+                    ),
                 )
                 .order_by(Message.sent_at.asc())
                 .limit(MAX_PER_CYCLE)
@@ -73,16 +87,10 @@ async def sweep_stalled_payment_threads(
             continue
         waiting = (at - sent_at).total_seconds()
 
-        # Already alerted on this exact message? Never repeat.
-        if await _has_a12(session, msg):
-            continue
-
-        # Who are we waiting on, and have they in fact replied since?
+        # Who are we waiting on? (Alerted and answered threads never get here.)
         counterparty_domain = await _thread_counterparty(session, msg)
         if counterparty_domain is None:
             continue  # a thread with no external party has no one to stall
-        if await _replied_since(session, msg, after=sent_at):
-            continue
 
         cp = (
             await session.execute(
@@ -104,7 +112,10 @@ async def sweep_stalled_payment_threads(
         assessment = assess([finding])
         if assessment is None or not assessment.is_alertable:
             continue
-        recipients = await _recipients(session, msg.tenant_id)
+        mailbox = await session.get(Mailbox, msg.mailbox_id)
+        recipients = await _recipients(
+            session, msg.tenant_id, mailbox.address if mailbox else None
+        )
         alert = await raise_alert(
             session,
             tenant_id=msg.tenant_id,
@@ -120,17 +131,6 @@ async def sweep_stalled_payment_threads(
 
     await session.commit()
     return {"stall_alerts": raised, "scanned": len(candidates)}
-
-
-async def _has_a12(session: AsyncSession, msg: Message) -> bool:
-    row = (
-        await session.execute(
-            select(Finding.id)
-            .where(Finding.message_id == msg.id, Finding.service == "A12")
-            .limit(1)
-        )
-    ).first()
-    return row is not None
 
 
 async def _thread_counterparty(session: AsyncSession, msg: Message) -> str | None:
@@ -154,24 +154,6 @@ async def _thread_counterparty(session: AsyncSession, msg: Message) -> str | Non
         if domain:
             return domain
     return None
-
-
-async def _replied_since(session: AsyncSession, msg: Message, *, after: datetime) -> bool:
-    row = (
-        await session.execute(
-            select(Message.id)
-            .where(
-                and_(
-                    Message.tenant_id == msg.tenant_id,
-                    Message.thread_key == msg.thread_key,
-                    Message.direction == MailDirection.INBOUND.value,
-                    Message.received_at > after,
-                )
-            )
-            .limit(1)
-        )
-    ).first()
-    return row is not None
 
 
 def _aware(value: datetime | None) -> datetime | None:

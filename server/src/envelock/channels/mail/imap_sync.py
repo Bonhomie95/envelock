@@ -18,6 +18,8 @@ decrypted immediately before the connection and never persisted in the clear
 from __future__ import annotations
 
 import contextlib
+import threading
+import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -84,6 +86,10 @@ class ImapClientLike(Protocol):
     def delete_messages(self, messages: Any) -> Any: ...
     def expunge(self, messages: Any = None) -> Any: ...
     def capabilities(self) -> tuple: ...
+    def idle(self) -> Any: ...
+    def idle_check(self, timeout: float | None = None) -> list: ...
+    def idle_done(self) -> tuple: ...
+    def shutdown(self) -> Any: ...
     def logout(self) -> Any: ...
 
 
@@ -384,6 +390,83 @@ def fetch_new(
         if client is not None:
             with contextlib.suppress(Exception):
                 client.logout()
+
+
+#: How long one IDLE read blocks before the thread looks up: to notice it has
+#: been told to stop, and to tell a closed connection (an instant empty answer)
+#: from a quiet one.
+IDLE_CHECK_SECONDS = 10.0
+
+#: Re-issue IDLE this often. The traffic stops middleboxes silently dropping a
+#: quiet connection, and a DONE that gets no answer is how a dead link shows up.
+IDLE_RENEW_SECONDS = 300.0
+
+
+def _announces_mail(responses: list) -> bool:
+    """`* N EXISTS` — the server telling an IDLE client that a message arrived."""
+    return any(isinstance(r, tuple) and len(r) > 1 and r[1] == b"EXISTS" for r in responses)
+
+
+def idle_watch(
+    *,
+    host: str,
+    port: int,
+    security: str,
+    username: str,
+    password: str | None = None,
+    access_token: str | None = None,
+    on_new_mail: Callable[[], object],
+    max_seconds: float,
+    stop: threading.Event,
+    folder: str = "INBOX",
+    timeout: float = 30.0,
+    client_factory: ClientFactory | None = None,
+    pin_sha256: str | None = None,
+) -> bool:
+    """Hold IMAP IDLE (RFC 2177) on ``folder`` and call ``on_new_mail()`` the
+    moment the server announces a message — the server's own push, which is
+    what makes a Protected mailbox real-time instead of a poll interval behind.
+
+    Read-only (EXAMINE): this only listens; the sync it triggers does the work.
+    Returns True after ``max_seconds`` or once ``stop`` is set (the caller
+    reconnects with a freshly read credential), False when the server cannot
+    IDLE (polling keeps covering it). Connection and login failures raise.
+    """
+    client = _open(
+        host=host, port=port, security=security, username=username,
+        password=password, access_token=access_token,
+        timeout=timeout, client_factory=client_factory, pin_sha256=pin_sha256,
+    )
+    try:
+        if not any(_cap_eq(c, "IDLE") for c in client.capabilities()):
+            supported = False
+        else:
+            supported = True
+            client.select_folder(folder, readonly=True)
+            deadline = time.monotonic() + max_seconds
+            while not stop.is_set() and time.monotonic() < deadline:
+                client.idle()
+                renew_at = min(deadline, time.monotonic() + IDLE_RENEW_SECONDS)
+                while not stop.is_set() and time.monotonic() < renew_at:
+                    started = time.monotonic()
+                    responses = client.idle_check(timeout=IDLE_CHECK_SECONDS)
+                    if _announces_mail(responses):
+                        on_new_mail()
+                    elif not responses and time.monotonic() - started < IDLE_CHECK_SECONDS / 2:
+                        # imapclient answers a closed socket with an instant
+                        # empty read rather than an error.
+                        raise ConnectionError("the mail server closed the IDLE connection")
+                _, responses = client.idle_done()
+                if _announces_mail(responses):
+                    on_new_mail()
+    except BaseException:
+        # LOGOUT waits for an answer a dead link never sends — just close it.
+        with contextlib.suppress(Exception):
+            client.shutdown()
+        raise
+    with contextlib.suppress(Exception):
+        client.logout()
+    return supported
 
 
 @dataclass(frozen=True, slots=True)
@@ -792,6 +875,7 @@ __all__ = [
     "FetchedMessage",
     "FetchResult",
     "fetch_new",
+    "idle_watch",
     "quarantine_message",
     "replace_message",
     "ReadMessage",

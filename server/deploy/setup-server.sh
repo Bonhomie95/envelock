@@ -127,7 +127,7 @@ wait_for_apt
 wait_for_apt
 "${APT[@]}" install -y -qq python3 python3-venv python3-dev build-essential \
   postgresql postgresql-contrib redis-server nginx certbot python3-certbot-nginx \
-  git curl dnsutils ufw tesseract-ocr libzbar0 libpq-dev >/dev/null
+  git curl dnsutils ufw tesseract-ocr libzbar0 libpq-dev age >/dev/null
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 22 ]; then
   wait_for_apt
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null

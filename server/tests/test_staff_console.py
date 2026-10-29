@@ -367,6 +367,23 @@ def test_the_last_staff_manager_cannot_be_suspended(client: TestClient) -> None:
     )
 
 
+def test_nobody_can_take_over_an_operator_who_outranks_them(client: TestClient) -> None:
+    """A reset hands back a working password with the authenticator cleared, so
+    resetting a leadership account from a security one was every permission in
+    two requests. Suspending or reinstating one is the same climb."""
+    leader_id = _seed("boss@envelock.org", Department.LEADERSHIP)
+    _seed("sec3@envelock.org", Department.SECURITY)
+    headers = _sign_in(client, "sec3@envelock.org")
+
+    for action in ("reset-password", "suspend", "reinstate"):
+        r = client.post(f"/api/v1/admin/staff/{leader_id}/{action}", headers=headers)
+        assert r.status_code == 403, (action, r.text)
+    edit = client.patch(
+        f"/api/v1/admin/staff/{leader_id}", json={"name": "renamed"}, headers=headers
+    )
+    assert edit.status_code == 403
+
+
 def test_a_password_reset_also_clears_the_authenticator(client: TestClient) -> None:
     """The usual reason for this call is "they lost the phone it was on"."""
     _seed("lead3@envelock.org", Department.LEADERSHIP)

@@ -55,10 +55,28 @@ async def resolve_tenant_by_token(token: str) -> UUID | None:
     return domain.tenant_id if domain else None
 
 
-async def _recipients(session, tenant_id: UUID) -> list[Recipient]:
-    users = (
-        await session.execute(select(User).where(User.tenant_id == tenant_id))
-    ).scalars().all()
+def _may_hear_about(user: User, mailbox_address: str | None) -> bool:
+    """The dashboard's own lines: admins see every mailbox, a member only the
+    one addressed to them. Anything but an active account hears nothing —
+    anyone can register on a customer's domain, and a pending account used to
+    receive the full report of every High and Critical, its own fraud included."""
+    if user.status != "active":
+        return False
+    if user.is_admin or user.role in ("owner", "admin"):
+        return True
+    return bool(mailbox_address) and user.email.lower() == mailbox_address.lower()
+
+
+async def _recipients(
+    session, tenant_id: UUID, mailbox_address: str | None = None
+) -> list[Recipient]:
+    users = [
+        u
+        for u in (
+            await session.execute(select(User).where(User.tenant_id == tenant_id))
+        ).scalars().all()
+        if _may_hear_about(u, mailbox_address)
+    ]
     push_user_ids = {
         uid
         for (uid,) in (
@@ -155,7 +173,7 @@ async def run_forwarded_message(tenant_id: UUID, raw: bytes) -> dict:
             owned_domains=frozenset(owned),
             remediable=False,
         )
-        recipients = await _recipients(session, tenant_id)
+        recipients = await _recipients(session, tenant_id, mailbox.address)
         result = await analyse_event(
             session,
             event,

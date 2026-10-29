@@ -458,6 +458,30 @@ With IONOS **S3 Object Storage** (any S3-compatible storage works the same way):
    ```
 
    Put it on your calendar for the first Monday of each month.
+4. **Encrypt what leaves the server.** The dump holds every customer's
+   metadata, so the copy in the bucket should be unreadable without a key the
+   server never holds. On **your own computer**, not the server:
+
+   ```bash
+   brew install age          # or: sudo apt install age
+   age-keygen -o envelock-backup.key
+   ```
+
+   It prints a public key starting `age1…`. Keep `envelock-backup.key` in your
+   password manager, **not** on the server. Then on the server:
+
+   ```bash
+   echo 'ENVELOCK_BACKUP_AGE_RECIPIENT=age1...' >> ~/apps/server/.env
+   ~/apps/server/deploy/backup.sh --label encrypted
+   ```
+
+   Only the `.age` file is uploaded from now on. To restore one, copy the key
+   in for the restore only, then delete it:
+
+   ```bash
+   ENVELOCK_BACKUP_AGE_IDENTITY=~/envelock-backup.key \
+     ~/apps/server/deploy/restore.sh --drill /path/to/envelock-….dump.age
+   ```
 
 ---
 
@@ -468,7 +492,7 @@ customers "Connect with Microsoft" / "Connect with Google" is the only way in.
 Envelock now protects those mailboxes fully: it moves Critical mail to an
 "Envelock Quarantine" folder/label and can swap every message for a copy whose
 links are checked at click time. Push notifications make it act within
-seconds instead of on the 5-minute check.
+seconds instead of on the 1-minute check.
 
 **A. Microsoft push** — nothing to create, and nothing to set: step 5 already
 put this in **both** `.env` and `.env.worker`:
@@ -837,7 +861,11 @@ Measured on 21 September, not guessed:
 A "customer" here is a business protecting **~5 mailboxes** (a typical small
 company's finance and leadership inboxes).
 
-| | Mailboxes | Businesses (~5 each) | New mail seen within |
+Protected IMAP mailboxes also hold one IMAP IDLE connection each, so their
+new mail is analysed about a second after it lands; the 60-second check
+below is the cadence for Monitored mailboxes and the safety net for all.
+
+| | Mailboxes | Businesses (~5 each) | New mail seen within (poll) |
 |---|---|---|---|
 | **Comfortable** | up to **~500** | **~100** | 1 minute, with headroom |
 | **Maximum on this box** | ~**900** | **~180** | 1 minute, at the limit |

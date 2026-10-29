@@ -235,6 +235,54 @@ async def test_the_lookalike_watcher_sees_and_records_every_tenant(db, monkeypat
     assert [r.candidate_domain for r in rows] == [lookalike]
 
 
+async def test_an_armed_lookalike_alerts_its_admins_once(db, monkeypatch) -> None:  # noqa: ANN001
+    """One issuance arrives several times (precert, cert, several logs) and each
+    used to raise a new High alert — with no recipients, so none of them was
+    ever delivered anywhere but the dashboard."""
+    from datetime import UTC, datetime
+
+    from sqlalchemy import func
+
+    from envelock.channels.external import brand
+    from envelock.models import Alert, NotificationDelivery, User
+    from envelock.workers.scheduler import _persist_ct_observation
+    from envelock.workers.watchers import DomainObservation
+
+    tenant_id, domain, _ = await _tenant_with_mailbox()
+    async with get_sessionmaker()() as s:
+        s.add(User(tenant_id=tenant_id, email=f"it@{domain}", role="owner",
+                   is_admin=True, status="active"))
+        await s.commit()
+
+    class _Mx:
+        has_mx = True
+
+    async def _probe(_domain: str):  # noqa: ANN202
+        return _Mx()
+
+    monkeypatch.setattr(brand, "probe_domain", _probe)
+    for _ in range(3):
+        await _persist_ct_observation(
+            DomainObservation(
+                domain="x" + domain, source="ct", observed_at=datetime.now(UTC),
+                protected_domain=domain, technique="addition", similarity=0.9,
+            )
+        )
+    async with get_sessionmaker()() as s:
+        alerts = (
+            await s.execute(select(Alert.id).where(Alert.tenant_id == tenant_id))
+        ).scalars().all()
+        deliveries = (
+            await s.execute(
+                select(func.count()).select_from(NotificationDelivery).where(
+                    NotificationDelivery.alert_id.in_(alerts)
+                )
+            )
+        ).scalar_one()
+    assert len(alerts) == 1, "one armed lookalike, one alert"
+    assert deliveries > 0, "the alert must reach someone beyond the dashboard"
+
+
 async def test_forwarded_mail_reaches_its_tenant(db) -> None:  # noqa: ANN001
     from test_imap_live import _phishing_raw
 

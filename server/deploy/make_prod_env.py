@@ -229,7 +229,11 @@ def main() -> int:
     parser.add_argument(
         "--keep-secret-key",
         action="store_true",
-        help="reuse the source's SECRET_KEY (only when re-running on the same server)",
+        help=(
+            "reuse the source's SECRET_KEY — REQUIRED when re-running on a live "
+            "server: a new key ends every session and makes every sealed "
+            "authenticator seed and webhook secret unreadable (security/fields.py)"
+        ),
     )
     args = parser.parse_args()
 

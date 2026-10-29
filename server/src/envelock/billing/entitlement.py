@@ -17,7 +17,11 @@ from envelock.models import Mailbox, Tenant
 
 def mailbox_entitled(tenant: Tenant) -> bool:
     """Content mailboxes (Channel 1/2) need a paid plan or an active trial. Guard
-    is Channel-3-only and free — it protects domains, not mailboxes (PRD §12.3)."""
+    is Channel-3-only and free — it protects domains, not mailboxes (PRD §12.3).
+    A workspace an operator suspended is entitled to nothing: this one check is
+    what stops every poller, push subscription and sync for it."""
+    if tenant.is_active is False:  # explicitly suspended (unset means active)
+        return False
     if tenant.plan not in {Plan.ESSENTIAL.value, Plan.COMPLETE.value, Plan.SOLO.value}:
         return False
     ends = tenant.trial_ends_at

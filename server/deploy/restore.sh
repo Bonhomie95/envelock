@@ -38,6 +38,24 @@ PROD_DB="${PROD_DB%%\?*}"
 
 newest() { ls -1t "$BACKUP_DIR"/envelock-*.dump 2>/dev/null | head -1; }
 
+# An off-box copy is age-encrypted (backup.sh). Decrypt it with the offline
+# private key — ENVELOCK_BACKUP_AGE_IDENTITY=/path/to/envelock-backup.key, copied
+# in only for the restore — into a private temp file that is removed on exit.
+PLAIN=""
+trap 'rm -f "$PLAIN"' EXIT
+decrypt_if_needed() {
+  case "$FILE" in
+    *.age)
+      local identity="${ENVELOCK_BACKUP_AGE_IDENTITY:-}"
+      [ -n "$identity" ] || fail "set ENVELOCK_BACKUP_AGE_IDENTITY to the backup private key file"
+      command -v age >/dev/null 2>&1 || fail "age is not installed (sudo apt-get install age)"
+      PLAIN="$(umask 077 && mktemp "${TMPDIR:-/tmp}/envelock-restore.XXXXXX")"
+      age -d -i "$identity" -o "$PLAIN" "$FILE" || fail "could not decrypt $FILE with $identity"
+      FILE="$PLAIN"
+      ;;
+  esac
+}
+
 case "${1:-}" in
   --list)
     log "backups in $BACKUP_DIR"
@@ -48,6 +66,7 @@ case "${1:-}" in
   --drill)
     FILE="${2:-$(newest)}"
     [ -n "$FILE" ] || fail "no backups found in $BACKUP_DIR"
+    decrypt_if_needed
     DRILL_DB="envelock_drill_$(date -u +%Y%m%d%H%M%S)"
     log "restore drill: $FILE → $DRILL_DB"
 
@@ -55,6 +74,7 @@ case "${1:-}" in
     # that litters is a drill people stop running.
     cleanup() {
       psql "$SERVER_URL/postgres" -qc "DROP DATABASE IF EXISTS $DRILL_DB" >/dev/null 2>&1 || true
+      rm -f "$PLAIN"
     }
     trap cleanup EXIT
 
@@ -88,6 +108,7 @@ case "${1:-}" in
     TARGET="${2:?--to-db needs a database name}"
     FILE="${3:-$(newest)}"
     [ -n "$FILE" ] || fail "no backup file given and none found"
+    decrypt_if_needed
     log "restoring $FILE → $TARGET"
     psql "$SERVER_URL/postgres" -qc "CREATE DATABASE $TARGET" 2>/dev/null || true
     pg_restore --no-owner --no-privileges --dbname="$SERVER_URL/$TARGET" "$FILE"
@@ -98,6 +119,7 @@ case "${1:-}" in
   --PRODUCTION)
     FILE="${2:?--PRODUCTION needs an explicit backup file}"
     [ -f "$FILE" ] || fail "no such file: $FILE"
+    decrypt_if_needed
     warn "This OVERWRITES the live database '$PROD_DB'."
     warn "Everything written since $(basename "$FILE") will be lost."
     warn "Stop the API first:  sudo systemctl stop envelock-api"

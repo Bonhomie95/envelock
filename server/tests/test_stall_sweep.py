@@ -106,3 +106,31 @@ async def test_a_reply_prevents_the_stall_alert(stalled_thread) -> None:  # noqa
             await session.commit()
 
     assert (await _sweep())["stall_alerts"] == 0
+
+
+async def test_answered_threads_do_not_crowd_out_a_stalled_one(stalled_thread, monkeypatch) -> None:  # noqa: ANN001
+    """Settled threads were filtered after the LIMIT: once the window was full of
+    them (oldest first), a stalled thread behind them was never looked at."""
+    from envelock.workers import stall_sweep
+
+    tid, mid = stalled_thread
+    now = datetime.now(UTC)
+    with system_scope("test"):
+        async with get_sessionmaker()() as session:
+            # An OLDER payment thread the vendor did answer — first in the window.
+            await _msg(
+                session, tenant_id=tid, mailbox_id=mid, thread_key="<old@vendor.com>",
+                direction="outbound", sender_address="dana@cyberlex.store",
+                sent_at=now - timedelta(days=3), received_at=now - timedelta(days=3),
+                rfc_message_id="<old-out@cyberlex.store>", payment_amount=100.0,
+            )
+            await _msg(
+                session, tenant_id=tid, mailbox_id=mid, thread_key="<old@vendor.com>",
+                direction="inbound", sender_address="ap@vendor.com",
+                received_at=now - timedelta(days=2), rfc_message_id="<old-in@vendor.com>",
+            )
+            await session.commit()
+
+    monkeypatch.setattr(stall_sweep, "MAX_PER_CYCLE", 1)
+    result = await _sweep()
+    assert result["stall_alerts"] == 1, result

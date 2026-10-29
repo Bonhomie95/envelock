@@ -106,6 +106,30 @@ def _assert_can_delegate(operator: Operator, permissions: list[str]) -> None:
         )
 
 
+def _assert_can_manage(operator: Operator, account: StaffAccount) -> None:
+    """You cannot act on someone who holds more than you do.
+
+    A password reset hands the caller a working sign-in for the target and clears
+    their authenticator, so without this `staff:manage` reached every permission:
+    reset a leadership account, sign in as it. Suspending one is the same climb.
+    """
+    if operator.break_glass:
+        return
+    held = resolve_permissions(
+        department=account.department,
+        granted=account.granted_permissions,
+        revoked=account.revoked_permissions,
+    )
+    excess = sorted(p.value for p in held if not operator.can(p))
+    if excess:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "this operator holds permissions you do not ("
+            + ", ".join(excess)
+            + "), so only someone who holds them can change this account",
+        )
+
+
 def _assert_can_assign_department(operator: Operator, department: Department) -> None:
     from envelock.auth.staff import DEPARTMENT_PERMISSIONS
 
@@ -244,6 +268,7 @@ async def update_staff(
             status.HTTP_409_CONFLICT,
             "you cannot change your own department or permissions — ask a colleague",
         )
+    _assert_can_manage(operator, account)
 
     before = {
         "department": account.department,
@@ -290,6 +315,7 @@ async def suspend_staff(
         raise HTTPException(404, "operator not found")
     if str(account.id) == operator.id:
         raise HTTPException(status.HTTP_409_CONFLICT, "you cannot suspend yourself")
+    _assert_can_manage(operator, account)
 
     active_managers = int(
         (
@@ -342,6 +368,7 @@ async def reinstate_staff(
     account = await session.get(StaffAccount, staff_id)
     if account is None:
         raise HTTPException(404, "operator not found")
+    _assert_can_manage(operator, account)
     account.status = "active"
     account.disabled_at = None
     await record_staff_audit(
@@ -370,6 +397,7 @@ async def reset_staff_password(
     account = await session.get(StaffAccount, staff_id)
     if account is None:
         raise HTTPException(404, "operator not found")
+    _assert_can_manage(operator, account)
 
     temporary = new_temporary_password()
     account.password_hash = hash_password(temporary)

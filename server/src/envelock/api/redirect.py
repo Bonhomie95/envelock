@@ -176,7 +176,10 @@ async def click(token: str, request: Request, session: Session, go: int = 0) -> 
 
     if verdict == "suspicious" and not go:
         await _log_click(session, row, request, "warned")
-        continue_url = f"{request.url.path}?go=1"
+        # Escaped: the path is decoded and the /r/{token}/{fallback} segment is
+        # unvalidated, so it could close the href and inject markup (a meta
+        # refresh to anywhere) on our own link-safety domain.
+        continue_url = _esc(f"{request.url.path}?go=1")
         return HTMLResponse(
             _PAGE.format(
                 title="Check before you continue",

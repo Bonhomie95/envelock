@@ -116,3 +116,30 @@ async def test_one_failing_mailbox_is_counted_not_fatal(
     totals = await oauth_fetch.fetch_all_oauth_mailboxes()
     assert totals["errors"] == 1
     assert totals["fetched"] == 0
+
+
+async def test_the_fallback_poll_and_the_push_drain_never_overlap_on_a_mailbox(
+    oauth_mailbox, monkeypatch  # noqa: ANN001
+) -> None:
+    """Both jobs can pick the same mailbox in the same second. Overlapping, each
+    lists the same new message and acts on it — two alerts, two rewrites."""
+    import asyncio
+
+    from envelock.workers import oauth_fetch
+
+    running, overlapped = 0, False
+
+    async def _slow_sync(session, mailbox, *, transport=None, write_transport=None):  # noqa: ANN001, ARG001
+        nonlocal running, overlapped
+        running += 1
+        overlapped |= running > 1
+        await asyncio.sleep(0.05)
+        running -= 1
+        return {"ok": True, "fetched": 0, "alerted": 0}
+
+    monkeypatch.setattr(oauth_fetch, "sync_oauth_mailbox", _slow_sync)
+
+    await asyncio.gather(
+        oauth_fetch._sync_ids([oauth_mailbox]), oauth_fetch._sync_ids([oauth_mailbox])
+    )
+    assert not overlapped

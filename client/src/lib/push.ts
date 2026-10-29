@@ -43,20 +43,71 @@ async function registration(): Promise<ServiceWorkerRegistration> {
   return navigator.serviceWorker.ready;
 }
 
-/** Current push state for this browser + deployment, without prompting. */
+// "Turn off" is remembered per browser so re-registration below never overrides
+// it. Signing out also drops the subscription, but that is not a choice to stop
+// alerts — the next sign-in here resumes them.
+const OPT_OUT_KEY = "envelock:push-off";
+
+function optedOut(): boolean {
+  try {
+    return localStorage.getItem(OPT_OUT_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setOptedOut(off: boolean): void {
+  try {
+    if (off) localStorage.setItem(OPT_OUT_KEY, "1");
+    else localStorage.removeItem(OPT_OUT_KEY);
+  } catch {
+    /* storage blocked — the choice just isn't remembered */
+  }
+}
+
+/** This browser's subscription under the deployment's current VAPID key. One
+ *  made under any other key is undeliverable — the push service rejects every
+ *  send for it — so it is replaced rather than reused. */
+async function currentSubscription(
+  reg: ServiceWorkerRegistration,
+  vapidKey: string,
+): Promise<PushSubscription> {
+  const key = urlBase64ToUint8Array(vapidKey);
+  const existing = await reg.pushManager.getSubscription();
+  const held = existing?.options.applicationServerKey;
+  const sameKey =
+    !held ||
+    (held.byteLength === key.length &&
+      new Uint8Array(held).every((b, i) => b === key[i]));
+  if (existing && sameKey) return existing;
+  if (existing) await existing.unsubscribe();
+  return reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+}
+
+/** Current push state for this browser + deployment, without prompting.
+ *
+ *  With permission already granted it also (re-)registers the subscription with
+ *  the server. That is what keeps push working: the server's copy disappears on
+ *  sign-out, when another account in this browser claims the endpoint, after a
+ *  server move, or when the browser rotates the subscription — and every time
+ *  the toggle went on reading "on" while nothing was ever delivered. */
 export async function getPushState(): Promise<PushState> {
   if (!pushSupported()) return "unsupported";
+  let vapidKey: string;
   try {
     const cfg = await api.sensorConfig();
-    if (!cfg.push_available) return "unavailable";
+    if (!cfg.push_available || !cfg.vapid_public_key) return "unavailable";
+    vapidKey = cfg.vapid_public_key;
   } catch {
     return "unavailable";
   }
   if (Notification.permission === "denied") return "denied";
+  if (Notification.permission !== "granted" || optedOut()) return "off";
   try {
-    const reg = await navigator.serviceWorker.getRegistration();
-    const sub = reg ? await reg.pushManager.getSubscription() : null;
-    return sub ? "on" : "off";
+    const body = keysOf(await currentSubscription(await registration(), vapidKey));
+    if (!body.p256dh || !body.auth) return "off";
+    await api.pushSubscribe(body);
+    return "on";
   } catch {
     return "off";
   }
@@ -79,15 +130,9 @@ export async function enablePush(): Promise<PushState> {
   if (permission !== "granted") {
     return permission === "denied" ? "denied" : "off";
   }
+  setOptedOut(false);
 
-  const reg = await registration();
-  let sub = await reg.pushManager.getSubscription();
-  if (!sub) {
-    sub = await reg.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: urlBase64ToUint8Array(cfg.vapid_public_key),
-    });
-  }
+  const sub = await currentSubscription(await registration(), cfg.vapid_public_key);
   const body = keysOf(sub);
   if (!body.p256dh || !body.auth) return "off"; // browser gave no encryption keys
   try {
@@ -107,8 +152,11 @@ export async function enablePush(): Promise<PushState> {
   return "on";
 }
 
-/** Unsubscribe this browser and tell the server to stop sending to it. */
-export async function disablePush(): Promise<PushState> {
+/** Unsubscribe this browser and tell the server to stop sending to it.
+ *  `optOut` is the user's own "Turn off": remembered, so it is not undone on
+ *  the next visit. Sign-out passes nothing — alerts resume at the next sign-in. */
+export async function disablePush(optOut = false): Promise<PushState> {
+  if (optOut) setOptedOut(true);
   if (!pushSupported()) return "unsupported";
   try {
     const reg = await navigator.serviceWorker.getRegistration();

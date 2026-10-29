@@ -29,7 +29,29 @@ self.addEventListener("push", (event) => {
     requireInteraction: data.requireInteraction === true,
     data: { url: (data.data && data.data.url) || "/dashboard" },
   };
-  event.waitUntil(self.registration.showNotification(title, options));
+  event.waitUntil(
+    Promise.all([
+      self.registration.showNotification(title, options),
+      // An open dashboard refreshes now, not on its next timed poll.
+      self.clients
+        .matchAll({ type: "window" })
+        .then((wins) => wins.forEach((w) => w.postMessage({ type: "envelock:alert" }))),
+    ]),
+  );
+});
+
+// The browser replaced or expired the subscription (Firefox does; the old
+// endpoint then answers 410 Gone). Subscribe again under the same key so this
+// browser stays reachable; the app re-registers it with the server on next open.
+self.addEventListener("pushsubscriptionchange", (event) => {
+  const key =
+    event.oldSubscription &&
+    event.oldSubscription.options &&
+    event.oldSubscription.options.applicationServerKey;
+  if (!key) return;
+  event.waitUntil(
+    self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key }),
+  );
 });
 
 self.addEventListener("notificationclick", (event) => {

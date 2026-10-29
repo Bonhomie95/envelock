@@ -373,6 +373,9 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type"],
+        # The dashboard is cross-origin to the API, so without this it cannot
+        # read the filename of an evidence PDF or export.
+        expose_headers=["Content-Disposition"],
         max_age=600,
     )
 

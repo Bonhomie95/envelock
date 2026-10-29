@@ -517,13 +517,95 @@ async def test_oauth_refresh_invalid_grant_flags_reconnect(session, monkeypatch)
         get_settings.cache_clear()
 
 
+@pytest.mark.asyncio
+async def test_a_revoked_grant_emails_the_admins_once_not_every_cycle(session, monkeypatch) -> None:
+    """The failure was set but never committed, so each fetch cycle rolled it
+    back and sent "Envelock lost access" again — every minute at the 60 s poll."""
+    import json
+
+    from conftest import platform_sessionmaker
+
+    from envelock.channels.mail import oauth, oauth_refresh
+    from envelock.config import get_settings
+    from envelock.models import Mailbox, MailboxCredential, Tenant
+    from envelock.security.crypto import seal
+
+    monkeypatch.setenv("ENVELOCK_GOOGLE_CLIENT_ID", "cid")
+    monkeypatch.setenv("ENVELOCK_GOOGLE_CLIENT_SECRET", "csecret")
+    monkeypatch.setenv("ENVELOCK_GOOGLE_REDIRECT_URI", "https://app/callback")
+    get_settings.cache_clear()
+
+    class Revoked:
+        async def post_form(self, url, data):  # noqa: ANN001, ANN202, ARG002
+            return {"error": "invalid_grant", "error_description": "revoked"}
+
+    sent: list[str] = []
+
+    async def _notify(session, tenant_id, **kw):  # noqa: ANN001, ANN202, ARG001
+        sent.append(kw["subject"])
+
+    monkeypatch.setattr("envelock.notify.account.notify_admins", _notify)
+    oauth.set_default_transport(Revoked())
+    try:
+        tid = uuid4()
+        session.add(Tenant(id=tid, name="Acme"))
+        await session.flush()
+        mb = Mailbox(tenant_id=tid, address="user@acme.com",
+                     sources=[SourceMechanism.GMAIL_API.value])
+        session.add(mb)
+        await session.flush()
+        sealed = seal(json.dumps({"access_token": "old", "refresh_token": "rt"}).encode(),
+                      aad=str(mb.id).encode())
+        session.add(MailboxCredential(
+            mailbox_id=mb.id, tenant_id=tid, kind="oauth_token",
+            ciphertext=sealed.ciphertext, wrapped_dek=sealed.wrapped_dek, key_id=sealed.key_id,
+            token_expires_at=datetime.now(UTC) - timedelta(minutes=5),
+        ))
+        await session.commit()
+
+        for _ in range(3):  # three fetch cycles, each in its own session
+            async with platform_sessionmaker()() as cycle:
+                assert await oauth_refresh.current_access_token(cycle, mb.id) is None
+        assert len(sent) == 1, sent
+    finally:
+        oauth.set_default_transport(None)
+        get_settings.cache_clear()
+
+
 # ── 8. Export tokens are persisted and authenticate a read-only feed ─────────
 def test_export_token_persisted_and_authenticates(client: TestClient) -> None:
     h = _auth_header(client, "owner@exportco.com")
     _bootstrap(client, h, name="ExportCo", domain="exportco.com")
-    created = client.post("/api/v1/export/tokens", json={"scopes": ["alerts:read"]}, headers=h)
-    assert created.status_code == 201
+    # A token outlives the session that mints it, so minting re-authenticates.
+    bare = client.post("/api/v1/export/tokens", json={"scopes": ["alerts:read"]}, headers=h)
+    assert bare.status_code == 422
+
+    import asyncio
+
+    from conftest import platform_sessionmaker
+    from sqlalchemy import select
+
+    from envelock.models import AuditEvent, User
+
+    async def _seed() -> str:
+        async with platform_sessionmaker()() as s:
+            query = select(User).where(User.email == "owner@exportco.com")
+            return (await s.execute(query)).scalar_one().totp_secret or ""
+
+    code = _totp_at(asyncio.run(_seed()), int(time.time()) // 30 + 1)  # not the login's code
+    created = client.post(
+        "/api/v1/export/tokens",
+        json={"scopes": ["alerts:read"], "password": "a-long-enough-passphrase", "mfa_code": code},
+        headers=h,
+    )
+    assert created.status_code == 201, created.text
     token = created.json()["token"]
+
+    async def _audited() -> list[str]:
+        async with platform_sessionmaker()() as s:
+            return list((await s.execute(select(AuditEvent.action))).scalars().all())
+
+    assert "export.token_created" in asyncio.run(_audited())
 
     # The token now authenticates the read-only SIEM feed.
     feed = client.get("/api/v1/export/api/alerts", headers={"Authorization": f"Bearer {token}"})

@@ -35,6 +35,7 @@ from envelock.auth.security import (
     REFRESH_TTL,
     TokenError,
     assess_passphrase,
+    averify_password,
     decode_token,
     dummy_hash,
     generate_recovery_codes,
@@ -43,7 +44,7 @@ from envelock.auth.security import (
     hash_recovery_code,
     issue_token,
     totp_uri,
-    verify_password,
+    upgraded_hash,
     verify_totp,
 )
 from envelock.auth.staff import Operator, Permission, resolve_permissions
@@ -163,7 +164,7 @@ async def staff_login(req: StaffLoginRequest, session: Session, request: Request
 
     account = await _by_email(session, email)
     stored = account.password_hash if account else dummy_hash()
-    ok = verify_password(req.password, stored or dummy_hash())
+    ok = await averify_password(req.password, stored or dummy_hash())
 
     if account is None or not ok or account.status != "active":
         await active_lockout().arecord_failure(f"staff:{email}")
@@ -171,6 +172,8 @@ async def staff_login(req: StaffLoginRequest, session: Session, request: Request
         raise _generic_401()
 
     account.last_login_ip = request.client.host if request.client else None
+    if fresh := await upgraded_hash(req.password, account.password_hash):
+        account.password_hash = fresh  # see the customer sign-in
     await session.commit()
 
     return {
@@ -469,7 +472,7 @@ async def set_own_password(
             "too many attempts",
             headers={"Retry-After": str(retry_after)},
         )
-    if not verify_password(req.current_password, account.password_hash or dummy_hash()):
+    if not await averify_password(req.current_password, account.password_hash or dummy_hash()):
         await active_lockout().arecord_failure(scope)
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "current password is wrong")
     await active_lockout().arecord_success(scope)
@@ -478,7 +481,7 @@ async def set_own_password(
         assess_passphrase(req.new_password)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    if verify_password(req.new_password, account.password_hash or ""):
+    if await averify_password(req.new_password, account.password_hash or ""):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST, "the new password must be different"
         )

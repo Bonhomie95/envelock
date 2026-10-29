@@ -29,10 +29,14 @@ RAW = (
 class _GmailTransport:
     """Routes by Gmail URL shape: unread list, metadata (Message-ID), raw, list."""
 
-    def __init__(self, *, unread: list[str], msg_ids: dict[str, str], history: list[str]) -> None:
+    def __init__(
+        self, *, unread: list[str], msg_ids: dict[str, str], history: list[str],
+        labels: dict[str, list[str]] | None = None,
+    ) -> None:
         self._unread = unread
         self._msg_ids = msg_ids
         self._history = history
+        self._labels = labels or {}
 
     async def get_json(self, url: str, *, headers: dict) -> dict:  # noqa: ARG002
         if "is%3Aunread" in url or "is:unread" in url:
@@ -40,7 +44,10 @@ class _GmailTransport:
         if "format=metadata" in url:
             gid = url.split("/messages/")[1].split("?")[0]
             mid = self._msg_ids.get(gid)
-            return {"payload": {"headers": [{"name": "Message-ID", "value": mid}] if mid else []}}
+            return {
+                "labelIds": self._labels.get(gid, []),
+                "payload": {"headers": [{"name": "Message-ID", "value": mid}] if mid else []},
+            }
         if "format=raw" in url:
             return {"raw": base64.urlsafe_b64encode(RAW).decode().rstrip("=")}
         # history / generic list
@@ -156,3 +163,46 @@ async def test_gmail_backfill_analyses_history(client) -> None:  # noqa: ANN001,
         async with get_sessionmaker()() as session:
             mailbox = await session.get(Mailbox, mid)
             assert mailbox.backfilled_at is not None
+
+
+async def test_gmail_leaving_the_unread_inbox_unread_is_not_a_read(client, monkeypatch) -> None:  # noqa: ANN001, ARG001
+    """Archived, trashed, or moved out by our own QUARANTINE: each leaves
+    `in:inbox is:unread` with the message still unread, and each was counted as
+    a read — a false Critical "someone else is in this mailbox"."""
+    from sqlalchemy import select
+
+    from envelock.db import get_sessionmaker
+    from envelock.db_rls import system_scope
+    from envelock.models import Mailbox, MailboxCredential
+    from envelock.platform import sensor as sensor_rules
+    from envelock.workers import oauth_fetch
+
+    seen: list[str] = []
+
+    async def _fake_eval(session, *, mailbox, message_ref, owned_domains, **kw):  # noqa: ANN001, ARG001
+        seen.append(message_ref)
+
+    monkeypatch.setattr(sensor_rules, "evaluate_read", _fake_eval)
+    with system_scope("test"):
+        async with get_sessionmaker()() as session:
+            _tid, mid = await _gmail_mailbox(session, armed=True, snapshot=["arch", "bin", "q"])
+    transport = _GmailTransport(
+        unread=[],
+        msg_ids={"arch": "<a@x>", "bin": "<b@x>", "q": "<q@x>"},
+        history=[],
+        labels={"arch": ["UNREAD"], "bin": ["TRASH"], "q": ["UNREAD", "Label_Q"]},
+    )
+    with system_scope("test"):
+        async with get_sessionmaker()() as session:
+            mailbox = await session.get(Mailbox, mid)
+            cred = (
+                await session.execute(
+                    select(MailboxCredential).where(MailboxCredential.mailbox_id == mid)
+                )
+            ).scalar_one()
+            result = await oauth_fetch._watch_reads_gmail(
+                session, mailbox, cred,
+                access_token="t",  # noqa: S106 — fake token
+                owned=frozenset(), transport=transport,
+            )
+    assert seen == [] and result["observed"] == 0, (seen, result)

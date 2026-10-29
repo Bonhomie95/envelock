@@ -20,7 +20,12 @@ function fakeMessenger(accounts) {
     },
     alarms: { create() {}, onAlarm: { addListener() {} } },
     messageDisplay: { onMessageDisplayed: { addListener() {} } },
-    runtime: { id: "tb", onMessage: { addListener() {} }, openOptionsPage() {} },
+    runtime: {
+      id: "tb",
+      getURL: (p) => "moz-extension://tb-uuid/" + p,
+      onMessage: { addListener: (fn) => (shown.listener = fn) },
+      openOptionsPage() {},
+    },
   };
 }
 
@@ -101,4 +106,22 @@ test("a flagged message badges the toolbar button and notifies", async () => {
   await tb.onDisplayed({ headerMessageId: "clean@x", folder: { accountId: "account1" } }, { id: 7 });
   assert.equal(tb.shown.badge[7], "", "a clean message clears the badge");
   assert.equal(tb.shown.notes.length, 1);
+});
+
+
+test("the settings page, open in a tab, can pair — a web page cannot", async () => {
+  const server = envelockServer({ mailbox: "cfo@acme.example" });
+  const messenger = fakeMessenger(ACCOUNTS);
+  const tb = Thunderbird.create(messenger, { fetch: server, now: clock(), version: "128.3.0" });
+  await tb.start();
+  const listener = messenger.shown.listener;
+  const enroll = { type: "enroll", code: "ABCD-EFGH", apiBase: "https://api.envelock.test" };
+
+  // options_ui.open_in_tab: the settings page has a tab AND the add-on's URL.
+  const fromSettings = { tab: { id: 7 }, url: "moz-extension://tb-uuid/options.html" };
+  const reply = await listener(enroll, fromSettings);
+  assert.equal(reply && reply.ok, true, reply && reply.error);
+
+  const fromWeb = { tab: { id: 8 }, url: "https://evil.example/" };
+  assert.equal(listener(enroll, fromWeb), undefined);
 });

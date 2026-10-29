@@ -196,3 +196,29 @@ def test_a_relay_and_verification_together_start() -> None:
         }
     )
     assert out == "STARTED"
+
+
+# ── Key strength ─────────────────────────────────────────────────────────────
+def test_a_short_secret_key_is_refused_outside_development() -> None:
+    """It signs every session and roots the key that seals authenticator seeds
+    at rest; a short one can be brute-forced offline."""
+    for env in ("staging", "production"):
+        out = _boot({"ENVELOCK_ENV": env, "ENVELOCK_RLS_ENABLED": "true",
+                     "ENVELOCK_SECRET_KEY": "short-secret"})
+        assert out.startswith("REFUSED"), (env, out)
+        assert "at least 32 characters" in out
+    assert _boot({"ENVELOCK_ENV": "development", "ENVELOCK_SECRET_KEY": "short"}) == "STARTED"
+
+
+def test_a_webhook_must_use_https_outside_development(monkeypatch) -> None:  # noqa: ANN001
+    """An alert payload names the mailbox, the sender and the findings."""
+    import pytest
+
+    from envelock.config import get_settings
+    from envelock.workers.webhook_delivery import UnsafeUrlError, assert_safe_url
+
+    monkeypatch.setenv("ENVELOCK_ENV", "staging")
+    monkeypatch.setenv("ENVELOCK_SECRET_KEY", "s" * 64)
+    get_settings.cache_clear()
+    with pytest.raises(UnsafeUrlError, match="https"):
+        assert_safe_url("http://siem.example.com/hook")

@@ -49,7 +49,7 @@ async def process_outbound(
     ingested = 0
     newest_body: str | None = None
     for item in fetched:
-        if enforce.is_processed(item.raw):
+        if enforce.is_processed(item.raw, mailbox.id):
             continue
         event = await parse_message_async(
             item.raw,

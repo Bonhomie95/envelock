@@ -189,9 +189,15 @@
       if (api.messageDisplay.onMessagesDisplayed) {
         api.messageDisplay.onMessagesDisplayed.addListener(onDisplayedMany);
       }
-      /* Thunderbird's runtime.onMessage accepts a returned promise. */
+      /* Thunderbird's runtime.onMessage accepts a returned promise. Only our
+         own settings page may enrol or remove. It opens in a tab (open_in_tab),
+         so it carries a sender.tab like any page: rejecting senders with a tab
+         dropped every message it sent, and pairing could never complete — the
+         same bug browser/background.js fixed. Match the extension's own URL. */
       api.runtime.onMessage.addListener(function (msg, sender) {
-        if (!msg || !msg.type || (sender && sender.tab)) return undefined;
+        var base = api.runtime.getURL ? api.runtime.getURL("") : null;
+        var ours = !!(base && sender && sender.url && sender.url.indexOf(base) === 0);
+        if (!msg || !msg.type || !ours) return undefined;
         return onOptionsMessage(msg);
       });
       if (api.browserAction && api.browserAction.onClicked) {

@@ -40,6 +40,12 @@ async def plan_protected_copy(
             mailbox_id=event.mailbox_id,
             message_id=pr.message_id,
         )
+        if mapping:
+            # Durable before the caller swaps the message: once the rewritten
+            # copy replaces the original, these tokens are the only record of
+            # where its links go. Merely flushed, any later rollback in the sync
+            # left every link in that email a dead end.
+            await session.commit()
 
     banner = None
     if (

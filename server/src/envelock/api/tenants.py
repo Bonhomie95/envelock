@@ -21,10 +21,7 @@ from envelock.auth.deps import ActiveUser, AdminUser, OwnerUser
 from envelock.auth.email_policy import is_disposable_email
 from envelock.auth.security import (
     Role,
-    dummy_hash,
     hash_password,
-    verify_password,
-    verify_totp,
 )
 from envelock.billing import features as plan_features
 from envelock.billing.pricing import extra_mailbox_cents, included_mailbox_seats
@@ -39,24 +36,36 @@ from envelock.db import get_session
 from envelock.db_rls import system_scope_on
 from envelock.detections.base import inactive_for
 from envelock.models import (
+    AccountingConnection,
     Alert,
+    AttestedRead,
     AuditEvent,
     BankRecord,
     Counterparty,
     Domain,
+    ExportToken,
     Finding,
     Invoice,
+    LinkClick,
+    LinkToken,
+    LlmUsage,
+    LlmVerdictRecord,
     LookalikeDomain,
     Mailbox,
     MailboxCredential,
     Message,
     NotificationDelivery,
+    PaymentVerification,
     PushSubscription,
     SenderProfile,
+    SensorDevice,
+    SensorPairing,
     SensorSession,
     Tenant,
     UsageMeter,
     User,
+    WebhookDelivery,
+    WebhookEndpoint,
 )
 from envelock.platform import alerts as alert_svc
 from envelock.platform import graph_store
@@ -374,8 +383,14 @@ async def verify_domain(domain: str, principal: AdminUser, session: Session) -> 
     if not row.verification_token:
         raise HTTPException(409, "no verification challenge issued — request one first")
 
-    ok = _verify_domain_control(
-        row.registrable_domain, row.verification_token, method=row.verification_method or "txt"
+    import asyncio
+
+    # Synchronous DNS (see register) — kept off the event loop.
+    ok = await asyncio.to_thread(
+        _verify_domain_control,
+        row.registrable_domain,
+        row.verification_token,
+        method=row.verification_method or "txt",
     )
     if not ok:
         raise HTTPException(
@@ -596,26 +611,59 @@ async def delete_tenant(req: DeleteTenantRequest, principal: OwnerUser, session:
     user = await session.get(User, principal.user_id)
     if user is None:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
-    if not verify_password(req.password, user.password_hash or dummy_hash()):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "password is incorrect")
-    if user.mfa_enabled and (
-        not req.mfa_code or not verify_totp(user.totp_secret or "", req.mfa_code)
-    ):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "authenticator code is incorrect")
+    # The shared re-authentication: lockout after repeated failures and a
+    # single-use code. The hand-rolled check here had neither, on the most
+    # destructive action in the product.
+    from envelock.api.auth import _verify_step_up
+
+    await _verify_step_up(
+        user, password=req.password, mfa_code=req.mfa_code, require_mfa_enrolment=False
+    )
 
     tid = principal.tenant_id
+    # Stop the billing before the account goes. Left alone, the Stripe
+    # subscription kept renewing every month with nobody left who could reach
+    # Billing to cancel it. If Stripe can't confirm, nothing is deleted.
+    tenant = await session.get(Tenant, tid)
+    if tenant is not None and tenant.stripe_subscription_id:
+        from envelock.billing import payments
+
+        stripe = payments.hosted_checkout_provider("stripe")
+        try:
+            if stripe is None:
+                raise payments.PaymentError("Stripe is not available")
+            await stripe.cancel_subscription(tenant.stripe_subscription_id)
+        except payments.PaymentError as exc:
+            if exc.status_code != 404:  # already gone at Stripe is fine
+                raise HTTPException(
+                    status.HTTP_502_BAD_GATEWAY,
+                    "We couldn't cancel your subscription, so nothing was deleted. "
+                    "Try again, or cancel it under Billing → Manage billing first.",
+                ) from exc
+
     # Capture the account ids first — their sessions are revoked after the rows go.
     user_ids = [
         u for (u,) in (await session.execute(select(User.id).where(User.tenant_id == tid))).all()
     ]
 
     # Children before parents. DomainTrialLedger is intentionally NOT in this list.
+    # Every tenant-keyed table belongs here: one with a foreign key that is left
+    # out fails the whole delete (link tokens exist for any mailbox that got a
+    # rewritten link), and one without just keeps the data we promised to erase.
     for stmt in (
+        delete(LinkClick).where(LinkClick.tenant_id == tid),
+        delete(LinkToken).where(LinkToken.tenant_id == tid),
+        delete(LlmVerdictRecord).where(LlmVerdictRecord.tenant_id == tid),
+        delete(LlmUsage).where(LlmUsage.tenant_id == tid),
+        delete(PaymentVerification).where(PaymentVerification.tenant_id == tid),
         delete(Finding).where(Finding.tenant_id == tid),
         delete(NotificationDelivery).where(NotificationDelivery.tenant_id == tid),
         delete(BankRecord).where(BankRecord.tenant_id == tid),
         delete(SenderProfile).where(SenderProfile.tenant_id == tid),
         delete(Message).where(Message.tenant_id == tid),
+        delete(AttestedRead).where(AttestedRead.tenant_id == tid),
+        delete(SensorPairing).where(SensorPairing.tenant_id == tid),
+        delete(SensorDevice).where(SensorDevice.tenant_id == tid),
         delete(SensorSession).where(SensorSession.tenant_id == tid),
         delete(MailboxCredential).where(MailboxCredential.tenant_id == tid),
         delete(Alert).where(Alert.tenant_id == tid),
@@ -627,6 +675,10 @@ async def delete_tenant(req: DeleteTenantRequest, principal: OwnerUser, session:
         delete(Invoice).where(Invoice.tenant_id == tid),
         delete(Domain).where(Domain.tenant_id == tid),
         delete(AuditEvent).where(AuditEvent.tenant_id == tid),
+        delete(AccountingConnection).where(AccountingConnection.tenant_id == tid),
+        delete(ExportToken).where(ExportToken.tenant_id == tid),
+        delete(WebhookDelivery).where(WebhookDelivery.tenant_id == tid),
+        delete(WebhookEndpoint).where(WebhookEndpoint.tenant_id == tid),
         delete(User).where(User.tenant_id == tid),
         delete(Tenant).where(Tenant.id == tid),
     ):
@@ -1436,8 +1488,18 @@ async def remove_mailbox(mailbox_id: UUID, principal: AdminUser, session: Sessio
     await session.execute(
         delete(Finding).where(or_(Finding.mailbox_id == mid, Finding.message_id.in_(msg_ids)))
     )
+    # Detached, not deleted, like alerts: a rewritten link must keep resolving
+    # in mail already delivered, and an AI verdict stays with the alert it
+    # judged. Left attached, either one blocked the delete below.
+    for ref in (LinkToken, LlmVerdictRecord):
+        await session.execute(
+            update(ref)
+            .where(or_(ref.mailbox_id == mid, ref.message_id.in_(msg_ids)))
+            .values(mailbox_id=None, message_id=None)
+        )
     await session.execute(delete(Message).where(Message.mailbox_id == mid))
-    await session.execute(delete(SensorSession).where(SensorSession.mailbox_id == mid))
+    for paired in (AttestedRead, SensorPairing, SensorDevice, SensorSession):
+        await session.execute(delete(paired).where(paired.mailbox_id == mid))
     await session.execute(delete(MailboxCredential).where(MailboxCredential.mailbox_id == mid))
     # Preserve the incident record — detach alerts instead of deleting them.
     await session.execute(update(Alert).where(Alert.mailbox_id == mid).values(mailbox_id=None))
@@ -1910,8 +1972,11 @@ async def list_alerts(
         query = query.where(Alert.mailbox_id.in_(own))
     if state:
         query = query.where(Alert.state == state)
+    # Unresolved first. Newest-first alone let resolved history fill the limit
+    # and push an older, still-open Critical off the queue and out of "Today".
+    order = (Alert.state.in_(("open", "acked")).desc(), Alert.created_at.desc())
     rows = (
-        (await session.execute(query.order_by(Alert.created_at.desc()).limit(limit)))
+        (await session.execute(query.order_by(*order).limit(limit)))
         .scalars()
         .all()
     )
@@ -2556,17 +2621,34 @@ async def add_bank_record(
         session.add(row)
         await session.flush()
 
-    record = BankRecord(
-        tenant_id=principal.tenant_id,
-        counterparty_id=row.id,
-        scheme=req.scheme,
-        identifier=normalise_identifier(req.scheme, req.identifier),
-        bank_name=req.bank_name,
-        first_seen_at=datetime.now(UTC),
-        verified_at=datetime.now(UTC),
-        verified_by=principal.user_id,
-    )
-    session.add(record)
+    identifier = normalise_identifier(req.scheme, req.identifier)
+    # The same account again — already imported, or retired and now back (the
+    # supplier switched back): re-verify that row. A blind insert hit the unique
+    # key and 500'd, and a retired account could never be made known again, so
+    # A1 kept flagging the supplier's real account.
+    record = (
+        await session.execute(
+            select(BankRecord).where(
+                BankRecord.counterparty_id == row.id,
+                BankRecord.scheme == req.scheme,
+                BankRecord.identifier == identifier,
+            )
+        )
+    ).scalar_one_or_none()
+    if record is None:
+        record = BankRecord(
+            tenant_id=principal.tenant_id,
+            counterparty_id=row.id,
+            scheme=req.scheme,
+            identifier=identifier,
+            first_seen_at=datetime.now(UTC),
+        )
+        session.add(record)
+    record.bank_name = req.bank_name or record.bank_name
+    record.country = req.country or record.country
+    record.is_active = True
+    record.verified_at = datetime.now(UTC)
+    record.verified_by = principal.user_id
     await session.commit()
     return {"domain": reg, "identifier": record.identifier, "verified": True}
 

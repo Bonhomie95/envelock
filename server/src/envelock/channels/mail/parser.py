@@ -38,6 +38,19 @@ _AUTH_MAP = {
 }
 
 
+#: The widest column each header value is stored in (messages, counterparties,
+#: sender profiles). Headers are attacker-controlled and unbounded: one value
+#: over its column failed the insert, the sync re-fetched that message every
+#: cycle, and nothing after it in the mailbox was ever analysed.
+_MAX_ADDRESS = 320
+_MAX_DISPLAY = 255
+_MAX_MESSAGE_ID = 255
+
+
+def _clip(value: str | None, limit: int = _MAX_MESSAGE_ID) -> str | None:
+    return str(value)[:limit] if value else None
+
+
 def _address(raw: str | None) -> EmailAddress | None:
     if not raw:
         return None
@@ -47,7 +60,10 @@ def _address(raw: str | None) -> EmailAddress | None:
     display, addr = pairs[0]
     if not addr:
         return None
-    return EmailAddress(address=addr.strip().lower(), display=display.strip() or None)
+    return EmailAddress(
+        address=addr.strip().lower()[:_MAX_ADDRESS],
+        display=display.strip()[:_MAX_DISPLAY] or None,
+    )
 
 
 def _addresses(raw: str | None) -> tuple[EmailAddress, ...]:
@@ -57,7 +73,10 @@ def _addresses(raw: str | None) -> tuple[EmailAddress, ...]:
     for display, addr in getaddresses([raw]):
         if addr:
             out.append(
-                EmailAddress(address=addr.strip().lower(), display=display.strip() or None)
+                EmailAddress(
+                    address=addr.strip().lower()[:_MAX_ADDRESS],
+                    display=display.strip()[:_MAX_DISPLAY] or None,
+                )
             )
     return tuple(out)
 
@@ -185,13 +204,19 @@ def parse_message(
             sent_at = parsedate_to_datetime(date_header)
         except (TypeError, ValueError):
             sent_at = None
+        # "-0000" means "zone unknown" and parses naive; compared with the
+        # aware timestamps everywhere else, it raised TypeError mid-sync.
+        if sent_at is not None and sent_at.tzinfo is None:
+            sent_at = sent_at.replace(tzinfo=UTC)
 
     sender_domain = registrable_domain(sender.domain)
     direction = (
         MailDirection.OUTBOUND if sender_domain in owned_domains else MailDirection.INBOUND
     )
 
-    references = tuple(msg.get("References", "").split()) if msg.get("References") else ()
+    references = tuple(
+        r[:_MAX_MESSAGE_ID] for r in (msg.get("References") or "").split()
+    )
     attachments = _attachments(msg)
     # URLs from the body AND from attachment text/QR codes: a fake invoice
     # portal link inside an attached PDF is the dominant quishing vector, and
@@ -216,10 +241,10 @@ def parse_message(
         occurred_at=sent_at or now,
         ingested_at=now,
         source=source,
-        source_ref=source_ref or msg.get("Message-ID"),
+        source_ref=source_ref or _clip(msg.get("Message-ID")),
         direction=direction,
-        rfc_message_id=msg.get("Message-ID"),
-        in_reply_to=msg.get("In-Reply-To"),
+        rfc_message_id=_clip(msg.get("Message-ID")),
+        in_reply_to=_clip(msg.get("In-Reply-To")),
         references=references,
         sender=sender,
         reply_to=_address(msg.get("Reply-To")),

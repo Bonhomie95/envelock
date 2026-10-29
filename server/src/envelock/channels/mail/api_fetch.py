@@ -183,9 +183,9 @@ async def gmail_message_id(
     transport: HttpTransport | None = None,
     backoff: float = 0.5,
 ) -> str | None:
-    """The RFC 5322 Message-ID of one Gmail message, for the C11 attestation
-    match. None if the message is gone (a deleted message is not a read) or has
-    no such header."""
+    """The RFC 5322 Message-ID of one Gmail message that was READ, for the C11
+    attestation match. None when it is gone, has no such header, or left the
+    unread inbox without being read."""
     transport = transport or HttpxTransport()
     headers = _bearer(access_token)
     try:
@@ -198,6 +198,12 @@ async def gmail_message_id(
             backoff=backoff,
         )
     except Exception:  # noqa: BLE001 — 404 (deleted) or transient; treat as "no read"
+        return None
+    # Leaving `in:inbox is:unread` is not reading: archiving, trashing, spam, and
+    # our own quarantine (which swaps the INBOX label) all do it with the message
+    # still unread — and each raised a Critical "someone else is in this mailbox".
+    labels = set(detail.get("labelIds") or [])
+    if "UNREAD" in labels or labels & {"TRASH", "SPAM"}:
         return None
     for h in (detail.get("payload") or {}).get("headers", []) or []:
         if (h.get("name") or "").lower() == "message-id":

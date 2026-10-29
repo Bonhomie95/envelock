@@ -48,7 +48,11 @@ def role_at_least(actual: Role, required: Role) -> bool:
 
 _SCRYPT_N = 2**15
 _SCRYPT_R = 8
-_SCRYPT_P = 1
+#: p=3 at N=2^15 is OWASP's equal-strength alternative to N=2^17, p=1 for the
+#: same 32 MiB. p=1 was a third of that work. Older hashes still verify — the
+#: stored record carries its parameters — and are upgraded at the next sign-in
+#: (`needs_rehash`).
+_SCRYPT_P = 3
 
 #: OpenSSL caps scrypt at 32 MiB by default, and N=2^15 with r=8 needs
 #: 128 * r * N = 32 MiB exactly — so the default rejects our parameters. Raise
@@ -87,6 +91,37 @@ def dummy_hash() -> str:
     if _DUMMY_HASH is None:
         _DUMMY_HASH = hash_password("not-a-real-password")
     return _DUMMY_HASH
+
+
+def needs_rehash(stored: str | None) -> bool:
+    """True for a hash made with weaker parameters than today's."""
+    try:
+        scheme, n, r, p, *_ = (stored or "").split("$")
+        return scheme != "scrypt" or (int(n), int(r), int(p)) < (_SCRYPT_N, _SCRYPT_R, _SCRYPT_P)
+    except ValueError:
+        return True
+
+
+async def averify_password(password: str, stored: str) -> bool:
+    """`verify_password` off the event loop. scrypt is ~100 ms of deliberate CPU
+    and releases the GIL; run inline it stalled every request in flight for the
+    length of each sign-in attempt."""
+    import asyncio
+
+    return await asyncio.to_thread(verify_password, password, stored)
+
+
+async def upgraded_hash(password: str, stored: str | None) -> str | None:
+    """A fresh hash when `stored` is weaker than today's parameters, else None.
+    Called only after the password verified, so the plaintext is the real one."""
+    import asyncio
+
+    if not needs_rehash(stored):
+        return None
+    try:
+        return await asyncio.to_thread(hash_password, password)
+    except ValueError:  # an older, shorter password: keep its working hash
+        return None
 
 
 def verify_password(password: str, stored: str) -> bool:

@@ -34,6 +34,7 @@ from envelock.auth.security import (
     Role,
     TokenError,
     assess_passphrase,
+    averify_password,
     decode_token,
     dummy_hash,
     generate_numeric_otp,
@@ -45,7 +46,7 @@ from envelock.auth.security import (
     issue_pair,
     issue_token,
     totp_uri,
-    verify_password,
+    upgraded_hash,
     verify_totp,
 )
 from envelock.db import get_session
@@ -196,6 +197,14 @@ def _issue_mfa_challenge(user: User) -> str:
 async def _complete_login(
     session: AsyncSession, user: User, *, first_time: bool = False
 ) -> dict:
+    # The same refusal /auth/refresh makes. Only refresh had it, so a suspended
+    # account could still sign in afresh and use the token-only endpoints.
+    # (Pending accounts may hold a session: it shows "awaiting approval".)
+    if user.status in {"suspended", "rejected", "disabled"}:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "this account has been suspended — contact your workspace admin",
+        )
     await active_lockout().arecord_success(user.email)
     tokens = issue_pair(
         user_id=user.id, tenant_id=user.tenant_id, role=_role_of(user)
@@ -279,7 +288,7 @@ async def _verify_step_up(
             headers={"Retry-After": str(retry_after)},
         )
 
-    ok = verify_password(password, user.password_hash or dummy_hash())
+    ok = await averify_password(password, user.password_hash or dummy_hash())
     if ok and user.mfa_enabled:
         # Second factor required only when the account actually has one.
         if not mfa_code or not verify_totp(user.totp_secret or "", mfa_code):
@@ -401,7 +410,11 @@ async def register(req: RegisterRequest, request: Request, session: Session) -> 
 
     if get_settings().check_email_domain_exists:
         mail_domain = email.rsplit("@", 1)[-1] if "@" in email else ""
-        if dns_verify.deliverability_status(mail_domain) == "absent":
+        # Off the event loop: this is synchronous DNS with multi-second timeouts,
+        # and a domain whose nameservers drop queries froze every request.
+        import asyncio as _asyncio
+
+        if await _asyncio.to_thread(dns_verify.deliverability_status, mail_domain) == "absent":
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 "That email domain doesn't exist or can't receive email — "
@@ -570,7 +583,7 @@ async def login(req: LoginRequest, request: Request, session: Session) -> dict:
     # signing in to such an account answered 500 instead of a clean 401. The
     # dummy hash keeps the timing profile identical either way.
     stored = user.password_hash if (user and user.password_hash) else dummy_hash()
-    password_ok = verify_password(req.password, stored)
+    password_ok = await averify_password(req.password, stored)
 
     if user is None or not password_ok:
         await active_lockout().arecord_failure(email)
@@ -588,6 +601,10 @@ async def login(req: LoginRequest, request: Request, session: Session) -> dict:
             "Use 'resend verification' if it expired.",
         )
 
+    # A hash from before today's cost factor is upgraded now — the one moment
+    # the real password is in hand. Saved by the commit below.
+    if fresh := await upgraded_hash(req.password, user.password_hash):
+        user.password_hash = fresh
     await _note_sign_in_device(user, request)
     await session.commit()
 
@@ -1377,7 +1394,7 @@ async def change_password(
         assess_passphrase(req.new_password)
     except ValueError as exc:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
-    if verify_password(req.new_password, user.password_hash or ""):
+    if await averify_password(req.new_password, user.password_hash or ""):
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "the new password must be different from the current one",

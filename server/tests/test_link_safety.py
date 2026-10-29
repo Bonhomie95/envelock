@@ -61,11 +61,14 @@ _RAW_MULTIPART = (
 )
 
 
+_MBX = "mailbox-1"
+
+
 def test_build_protected_copy_rewrites_links_and_injects_banner():
     link_map = {"https://evil.example.com/pay": "tok123"}
     banner = Banner(severity="critical", title="Bank detail changed", lines=("A1 fired",))
     out = build_protected_copy(
-        _RAW_MULTIPART, link_map=link_map, redirect_base=BASE, banner=banner
+        _RAW_MULTIPART, link_map=link_map, redirect_base=BASE, mailbox_id=_MBX, banner=banner
     )
 
     text = out.decode("utf-8", "replace")
@@ -73,8 +76,11 @@ def test_build_protected_copy_rewrites_links_and_injects_banner():
     assert f"{BASE}/r/tok123" in text.replace("=\r\n", "")
     assert "Bank detail changed" in text
     assert "Message-ID: <keepme@partner.com>" in text  # threading survives
-    assert is_processed(out)
-    assert not is_processed(_RAW_MULTIPART)
+    assert is_processed(out, _MBX)
+    assert not is_processed(_RAW_MULTIPART, _MBX)
+    # Lifted from one customer's mailbox, the stamp means nothing in another's:
+    # otherwise a copied header + Message-ID let a phishing mail skip analysis.
+    assert not is_processed(out, "another-mailbox")
 
 
 def test_build_protected_copy_without_banner_only_rewrites():
@@ -82,6 +88,7 @@ def test_build_protected_copy_without_banner_only_rewrites():
         _RAW_MULTIPART,
         link_map={"https://evil.example.com/pay": "tok9"},
         redirect_base=BASE,
+        mailbox_id=_MBX,
         banner=None,
     )
     text = out.decode("utf-8", "replace").replace("=\r\n", "")
@@ -270,7 +277,7 @@ async def test_worker_rewrites_links_in_clean_mail(session):
 async def test_worker_skips_our_own_copies(session):
     mailbox = await _protected_mailbox(session)
     processed = build_protected_copy(
-        _CLEAN_WITH_LINK, link_map={}, redirect_base=BASE, banner=None
+        _CLEAN_WITH_LINK, link_map={}, redirect_base=BASE, mailbox_id=mailbox.id, banner=None
     )
     client = FakeImap({12: processed})
 
@@ -576,3 +583,32 @@ def test_the_origin_resolves_a_link_with_its_fallback_segment(client, monkeypatc
     resp = client.get(f"/r/{path}", follow_redirects=False)
     assert resp.status_code == 302
     assert resp.headers["location"] == "https://destination.example.com/page"
+
+
+@pytest.mark.asyncio
+async def test_one_hostile_header_cannot_blind_a_mailbox(session):
+    """Header values went into fixed-width columns unclipped. A 300-character
+    display name or Message-ID failed the insert, the cursor never moved, and
+    every later message in the mailbox went unanalysed — from one email."""
+    mailbox = await _protected_mailbox(session)
+    hostile = (
+        b'From: "' + b"A" * 300 + b'" <x@partner.com>\r\n'
+        b"To: pay@acme.com\r\n"
+        b"Subject: hello\r\n"
+        b"Date: Mon, 1 Sep 2025 09:00:00 -0000\r\n"
+        b"Message-ID: <" + b"m" * 400 + b"@partner.com>\r\n"
+        b"References: <" + b"r" * 400 + b"@partner.com>\r\n"
+        b"Content-Type: text/plain\r\n\r\nhi\r\n"
+    )
+    client = FakeImap({20: hostile, 21: _CLEAN_WITH_LINK})
+
+    summary = await sync_mailbox(session, mailbox, client_factory=_factory(client))
+
+    assert summary["ok"] is True, summary
+    assert summary["fetched"] == 2
+    cred = (
+        await session.execute(
+            select(MailboxCredential).where(MailboxCredential.mailbox_id == mailbox.id)
+        )
+    ).scalar_one()
+    assert cred.imap_last_uid == 21, "the cursor must move past the hostile message"

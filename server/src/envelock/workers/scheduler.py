@@ -163,6 +163,19 @@ async def oauth_fetch_job() -> dict:
     return await fetch_all_oauth_mailboxes()
 
 
+async def graph_hydrate_job() -> dict:
+    """Re-read the E8 counterparty graph. It is a per-process projection of
+    `graph_verdicts`: a customer confirming fraud updates the API's copy, but
+    the worker — the process analysing mail — only ever loaded it at boot, so
+    a confirmed fraud domain went unrecognised in live mail until a restart."""
+    from envelock.db import get_sessionmaker
+    from envelock.platform import graph_store
+
+    async with get_sessionmaker()() as session:
+        await graph_store.hydrate(session)
+    return {}  # a refresh, not work worth a log line
+
+
 async def oauth_push_drain_job() -> dict:
     """Act on push notifications within seconds (see oauth_fetch.drain_requested)."""
     from envelock.workers.oauth_fetch import drain_requested
@@ -512,7 +525,12 @@ async def run_ct_watcher(stop: asyncio.Event) -> None:
                     stop.wait(), timeout=settings.watcher_domain_refresh_seconds
                 )
             except TimeoutError:
-                watcher.protected = set(await _load_protected_domains())
+                # A failed reload must not end the loop: it used to, silently,
+                # and domains of every later signup were never watched.
+                try:
+                    watcher.protected = set(await _load_protected_domains())
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("ct watcher: could not reload protected domains: %s", exc)
 
     async def drain() -> None:
         while not stop.is_set():
@@ -597,6 +615,9 @@ def start(stop: asyncio.Event) -> list[asyncio.Task]:
                 "escalation", escalation_job,
                 interval=settings.escalation_cycle_seconds, stop=stop,
             )
+        ),
+        asyncio.create_task(
+            _run_forever("graph_hydrate", graph_hydrate_job, interval=300, stop=stop)
         ),
         asyncio.create_task(
             _run_forever(

@@ -335,14 +335,19 @@ class Settings(BaseSettings):
     retention_purge_seconds: int = 3600
     oauth_refresh_seconds: int = 1800
     #: Fallback poll for Gmail/Graph mailboxes. With push subscriptions live this
-    #: only catches a missed notification; without them it IS the latency.
-    oauth_poll_seconds: int = 300
+    #: only catches a missed notification; without them it IS the latency — at
+    #: 300 s, a mailbox whose subscription failed took five minutes to alert.
+    #: Both APIs' quotas are orders of magnitude above one call a minute.
+    oauth_poll_seconds: int = 60
     #: How often the worker picks up mailboxes a push notification (or "Sync
     #: now") flagged. This is the real-time path's latency.
     oauth_push_drain_seconds: int = 5
     #: How often push subscriptions (Graph) and watches (Gmail) are checked and
     #: renewed. Both expire within days; each is renewed once under a day is left.
-    push_subscription_seconds: int = 3600
+    #: A pass with nothing due makes no provider call, so this is also how soon a
+    #: newly connected mailbox — or one whose subscription failed — goes
+    #: real-time; hourly left it on the fallback poll for up to an hour.
+    push_subscription_seconds: int = 300
     #: How often to re-check that verified domains still have their DNS proof, and
     #: revoke verification if the record was deleted (so access re-gates on the
     #: verify step). Hourly — deletion is rare and revocation is high-impact.
@@ -674,6 +679,14 @@ class Settings(BaseSettings):
                 "Refusing to start in staging without ENVELOCK_SECRET_KEY — "
                 "session tokens would be signed with an empty key and trivially "
                 "forgeable."
+            )
+        # A short secret is brute-forceable offline: it signs every session and
+        # is the root of the key that seals authenticator seeds at rest.
+        secret = self.secret_key.get_secret_value()
+        if self.env != "development" and secret and len(secret) < 32:
+            raise ValueError(
+                "ENVELOCK_SECRET_KEY must be at least 32 characters — generate one "
+                "with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
             )
         if self.env != "production":
             return self

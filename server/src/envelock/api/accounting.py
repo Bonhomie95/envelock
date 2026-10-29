@@ -17,7 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from envelock.auth.deps import AdminUser, CurrentUser, SystemScoped
+from envelock.auth.deps import ActiveUser, AdminUser, SystemScoped
 from envelock.channels.mail import oauth
 from envelock.config import get_settings
 from envelock.db import get_session
@@ -56,7 +56,7 @@ async def _connection(session: AsyncSession, tenant_id, provider: str):  # noqa:
 
 
 @router.get("")
-async def status(principal: CurrentUser, session: Session) -> dict:
+async def status(principal: ActiveUser, session: Session) -> dict:
     rows = (
         await session.execute(
             select(AccountingConnection).where(

@@ -376,3 +376,26 @@ def test_the_import_is_admin_only(client: TestClient) -> None:
     )
     r = client.post("/api/v1/counterparties/import", json={"csv": VENDOR_CSV})
     assert r.status_code == 401
+
+
+def test_an_account_can_be_added_again_and_a_retired_one_restored(client: TestClient) -> None:
+    """A blind insert hit the unique key (500) when the account was already on
+    file — imported, or retired after the supplier switched banks and then
+    switched back — and a retired account could never become known again."""
+    h = _admin(client, "ap@readd.example")
+    body = {"scheme": "iban", "identifier": "GB33BUKB20201555555555", "country": "GB"}
+    url = "/api/v1/counterparties/supplier.example/bank-records"
+
+    first = client.post(url, json=body, headers=h)
+    assert first.status_code == 201, first.text
+    assert client.post(url, json=body, headers=h).status_code == 201  # again: fine
+
+    records = client.get(url, headers=h).json()
+    rows = records.get("records") or records.get("bank_records") or records
+    record_id = rows[0]["id"]
+    assert client.delete(f"{url}/{record_id}", headers=h).status_code == 200
+    assert client.post(url, json=body, headers=h).status_code == 201  # back again
+
+    rows = client.get(url, headers=h).json()
+    rows = rows.get("records") or rows.get("bank_records") or rows
+    assert len(rows) == 1 and rows[0].get("is_active", rows[0].get("active", True)) is True

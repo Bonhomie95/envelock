@@ -203,7 +203,7 @@ _RUNTIME_COLUMNS: tuple[str, ...] = (
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash varchar(255)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS role varchar(16) NOT NULL DEFAULT 'member'",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin boolean NOT NULL DEFAULT false",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret varchar(64)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_secret varchar(128)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled boolean NOT NULL DEFAULT false",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS "
     "recovery_hashes varchar[] NOT NULL DEFAULT '{}'",
@@ -224,7 +224,7 @@ _RUNTIME_COLUMNS: tuple[str, ...] = (
     "ALTER TABLE users ALTER COLUMN name TYPE varchar(255)",
     "ALTER TABLE users ALTER COLUMN role TYPE varchar(16)",
     "ALTER TABLE users ALTER COLUMN status TYPE varchar(16)",
-    "ALTER TABLE users ALTER COLUMN totp_secret TYPE varchar(64)",
+    "ALTER TABLE users ALTER COLUMN totp_secret TYPE varchar(128)",
     "ALTER TABLE users ALTER COLUMN out_of_band_email TYPE varchar(320)",
     "ALTER TABLE users ALTER COLUMN phone TYPE varchar(32)",
     "ALTER TABLE users ALTER COLUMN phone_otp_hash TYPE varchar(64)",

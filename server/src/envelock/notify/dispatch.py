@@ -203,7 +203,11 @@ async def run_escalation_cycle(
         sms_dest = None
         admins = (
             await session.execute(
-                select(User).where(User.tenant_id == alert.tenant_id, User.is_admin.is_(True))
+                select(User).where(
+                    User.tenant_id == alert.tenant_id,
+                    User.is_admin.is_(True),
+                    User.status == "active",
+                )
             )
         ).scalars().all()
         for admin in admins:

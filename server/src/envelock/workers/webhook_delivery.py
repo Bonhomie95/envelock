@@ -23,6 +23,7 @@ no cloud metadata.
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
 import socket
@@ -85,6 +86,11 @@ def assert_safe_url(url: str) -> str | None:
         raise UnsafeUrlError("that URL has no host")
 
     from envelock.config import get_settings
+
+    # An alert payload names the mailbox, the sender and what we found. Over
+    # plain http it crosses the internet readable by anyone on the path.
+    if parsed.scheme != "https" and get_settings().env != "development":
+        raise UnsafeUrlError("a webhook URL must use https")
 
     # A dedicated flag: `imap_allow_private_hosts` exists so a self-hosted mail
     # server on a private IP can be polled — reusing it here silently disabled
@@ -211,7 +217,9 @@ async def _attempt(session: AsyncSession, delivery: WebhookDelivery) -> bool:
 
     try:
         # Resolve + validate ONCE, then dial the address we approved.
-        safe_ip = assert_safe_url(endpoint.url)
+        # getaddrinfo blocks; on the worker's loop, a SIEM host with slow DNS
+        # stalled polling, IDLE syncs and escalation for every delivery due.
+        safe_ip = await asyncio.to_thread(assert_safe_url, endpoint.url)
         dial_url, pin_headers, extensions = pinned_request(endpoint.url, safe_ip)
         import httpx
 

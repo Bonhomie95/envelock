@@ -26,6 +26,7 @@ export default function Contact() {
   const [subject, setSubject] = useState("");
   const [message, setMessage] = useState("");
   const [token, setToken] = useState<string | null>(null);
+  const [captchaRound, setCaptchaRound] = useState(0); // single-use: fresh widget per try
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -70,6 +71,8 @@ export default function Contact() {
       );
     } finally {
       setBusy(false);
+      setToken(null);
+      setCaptchaRound((n) => n + 1);
     }
   }
 
@@ -181,7 +184,7 @@ export default function Contact() {
             <p className="fg-3 mt-1.5 text-xs">{message.length}/5000</p>
           </div>
 
-          <Turnstile siteKey={siteKey} onToken={setToken} />
+          <Turnstile key={captchaRound} siteKey={siteKey} onToken={setToken} />
 
           {error && (
             <p className="text-sm text-red-500" aria-live="polite">

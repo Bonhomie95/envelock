@@ -308,7 +308,13 @@ async def _purge_alerts(session, alert_cut: datetime) -> int:  # noqa: ANN001
     """
     from sqlalchemy import delete, select
 
-    from envelock.models import Alert, NotificationDelivery
+    from envelock.models import (
+        Alert,
+        Finding,
+        LlmVerdictRecord,
+        NotificationDelivery,
+        PaymentVerification,
+    )
 
     total = 0
     while True:
@@ -325,11 +331,11 @@ async def _purge_alerts(session, alert_cut: datetime) -> int:  # noqa: ANN001
         )
         if not batch:
             return total
-        await session.execute(
-            delete(NotificationDelivery).where(
-                NotificationDelivery.alert_id.in_(batch)
-            )
-        )
+        # Every row that references an alert goes with it. Deliveries alone
+        # left payment verifications and AI verdicts pointing at the alert, and
+        # the first such row failed the delete — and with it the whole run.
+        for child in (NotificationDelivery, Finding, PaymentVerification, LlmVerdictRecord):
+            await session.execute(delete(child).where(child.alert_id.in_(batch)))
         res = await session.execute(delete(Alert).where(Alert.id.in_(batch)))
         total += res.rowcount or 0
         # Commit per round: bounds lock duration and makes progress durable.

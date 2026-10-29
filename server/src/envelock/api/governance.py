@@ -334,7 +334,9 @@ async def create_webhook(
 
     url = req.url.strip()
     try:
-        assert_safe_url(url)
+        import asyncio
+
+        await asyncio.to_thread(assert_safe_url, url)
     except UnsafeUrlError as exc:
         raise HTTPException(422, str(exc)) from exc
     except UnresolvableUrlError:
@@ -458,6 +460,10 @@ async def webhook_test(req: WebhookTestRequest, principal: AdminUser) -> dict:
 
 class TokenRequest(BaseModel):
     scopes: list[ex.Scope]
+    #: Re-authentication: a token outlives the session that mints it, so a
+    #: stolen 15-minute session must not be able to turn itself into one.
+    password: str = Field(max_length=256)
+    mfa_code: str | None = Field(default=None, pattern=r"^\d{6}$")
 
 
 @router.post("/export/tokens", status_code=201)
@@ -465,8 +471,16 @@ async def create_token(req: TokenRequest, principal: OwnerUser, session: Session
     """Export tokens are read-only by design — a leaked read token is a far
     smaller incident than a leaked write token. Persisted (hash only) so a
     presented token actually authenticates something (PRD §15.3)."""
-    from envelock.models import ExportToken
+    from envelock.api.auth import _verify_step_up
+    from envelock.models import ExportToken, User
+    from envelock.platform.alerts import record_audit
 
+    user = await session.get(User, principal.user_id)
+    if user is None:
+        raise HTTPException(401, "invalid credentials")
+    await _verify_step_up(
+        user, password=req.password, mfa_code=req.mfa_code, require_mfa_enrolment=False
+    )
     try:
         plaintext, record = ex.issue_api_token(frozenset(req.scopes))
     except ValueError as exc:
@@ -479,6 +493,12 @@ async def create_token(req: TokenRequest, principal: OwnerUser, session: Session
             scopes=sorted(s.value for s in record.scopes),
             created_by=principal.user_id,
         )
+    )
+    # In the customer's own audit log: a read token outlives every session.
+    await record_audit(
+        session, tenant_id=principal.tenant_id, actor_id=principal.user_id,
+        action="export.token_created", target_type="export_token",
+        detail={"prefix": record.prefix, "scopes": sorted(s.value for s in record.scopes)},
     )
     await session.commit()
     return {
@@ -525,7 +545,14 @@ async def revoke_token(prefix: str, principal: OwnerUser, session: Session) -> R
         )
     ).scalar_one_or_none()
     if row is not None and row.revoked_at is None:
+        from envelock.platform.alerts import record_audit
+
         row.revoked_at = datetime.now(UTC)
+        await record_audit(
+            session, tenant_id=principal.tenant_id, actor_id=principal.user_id,
+            action="export.token_revoked", target_type="export_token",
+            detail={"prefix": prefix},
+        )
         await session.commit()
     return Response(status_code=204)
 

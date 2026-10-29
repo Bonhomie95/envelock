@@ -179,12 +179,14 @@ def test_essential_is_a_strict_superset_of_guard() -> None:
 
 # ── The two feature gates that are not detections ────────────────────────────
 class _Tenant:
-    """Minimal stand-in: the gates read plan + entitlement, nothing else."""
+    """Minimal stand-in: the gates read plan + entitlement (which includes
+    whether an operator suspended the workspace), nothing else."""
 
     def __init__(self, plan: str, *, paid: bool = True) -> None:
         from datetime import UTC, datetime, timedelta
 
         self.plan = plan
+        self.is_active = True
         self.payment_method_ok = paid
         self.trial_ends_at = datetime.now(UTC) - timedelta(days=1)
 

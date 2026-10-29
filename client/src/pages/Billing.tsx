@@ -146,6 +146,9 @@ export default function Billing() {
         const t = await api.tenant();
         if (!live) return;
         if (t.trial.payment_method_ok) {
+          // The fresh tenant names the plan just bought; without it the
+          // confirmation read the trial's plan ("You're on Complete").
+          setTenant(t);
           setDone(true);
           return;
         }

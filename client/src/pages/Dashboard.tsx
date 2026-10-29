@@ -2927,7 +2927,7 @@ function UpgradePlans({
 }
 
 /* L1 browser-push toggle. Reflects THIS browser's real subscription state and lets
-   the user turn Critical-alert push on/off. Hidden entirely when the browser can't
+   the user turn alert push on/off. Hidden entirely when the browser can't
    do push or the deployment has no VAPID key configured — no dead controls. */
 function PushAlerts() {
   const [state, setState] = useState<PushState | "loading">("loading");
@@ -2970,9 +2970,27 @@ function PushAlerts() {
   async function disable() {
     setBusy(true);
     try {
-      setState(await disablePush());
+      setState(await disablePush(true));
     } catch {
       setState("on");
+    } finally {
+      setBusy(false);
+    }
+  }
+  // Proves the whole path in one click. "Sent" with nothing on screen means the
+  // device is hiding it — the one cause no code here can fix.
+  async function sendTest() {
+    setBusy(true);
+    try {
+      const r = await api.pushTest();
+      if (r.delivered)
+        toast.success(
+          "Test sent. Nothing on screen? Allow notifications for your browser in your " +
+            "computer's settings (macOS: System Settings → Notifications) and turn off Focus.",
+        );
+      else toast.error(`Your browser's push service refused it: ${r.detail}`);
+    } catch (e) {
+      toast.error(e instanceof ApiError ? e.message : "Couldn't send a test — try again.");
     } finally {
       setBusy(false);
     }
@@ -2992,22 +3010,29 @@ function PushAlerts() {
       {state === "denied" ? (
         <p className="fg-3 mt-2 text-xs leading-relaxed">
           Notifications are blocked for this site. Turn them on in your browser's
-          site settings, then reload to enable Critical-alert push.
+          site settings, then reload to turn on browser alerts.
         </p>
       ) : (
         <>
           <p className="fg-3 mt-2 text-xs leading-relaxed">
-            Get Critical alerts as a browser notification even when the Envelock tab
-            is closed. This device only.
+            Get Medium, High and Critical alerts as browser notifications, even when
+            the Envelock tab is closed. This device only.
           </p>
           <div className="mt-3">
             {state === "on" ? (
-              <Button size="sm" variant="quiet" onClick={disable} disabled={busy}>
-                {busy ? (
-                  <Loader2 size={12} className="animate-spin" aria-hidden />
-                ) : null}
-                Turn off
-              </Button>
+              <div className="flex flex-wrap gap-2">
+                <Button size="sm" variant="accent" onClick={sendTest} disabled={busy}>
+                  {busy ? (
+                    <Loader2 size={12} className="animate-spin" aria-hidden />
+                  ) : (
+                    <Bell size={12} aria-hidden />
+                  )}
+                  Send test
+                </Button>
+                <Button size="sm" variant="quiet" onClick={disable} disabled={busy}>
+                  Turn off
+                </Button>
+              </div>
             ) : (
               <Button size="sm" variant="accent" onClick={enable} disabled={busy}>
                 {busy ? (
@@ -3179,6 +3204,27 @@ export default function Dashboard() {
     },
     [setParams],
   );
+  // Back from Microsoft/Google consent: the API redirects here with the outcome
+  // (it used to answer the browser with raw JSON on the API host). Say it once,
+  // then drop the params so a refresh doesn't repeat it.
+  useEffect(() => {
+    const connected = params.get("connected");
+    const failed = params.get("connect_error");
+    if (!connected && !failed) return;
+    if (failed) toast.error(failed);
+    else if (params.get("mismatch"))
+      toast.error(
+        `${connected} is connected, but you approved a different account. Check which mailbox it reads below.`,
+      );
+    else toast.success(`${connected} is connected.`);
+    setParams(
+      (p) => {
+        for (const k of ["connected", "connect_error", "mismatch"]) p.delete(k);
+        return p;
+      },
+      { replace: true },
+    );
+  }, [params, setParams]);
   // Older in-page links ("#coverage") point at the mailbox list, now a tab.
   useEffect(() => {
     const onHash = () => {
@@ -3290,8 +3336,12 @@ export default function Dashboard() {
   // Poll while the tab is visible, stop when it is hidden (a backgrounded tab
   // should not hold a connection open all night), and refetch immediately on
   // becoming visible again so returning to the tab always shows current state.
+  //
+  // Detection itself is now seconds (IMAP IDLE, provider push), so the screen
+  // must not be the slow part: a browser alert refreshes it at once (the
+  // service worker posts a message), and the timed poll is a short backstop.
   useEffect(() => {
-    const REFRESH_MS = 45_000;
+    const REFRESH_MS = 15_000;
     let timer: ReturnType<typeof setInterval> | undefined;
 
     const start = () => {
@@ -3311,13 +3361,20 @@ export default function Dashboard() {
       }
     };
 
+    const onPush = (e: MessageEvent) => {
+      if (e.data?.type === "envelock:alert") void load({ background: true });
+    };
+    const sw = "serviceWorker" in navigator ? navigator.serviceWorker : null;
+
     if (document.visibilityState === "visible") start();
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("focus", onVisibility);
+    sw?.addEventListener("message", onPush);
     return () => {
       stop();
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("focus", onVisibility);
+      sw?.removeEventListener("message", onPush);
     };
   }, [load]);
 
@@ -3352,6 +3409,9 @@ export default function Dashboard() {
     // the decision and the mail worker moves the message on its next cycle.
     if (!result.succeeded && !result.queued) throw new ApiError(409, result.reason);
     if (result.queued) throw new ApiError(202, result.reason);
+    // Nothing on the alert changes when it works, so say it did — otherwise the
+    // next click is a second QUARANTINE.
+    toast.success("Moved to the Envelock Quarantine folder.");
     await load();
   }
 
@@ -3669,6 +3729,20 @@ export default function Dashboard() {
                   {f}
                 </button>
               ))}
+              {(auth.role === "owner" || auth.role === "admin") && alerts.length > 0 && (
+                <button
+                  onClick={() =>
+                    void api
+                      .exportAlertsCsv()
+                      .catch((e) =>
+                        toast.error(e instanceof ApiError ? e.message : "Couldn't export — try again."),
+                      )
+                  }
+                  className="font-mono fg-3 ml-2 cursor-pointer border border-[var(--rule)] px-3 py-1.5 text-[11px] tracking-wide uppercase transition-colors hover:text-[var(--fg)]"
+                >
+                  Export CSV
+                </button>
+              )}
             </div>
           </div>
 

@@ -26,6 +26,11 @@
 # Off-box copy is the part this script deliberately does NOT guess at: set
 # ENVELOCK_BACKUP_REMOTE to an `rclone`/`aws s3` destination and it will push
 # there. A backup that lives only on the machine it is protecting is not one.
+#
+# Set ENVELOCK_BACKUP_AGE_RECIPIENT (an `age1…` public key) and only an
+# encrypted copy leaves this machine. The server holds the public half alone,
+# so neither a leaked bucket nor a compromised server can read past backups;
+# the private key stays offline and is needed only to restore (restore.sh).
 set -euo pipefail
 
 BACKUP_DIR="${ENVELOCK_BACKUP_DIR:-/var/backups/envelock}"
@@ -56,6 +61,10 @@ ENV_FILE="${ENVELOCK_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/
 if [ -z "$REMOTE" ]; then
   REMOTE="$(grep -E '^ENVELOCK_BACKUP_REMOTE=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"'"'"' ' || true)"
 fi
+RECIPIENT="${ENVELOCK_BACKUP_AGE_RECIPIENT:-}"
+if [ -z "$RECIPIENT" ]; then
+  RECIPIENT="$(grep -E '^ENVELOCK_BACKUP_AGE_RECIPIENT=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"'"'"' ' || true)"
+fi
 if [ -z "${ENVELOCK_BACKUP_RETAIN_DAYS:-}" ]; then
   from_file="$(grep -E '^ENVELOCK_BACKUP_RETAIN_DAYS=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"'"'"' ' || true)"
   [ -n "$from_file" ] && RETAIN_DAYS="$from_file"
@@ -70,7 +79,9 @@ fi
 # table owner too. So the backup role (BYPASSRLS, read-only) is preferred, then
 # the owner, then the app DSN. The last is correct only in development, where
 # RLS is off and all three are the same.
-read_dsn() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"'"'"' '; }
+# `|| true`: under `set -e -o pipefail` a missing key failed the assignment and
+# ended the script silently, before the fallbacks below could run.
+read_dsn() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"'"'"' ' || true; }
 DSN="$(read_dsn ENVELOCK_DB_BACKUP_DSN)"
 [ -n "$DSN" ] || DSN="$(read_dsn ENVELOCK_DB_OWNER_DSN)"
 [ -n "$DSN" ] || DSN="$(read_dsn ENVELOCK_POSTGRES_DSN)"
@@ -146,13 +157,28 @@ verify "$OUT"
 ( cd "$BACKUP_DIR" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
 printf '    %s\n' "$(du -h "$OUT" | cut -f1)"
 
+# ---- Encrypt what leaves the machine ----
+SHIP="$OUT"
+if [ -n "$RECIPIENT" ]; then
+  command -v age >/dev/null 2>&1 || fail "ENVELOCK_BACKUP_AGE_RECIPIENT is set but age is not installed (sudo apt-get install age)"
+  log "encrypting for off-box storage"
+  age -r "$RECIPIENT" -o "$OUT.age" "$OUT" || fail "age encryption failed"
+  ( cd "$BACKUP_DIR" && sha256sum "$(basename "$OUT").age" > "$(basename "$OUT").age.sha256" )
+  SHIP="$OUT.age"
+elif [ -n "$REMOTE" ]; then
+  warn "ENVELOCK_BACKUP_AGE_RECIPIENT is unset — the off-box copy is NOT encrypted.
+  It holds every customer's metadata. Generate a key pair OFF this server
+  (age-keygen -o envelock-backup.key), keep that file offline, and put its
+  public key in .env as ENVELOCK_BACKUP_AGE_RECIPIENT=age1..."
+fi
+
 # ---- Off-box copy ----
 if [ -n "$REMOTE" ]; then
   log "copying off-box to $REMOTE"
   if command -v rclone >/dev/null 2>&1 && [[ "$REMOTE" != s3://* ]]; then
-    rclone copy "$OUT" "$REMOTE" && rclone copy "$OUT.sha256" "$REMOTE"
+    rclone copy "$SHIP" "$REMOTE" && rclone copy "$SHIP.sha256" "$REMOTE"
   elif command -v aws >/dev/null 2>&1; then
-    aws s3 cp "$OUT" "$REMOTE/" && aws s3 cp "$OUT.sha256" "$REMOTE/"
+    aws s3 cp "$SHIP" "$REMOTE/" && aws s3 cp "$SHIP.sha256" "$REMOTE/"
   else
     fail "ENVELOCK_BACKUP_REMOTE is set but neither rclone nor aws is installed"
   fi

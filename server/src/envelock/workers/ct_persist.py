@@ -65,6 +65,10 @@ async def persist_observation(session: AsyncSession, obs) -> int:  # noqa: ANN00
             )
         ).scalar_one_or_none()
 
+        # One certificate issuance arrives several times (precert and cert, from
+        # several logs, apex and www), and renewals repeat it. Alert when the
+        # lookalike first becomes armed, not on every sighting.
+        newly_armed = has_mx and (existing is None or not existing.has_mx)
         if existing is None:
             session.add(
                 LookalikeDomain(
@@ -84,7 +88,7 @@ async def persist_observation(session: AsyncSession, obs) -> int:  # noqa: ANN00
 
         # Only raise an alert when the lookalike is armed (D4). An unarmed lookalike
         # is Low — persisted for context, no interrupt.
-        if has_mx:
+        if newly_armed:
             tier = AlertTier.HIGH
             finding = FindingResult(
                 service="D4",
@@ -118,6 +122,8 @@ async def persist_observation(session: AsyncSession, obs) -> int:  # noqa: ANN00
                 callback_phone=None,
                 rationale=("Certificate Transparency match", "MX present → armed"),
             )
+            from envelock.channels.mail.forward_runner import _recipients
+
             alert = await raise_alert(
                 session,
                 tenant_id=tenant_id,
@@ -125,6 +131,9 @@ async def persist_observation(session: AsyncSession, obs) -> int:  # noqa: ANN00
                 assessment=assessment,
                 findings=[finding],
                 counterparty_domain=obs.domain,
+                # Without recipients no delivery row existed, so "deliver now"
+                # below sent nothing: the alert reached only the dashboard.
+                recipients=await _recipients(session, tenant_id),
             )
             alerted += 1
             # Deliver now — an armed lookalike is time-sensitive, and relying on

@@ -72,9 +72,13 @@ async def _fetch_mailbox(
     matches nothing.
     """
     async with get_sessionmaker()() as session:
-        query = select(Mailbox).where(
-            Mailbox.address == address.lower(), Mailbox.is_active.is_(True)
-        )
+        query = select(Mailbox).where(Mailbox.is_active.is_(True))
+        # Graph subscriptions name the mailbox by id (see push_subscriptions);
+        # ones created earlier, and every Gmail notification, by address.
+        try:
+            query = query.where(Mailbox.id == UUID(address))
+        except ValueError:
+            query = query.where(Mailbox.address == address.lower())
         if tenant_id is not None:
             query = query.where(Mailbox.tenant_id == tenant_id)
         if require_source is not None:

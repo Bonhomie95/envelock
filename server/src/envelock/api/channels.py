@@ -8,6 +8,7 @@ from typing import Annotated, Literal
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -250,6 +251,19 @@ async def oauth_authorize(
 # the tenant comes from the signed `state` parameter. Under RLS with no
 # tenant bound the mailbox lookup matches nothing, so consent would appear
 # to succeed while the mailbox silently never flipped to connected.
+_START_AGAIN = "This connection link is invalid or has expired. Please start again."
+
+
+def _connect_result(**params: str) -> RedirectResponse:
+    from urllib.parse import urlencode
+
+    from envelock.config import get_settings
+
+    base = get_settings().web_base_url.rstrip("/")
+    query = urlencode({"tab": "mailboxes", **params})
+    return RedirectResponse(f"{base}/dashboard?{query}", status_code=302)
+
+
 @router.get("/connect/oauth/{provider}/callback", dependencies=[SystemScoped])
 async def oauth_callback(
     provider: str,
@@ -257,30 +271,33 @@ async def oauth_callback(
     code: str | None = None,
     state: str | None = None,
     error: str | None = None,
-) -> dict:
+) -> RedirectResponse:
     """Consent redirect target. Exchanges the code and seals the tokens.
 
     No bearer token here — this is a browser redirect from the provider, so the
     HMAC-signed `state` is the authorisation. Tokens are envelope-encrypted
     (PRD §5.2) and never returned to the caller.
+
+    Every outcome redirects back to the dashboard: it is the customer's own
+    browser that lands here, and a JSON body left them on a raw API page with
+    no way back. Failure text is fixed, never echoed from the query string.
     """
     if error:
-        raise HTTPException(400, f"consent was not granted: {error}")
+        return _connect_result(
+            connect_error="Permission wasn't granted, so the mailbox was not connected."
+        )
     if not code or not state:
-        raise HTTPException(400, "missing code or state")
+        return _connect_result(connect_error=_START_AGAIN)
 
     prov = oauth.provider_for(provider)
     if prov is None or provider not in _OAUTH_SOURCES:
-        raise HTTPException(404, "unknown provider")
+        return _connect_result(connect_error=_START_AGAIN)
 
     try:
         claims = oauth.verify_state(state, provider=provider)
     except oauth.OAuthError as exc:
         logger.warning("oauth state verification failed for %s: %s", provider, exc)
-        raise HTTPException(
-            400,
-            "This connection link is invalid or has expired. Please start again.",
-        ) from exc
+        return _connect_result(connect_error=_START_AGAIN)
 
     # Single-use: a signed state was replayable for its whole 600s window, so a
     # leaked redirect URL (browser history, proxy logs) could re-run the token
@@ -288,8 +305,8 @@ async def oauth_callback(
     from envelock.security.limits import active_replay
 
     if not await active_replay().acheck_and_record(f"oauthstate:{state[-48:]}", ttl=600):
-        raise HTTPException(
-            400, "This connection link was already used. Please start again."
+        return _connect_result(
+            connect_error="This connection link was already used. Please start again."
         )
 
     tenant_id = UUID(claims["t"])
@@ -302,7 +319,7 @@ async def oauth_callback(
         )
     ).scalar_one_or_none()
     if mailbox is None:
-        raise HTTPException(404, "mailbox not found")
+        return _connect_result(connect_error="That mailbox no longer exists. Add it again first.")
 
     mode = claims.get("k", "api")
 
@@ -310,10 +327,9 @@ async def oauth_callback(
         tokens = await oauth.exchange_code(prov, code=code)
     except oauth.OAuthError as exc:
         logger.warning("oauth token exchange failed for %s: %s", provider, exc)
-        raise HTTPException(
-            502,
-            "We couldn't finish connecting to your email provider. Please try again.",
-        ) from exc
+        return _connect_result(
+            connect_error="We couldn't finish connecting to your email provider. Please try again."
+        )
 
     # Seal the refresh token (the durable secret) bound to this mailbox.
     import json as _json
@@ -414,19 +430,11 @@ async def oauth_callback(
         mailbox.connected_address
         and mailbox.connected_address.lower() != mailbox.address.lower()
     )
-    return {
-        "connected": True,
-        "provider": provider,
-        "mode": mode,
-        "mailbox": mailbox.address,
-        # The real inbox the token reads + whether it differs from the label, so
-        # the connect UI can warn immediately instead of showing a clean success.
-        "connected_address": mailbox.connected_address,
-        "address_mismatch": mismatch,
-        "integration_tier": mailbox.integration_tier,
-        "sources": mailbox.sources,
-        "has_refresh_token": tokens.refresh_token is not None,
-    }
+    # The real inbox the token reads differing from the label is said at once,
+    # not left behind a clean success.
+    return _connect_result(
+        connected=mailbox.address, **({"mismatch": "1"} if mismatch else {})
+    )
 
 
 # ── Channel 2 — client sensor ────────────────────────────────────────────────
@@ -629,7 +637,7 @@ async def sensor_heartbeat(
         )
         from envelock.channels.mail.forward_runner import _recipients
 
-        recipients = await _recipients(session, caller.tenant_id)
+        recipients = await _recipients(session, caller.tenant_id, mailbox.address)
         result = await analyse_event(
             session,
             event,
@@ -920,6 +928,30 @@ async def push_unsubscribe(
     return {"subscribed": False}
 
 
+@router.post("/push/test")
+async def push_test(principal: ActiveUser, session: Session) -> dict:
+    """Push a test notification to every browser this user enabled, now, and
+    say what the push service answered — so "nothing arrived" can be told apart
+    from "it was delivered and the device kept it quiet"."""
+    from envelock.core.enums import AlertTier
+    from envelock.notify.dispatch import _push_to_all
+    from envelock.notify.senders import Notification
+
+    dispatcher = Dispatcher()
+    if not dispatcher.push.configured:
+        raise HTTPException(503, "browser alerts are not configured on this deployment")
+    note = Notification(
+        alert_id=uuid4(),
+        tenant_id=principal.tenant_id,
+        tier=AlertTier.LOW,
+        title="Test notification: browser alerts are working.",
+        body="",
+    )
+    result = await _push_to_all(session, dispatcher, note, principal.user_id)
+    await session.commit()  # keep any dead subscription it pruned
+    return {"delivered": result.delivered, "detail": result.reason}
+
+
 @router.get("/sensor/config")
 async def sensor_config(principal: CurrentUser) -> dict:
     from envelock.config import get_settings
@@ -1043,13 +1075,21 @@ async def simulate(req: SimulationRequest, principal: AdminUser, session: Sessio
     }
 
 
-async def _tenant_recipients(session: Session, tenant_id: UUID) -> list[Recipient]:
+async def _tenant_recipients(
+    session: Session, tenant_id: UUID, mailbox_address: str | None = None
+) -> list[Recipient]:
     """Everyone who should hear about an alert on this tenant. The IT admins
     always receive it (E4/E6); that independent channel is the safety net that
     makes delaying the paid rung defensible (PRD §8.2)."""
-    users = (
-        await session.execute(select(User).where(User.tenant_id == tenant_id))
-    ).scalars().all()
+    from envelock.channels.mail.forward_runner import _may_hear_about
+
+    users = [
+        u
+        for u in (
+            await session.execute(select(User).where(User.tenant_id == tenant_id))
+        ).scalars().all()
+        if _may_hear_about(u, mailbox_address)
+    ]
     push_user_ids = {
         uid
         for (uid,) in (
@@ -1134,7 +1174,7 @@ async def ingest_message(
         owned_domains=frozenset(domains),
         remediable=True,
     )
-    recipients = await _tenant_recipients(session, principal.tenant_id)
+    recipients = await _tenant_recipients(session, principal.tenant_id, mailbox.address)
     result = await analyse_event(
         session,
         event,

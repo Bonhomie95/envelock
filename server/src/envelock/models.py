@@ -36,6 +36,7 @@ from envelock.core.enums import (
     ProtectionLevel,
 )
 from envelock.db import Base, TimestampMixin, UUIDMixin
+from envelock.security.fields import EncryptedString
 from envelock.types import JsonDict, StringList
 
 
@@ -121,8 +122,9 @@ class User(Base, UUIDMixin, TimestampMixin):
     #: when ENVELOCK_REQUIRE_EMAIL_VERIFICATION is on; null = never verified.
     email_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     #: MFA is mandatory before a session can be held (PRD §15.1). The secret is
-    #: provisioned at enrolment and confirmed at first verify.
-    totp_secret: Mapped[str | None] = mapped_column(String(64))
+    #: provisioned at enrolment and confirmed at first verify. Sealed at rest:
+    #: in plain text, a database dump was every account's second factor.
+    totp_secret: Mapped[str | None] = mapped_column(EncryptedString(128))
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     #: SHA-256 hashes of single-use recovery codes; the codes themselves are
     #: shown exactly once at enrolment and never stored.
@@ -173,7 +175,7 @@ class StaffAccount(Base, UUIDMixin, TimestampMixin):
     #: A new operator signs in with a one-time password and must replace it
     #: before reaching anything.
     must_change_password: Mapped[bool] = mapped_column(Boolean, default=True)
-    totp_secret: Mapped[str | None] = mapped_column(String(64))
+    totp_secret: Mapped[str | None] = mapped_column(EncryptedString(128))
     #: MFA is NOT deferrable for staff, unlike customer accounts: these
     #: credentials reach every tenant's metadata.
     mfa_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -946,7 +948,8 @@ class WebhookEndpoint(Base, UUIDMixin, TimestampMixin):
 
     tenant_id: Mapped[UUID] = mapped_column(Uuid, index=True)
     url: Mapped[str] = mapped_column(Text)
-    secret: Mapped[str] = mapped_column(String(128))
+    #: Sealed at rest — whoever holds it can forge deliveries to the customer's SIEM.
+    secret: Mapped[str] = mapped_column(EncryptedString(128))
     events: Mapped[list[str]] = mapped_column(StringList, default=list)
     active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_delivery_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

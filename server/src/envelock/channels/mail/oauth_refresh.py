@@ -187,6 +187,9 @@ async def current_access_token(
     now = datetime.now(UTC)
     if cred.token_expires_at is None or cred.token_expires_at <= now + _REFRESH_MARGIN:
         if not await refresh_one(session, cred, mailbox):
+            # Keep the failure. Rolled back, needs_reconnect reverted and the
+            # "lost access" email went out again on every fetch cycle.
+            await session.commit()
             return None
         await session.commit()
     try:
