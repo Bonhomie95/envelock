@@ -64,7 +64,9 @@ def _may_hear_about(user: User, mailbox_address: str | None) -> bool:
         return False
     if user.is_admin or user.role in ("owner", "admin"):
         return True
-    return bool(mailbox_address) and user.email.lower() == mailbox_address.lower()
+    if not mailbox_address:
+        return False
+    return (user.email or "").lower() == mailbox_address.lower()
 
 
 async def _recipients(
