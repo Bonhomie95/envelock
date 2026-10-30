@@ -61,7 +61,15 @@ def test_the_sites_and_snippets_pass_nginx_t(tmp_path: Path) -> None:
         shutil.copy2(snippet, tmp_path / "snippets" / snippet.name)
     (tmp_path / "sites").mkdir()
     for site in SITES:
-        shutil.copy2(site, tmp_path / "sites" / site.name)
+        # `nginx -t` binds every listen address, and CI runs as a normal user who
+        # may not bind below 1024 on Linux. Moving the ports up leaves the syntax
+        # under test unchanged.
+        text = re.sub(
+            r"(\blisten\s+(?:\[::\]:)?)(\d+)",
+            lambda m: f"{m.group(1)}{int(m.group(2)) + 20000}",
+            site.read_text(),
+        )
+        (tmp_path / "sites" / site.name).write_text(text)
     conf = tmp_path / "nginx.conf"
     conf.write_text(
         f"pid {tmp_path}/nginx.pid;\nerror_log stderr;\nevents {{}}\n"
