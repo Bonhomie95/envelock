@@ -46,6 +46,9 @@ node_modules/
 # ── Build output ─────────────────────────────────────────────────────────────
 dist/
 dist-ssr/
+# deploy.sh builds into dist.next and keeps the previous build as dist.prev.
+dist.next/
+dist.prev/
 build/
 
 # ── Local data and infrastructure ────────────────────────────────────────────
