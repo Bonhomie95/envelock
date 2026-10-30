@@ -62,12 +62,19 @@ def test_enroll_then_activate_turns_mfa_on(client: TestClient) -> None:
     ).json()
     h = {"Authorization": f"Bearer {skip['access_token']}"}
 
-    enroll = client.post("/api/v1/auth/mfa/enroll", headers=h).json()
+    enroll = client.post(
+        "/api/v1/auth/mfa/enroll",
+        json={"current_password": "a-long-enough-passphrase"},
+        headers=h,
+    ).json()
     assert "otpauth_uri" in enroll
 
     activate = client.post(
         "/api/v1/auth/mfa/activate",
-        json={"code": _totp_at(enroll["secret"], int(time.time()) // 30)},
+        json={
+            "code": _totp_at(enroll["secret"], int(time.time()) // 30),
+            "current_password": "a-long-enough-passphrase",
+        },
         headers=h,
     )
     assert activate.status_code == 200
@@ -86,10 +93,17 @@ def test_skip_is_refused_once_mfa_is_enabled(client: TestClient) -> None:
         "/api/v1/auth/mfa/skip", json={"token": login["mfa_token"]}
     ).json()
     h = {"Authorization": f"Bearer {skip['access_token']}"}
-    enroll = client.post("/api/v1/auth/mfa/enroll", headers=h).json()
+    enroll = client.post(
+        "/api/v1/auth/mfa/enroll",
+        json={"current_password": "a-long-enough-passphrase"},
+        headers=h,
+    ).json()
     client.post(
         "/api/v1/auth/mfa/activate",
-        json={"code": _totp_at(enroll["secret"], int(time.time()) // 30)},
+        json={
+            "code": _totp_at(enroll["secret"], int(time.time()) // 30),
+            "current_password": "a-long-enough-passphrase",
+        },
         headers=h,
     )
 
@@ -109,9 +123,57 @@ def test_activate_rejects_a_wrong_code(client: TestClient) -> None:
         "/api/v1/auth/mfa/skip", json={"token": login["mfa_token"]}
     ).json()
     h = {"Authorization": f"Bearer {skip['access_token']}"}
-    client.post("/api/v1/auth/mfa/enroll", headers=h)
+    client.post(
+        "/api/v1/auth/mfa/enroll",
+        json={"current_password": "a-long-enough-passphrase"},
+        headers=h,
+    )
 
-    bad = client.post("/api/v1/auth/mfa/activate", json={"code": "000000"}, headers=h)
+    bad = client.post(
+        "/api/v1/auth/mfa/activate",
+        json={"code": "000000", "current_password": "a-long-enough-passphrase"},
+        headers=h,
+    )
     assert bad.status_code == 401
+    me = client.get("/api/v1/auth/me", headers=h).json()
+    assert me["mfa_enabled"] is False
+
+
+def test_binding_a_second_factor_requires_the_current_password(client: TestClient) -> None:
+    """F1: a session alone must not be able to bind a new authenticator.
+
+    A stolen MFA-deferred session could otherwise enrol the attacker's factor and
+    then seize the password through /password/reset-with-code. Both enrol and
+    activate therefore demand the current password; a session without it is
+    refused, and MFA stays off.
+    """
+    login = _register_and_login(client, "nopw@acme.com")
+    skip = client.post(
+        "/api/v1/auth/mfa/skip", json={"token": login["mfa_token"]}
+    ).json()
+    h = {"Authorization": f"Bearer {skip['access_token']}"}
+
+    # Session only, no password → refused (422: the field is required).
+    assert client.post("/api/v1/auth/mfa/enroll", headers=h).status_code == 422
+    # Session + wrong password → refused (401).
+    wrong = client.post(
+        "/api/v1/auth/mfa/enroll",
+        json={"current_password": "not-the-password"},
+        headers=h,
+    )
+    assert wrong.status_code == 401
+
+    # The correct password enrols; activate still needs it too.
+    enroll = client.post(
+        "/api/v1/auth/mfa/enroll",
+        json={"current_password": "a-long-enough-passphrase"},
+        headers=h,
+    ).json()
+    no_pw = client.post(
+        "/api/v1/auth/mfa/activate",
+        json={"code": _totp_at(enroll["secret"], int(time.time()) // 30)},
+        headers=h,
+    )
+    assert no_pw.status_code == 422
     me = client.get("/api/v1/auth/me", headers=h).json()
     assert me["mfa_enabled"] is False

@@ -707,8 +707,22 @@ async def mfa_skip(req: TokenRequest, session: Session) -> dict:
     return tokens
 
 
+class MfaEnrollRequest(BaseModel):
+    #: Binding a second factor is a sensitive change (SENSITIVE_ACTIONS), so it
+    #: takes the current password even from inside a session. Without it, a stolen
+    #: session for an MFA-deferred account could bind the attacker's authenticator
+    #: and then use it (via /password/reset-with-code) to seize the password —
+    #: turning transient token theft into a permanent takeover. The account has no
+    #: second factor yet, so the password alone is the re-auth (mfa_code is accepted
+    #: for the rare account mid-enrolment but not required).
+    current_password: str = Field(max_length=256)
+    mfa_code: str | None = Field(default=None, pattern=r"^\d{6}$")
+
+
 @router.post("/mfa/enroll")
-async def mfa_enroll(principal: CurrentUser, session: Session) -> dict:
+async def mfa_enroll(
+    req: MfaEnrollRequest, principal: CurrentUser, session: Session
+) -> dict:
     """Authenticated TOTP enrolment for a user who deferred MFA at sign-in.
 
     Unlike `/mfa/setup` (which trades an `mfa_pending` token) this runs inside an
@@ -718,6 +732,12 @@ async def mfa_enroll(principal: CurrentUser, session: Session) -> dict:
     user = await _user_by_id(session, principal.user_id)
     if user.mfa_enabled:
         raise HTTPException(status.HTTP_409_CONFLICT, "MFA already enabled")
+    await _verify_step_up(
+        user,
+        password=req.current_password,
+        mfa_code=req.mfa_code,
+        require_mfa_enrolment=False,
+    )
 
     user.totp_secret = generate_totp_secret()
     await session.commit()
@@ -1309,6 +1329,9 @@ async def reset_password(req: ResetPasswordRequest, session: Session) -> dict:
 
 class MfaActivateRequest(BaseModel):
     code: str = Field(min_length=6, max_length=6, pattern=r"^\d{6}$")
+    #: The current password — the same re-auth /mfa/enroll takes, so the factor
+    #: cannot be activated by a session alone (see MfaEnrollRequest).
+    current_password: str = Field(max_length=256)
 
 
 @router.post("/mfa/activate")
@@ -1323,6 +1346,15 @@ async def mfa_activate(
     user = await _user_by_id(session, principal.user_id)
     if user.mfa_enabled:
         raise HTTPException(status.HTTP_409_CONFLICT, "MFA already enabled")
+    # Re-auth with the password before the second factor is bound — the account
+    # has none yet, so the TOTP code below proves possession of the new secret,
+    # not identity.
+    await _verify_step_up(
+        user,
+        password=req.current_password,
+        mfa_code=None,
+        require_mfa_enrolment=False,
+    )
 
     locked, retry_after = await active_lockout().ais_locked(f"mfa:{user.email}")
     if locked:
