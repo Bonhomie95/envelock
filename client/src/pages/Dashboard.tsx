@@ -40,6 +40,7 @@ import {
   type Oversight,
   type PreventedLoss,
   type QualityMetric,
+  type ReauthCreds,
   type TenantInfo,
   type Tier,
 } from "../lib/api";
@@ -60,6 +61,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import ConnectionAdvisor from "../components/ConnectionAdvisor";
 import { DomainVerify } from "../components/DomainVerify";
 import MfaEnroll from "../components/MfaEnroll";
+import ReAuthDialog from "../components/ReAuthDialog";
 import SensorPanel from "../components/SensorPanel";
 import SimulationPanel from "../components/SimulationPanel";
 import TodayPanel, { type HealthIssue } from "../components/TodayPanel";
@@ -3504,24 +3506,32 @@ export default function Dashboard() {
   // that address — a `window.confirm` is the control users dismiss reflexively.
   const [pendingRemoval, setPendingRemoval] = useState<MailboxRecord | null>(null);
   const [removing, setRemoving] = useState(false);
+  const [removeError, setRemoveError] = useState<string | null>(null);
 
   function removeMailbox(id: string) {
+    setRemoveError(null);
     setPendingRemoval(mailboxes.find((m) => m.id === id) ?? null);
   }
 
-  async function confirmRemoveMailbox() {
+  async function confirmRemoveMailbox(creds: ReauthCreds) {
     const target = pendingRemoval;
     if (!target) return;
     setRemoving(true);
+    setRemoveError(null);
     try {
-      await api.removeMailbox(target.id);
+      await api.removeMailbox(target.id, creds);
       setPendingRemoval(null);
       toast.success(`${target.address} removed. Its stored credential was deleted.`);
       await load();
     } catch (e) {
-      toast.error(
-        e instanceof ApiError ? e.message : "Could not remove that mailbox.",
-      );
+      // A wrong password keeps the prompt open with the error; anything else is
+      // a toast and the prompt closes.
+      if (e instanceof ApiError && e.status === 401) {
+        setRemoveError(e.message);
+      } else {
+        setPendingRemoval(null);
+        toast.error(e instanceof ApiError ? e.message : "Could not remove that mailbox.");
+      }
     } finally {
       setRemoving(false);
     }
@@ -4052,19 +4062,20 @@ export default function Dashboard() {
         )}
       </div>
 
-      <ConfirmDialog
+      <ReAuthDialog
         open={pendingRemoval !== null}
         title="Remove this mailbox?"
         body={
           pendingRemoval
             ? `${pendingRemoval.address} will stop being scanned and its stored ` +
-              "credential is deleted. Alerts already raised are kept. You can " +
-              "add and reconnect it again later."
+              "credential is deleted. Alerts already raised are kept. Confirm your " +
+              "password to remove it."
             : ""
         }
         confirmLabel="REMOVE MAILBOX"
         busy={removing}
-        onConfirm={() => void confirmRemoveMailbox()}
+        error={removeError}
+        onConfirm={(creds) => void confirmRemoveMailbox(creds)}
         onCancel={() => setPendingRemoval(null)}
       />
     </main>

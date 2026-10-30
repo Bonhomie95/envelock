@@ -1,12 +1,16 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { Check, Copy, KeyRound, Loader2 } from "lucide-react";
 import { QRCodeSVG } from "qrcode.react";
-import { ApiError, api } from "../lib/api";
+import { ApiError, api, type ReauthCreds } from "../lib/api";
+import ReAuthDialog from "./ReAuthDialog";
 import { Button } from "./primitives";
 
 /* Turn MFA on from inside an authenticated session — the path for a user who
-   deferred it at sign-in. Drives /auth/mfa/enroll → /auth/mfa/activate and then
-   shows the one-time recovery codes. Reused by the dashboard alert and Profile. */
+   deferred it at sign-in. Binding a second factor is a sensitive change, so it
+   opens with a re-auth prompt (the server refuses a session that cannot confirm
+   the current password); then /auth/mfa/enroll → /auth/mfa/activate, carrying
+   that password, and the one-time recovery codes. Reused by the dashboard alert
+   and Profile. */
 export default function MfaEnroll({
   onDone,
   onCancel,
@@ -14,44 +18,48 @@ export default function MfaEnroll({
   onDone: () => void | Promise<void>;
   onCancel?: () => void;
 }) {
-  const [stage, setStage] = useState<"scan" | "recovery">("scan");
+  // "reauth" first: the password must be confirmed before a secret is minted,
+  // and it is reused to activate — so a stolen session cannot bind a factor.
+  const [stage, setStage] = useState<"reauth" | "scan" | "recovery">("reauth");
+  const [creds, setCreds] = useState<ReauthCreds | null>(null);
   const [secret, setSecret] = useState("");
   const [otpauthUri, setOtpauthUri] = useState("");
   const [showSecret, setShowSecret] = useState(false);
   const [copied, setCopied] = useState(false);
   const [code, setCode] = useState("");
   const [recovery, setRecovery] = useState<string[]>([]);
-  // Starts busy: the enrolment request fires immediately on mount.
-  const [busy, setBusy] = useState(true);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   function fail(e: unknown) {
     setError(e instanceof ApiError ? e.message : "Something went wrong — try again.");
   }
 
-  // Request the enrolment secret once when the card opens.
-  useEffect(() => {
-    let live = true;
-    api
-      .mfaEnroll()
-      .then((r) => {
-        if (!live) return;
-        setSecret(r.secret);
-        setOtpauthUri(r.otpauth_uri);
-      })
-      .catch((e) => live && fail(e))
-      .finally(() => live && setBusy(false));
-    return () => {
-      live = false;
-    };
-  }, []);
-
-  async function activate(e: FormEvent) {
-    e.preventDefault();
+  // The password is confirmed by actually enrolling with it: a wrong one 401s
+  // here, and the prompt stays open with the error.
+  async function confirmReauth(entered: ReauthCreds) {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.mfaActivate(code);
+      const r = await api.mfaEnroll(entered);
+      setCreds(entered);
+      setSecret(r.secret);
+      setOtpauthUri(r.otpauth_uri);
+      setStage("scan");
+    } catch (e) {
+      fail(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function activate(e: FormEvent) {
+    e.preventDefault();
+    if (!creds) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.mfaActivate(code, creds.current_password);
       setRecovery(r.recovery_codes);
       setStage("recovery");
     } catch (e) {
@@ -59,6 +67,21 @@ export default function MfaEnroll({
     } finally {
       setBusy(false);
     }
+  }
+
+  if (stage === "reauth") {
+    return (
+      <ReAuthDialog
+        open
+        title="Confirm it's you"
+        body="Turning on two-factor authentication changes how you sign in, so confirm your current password first."
+        confirmLabel="CONTINUE"
+        busy={busy}
+        error={error}
+        onConfirm={confirmReauth}
+        onCancel={() => onCancel?.()}
+      />
+    );
   }
 
   function copySecret() {
