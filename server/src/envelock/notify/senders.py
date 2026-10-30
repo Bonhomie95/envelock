@@ -51,6 +51,9 @@ class SendResult:
     reason: str
     cost_micros: int = 0
     sent_at: datetime | None = None
+    #: The destination is dead for good (a push service's 404/410): the caller
+    #: should forget it rather than retry it on every future alert.
+    gone: bool = False
 
 
 class Sender(ABC):
@@ -157,7 +160,14 @@ class PushSender(Sender):
                 timeout=10,
             )
         except Exception as exc:  # noqa: BLE001 — a dead subscription is not fatal
-            return SendResult(self.rung, False, f"web push failed: {exc}")
+            # Gone is the push service's status code, never a word in the text:
+            # the text carries the response body and, for a network error, the
+            # endpoint URL — and a random token containing "404" was enough to
+            # delete a live subscription on a connection blip.
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            return SendResult(
+                self.rung, False, f"web push failed: {exc}", gone=status in (404, 410)
+            )
         self.sent.append({"endpoint": to, "payload": payload})
         return SendResult(self.rung, True, "web push sent", sent_at=datetime.now(UTC))
 

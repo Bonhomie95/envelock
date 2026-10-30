@@ -142,7 +142,7 @@ async def test_push_reaches_every_device_and_prunes_the_dead_one(session) -> Non
         async def send(self, note, *, to, keys=None):  # noqa: ANN001, ARG002
             self.sent.append(to)
             if "dead" in to:
-                return SendResult(Rung.L1_PUSH, False, "web push failed: 410 Gone")
+                return SendResult(Rung.L1_PUSH, False, "web push failed: 410 Gone", gone=True)
             return SendResult(Rung.L1_PUSH, True, "web push sent")
 
     dispatcher = Dispatcher()
