@@ -14,7 +14,7 @@ from datetime import UTC, datetime, timedelta
 from envelock.core.capabilities import Capability
 from envelock.core.enums import AlertTier, MailDirection
 from envelock.detections.base import DetectionContext, FindingResult, register
-from envelock.util.domains import is_free_mail, registrable_domain
+from envelock.util.domains import display_skeleton, is_free_mail, registrable_domain
 from envelock.util.payments import extract_bank_identifiers, has_payment_context
 
 _INBOUND = frozenset({Capability.READ_INBOUND})
@@ -177,13 +177,15 @@ class _A5DisplayNameSpoof:
         mail = ctx.mail
         if mail is None or not _external(ctx) or not mail.sender.display:
             return []
-        display = mail.sender.display.strip().lower()
+        # Compared the way the name renders, so an invisible character or a
+        # Cyrillic letter inside the brand no longer hides it.
+        display = display_skeleton(mail.sender.display)
         sender = registrable_domain(mail.sender.domain)
         comparison = set(ctx.owned_domains) | set(ctx.known_counterparties)
 
         for known in comparison:
             brand = known.partition(".")[0]
-            if len(brand) >= 4 and brand in display and sender != known:
+            if len(brand) >= 4 and display_skeleton(brand) in display and sender != known:
                 free = is_free_mail(sender)
                 return [
                     FindingResult(
