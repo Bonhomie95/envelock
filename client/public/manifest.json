@@ -1,0 +1,11 @@
+{
+  "name": "Envelock",
+  "short_name": "Envelock",
+  "description": "Email fraud and account-takeover protection",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0d1220",
+  "theme_color": "#0d1220",
+  "icons": [{ "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml" }]
+}

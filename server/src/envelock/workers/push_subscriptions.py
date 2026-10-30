@@ -35,6 +35,13 @@ GMAIL_WATCH_ID = "gmail-watch"
 #: Graph's ceiling for mail subscriptions is 4,230 minutes (just under 3 days).
 GRAPH_LIFETIME = timedelta(minutes=4200)
 RENEW_WHEN_UNDER = timedelta(hours=24)
+#: A Graph subscription is renewed this often, not only near expiry. Microsoft
+#: drops subscriptions without telling an endpoint that has no lifecycle URL
+#: (a password change, revoked consent), and renewing once a day was left meant
+#: a dropped one sat unnoticed for up to two days. The renewal PATCH is the
+#: check: a gone subscription answers 404 and is recreated.
+GRAPH_CHECK_EVERY = timedelta(hours=6)
+GRAPH_RENEW_WHEN_UNDER = GRAPH_LIFETIME - GRAPH_CHECK_EVERY
 _OAUTH_SOURCES = {SourceMechanism.GRAPH_API.value, SourceMechanism.GMAIL_API.value}
 
 
@@ -84,6 +91,10 @@ async def _graph(
     # moves our own quarantine makes.
     payload["changeType"] = "created"
     payload["expirationDateTime"] = _iso(expires)
+    # Lifecycle events (subscriptionRemoved, reauthorizationRequired, missed) go
+    # to the same receiver, which tells them apart by `lifecycleEvent`. Without
+    # it Microsoft removes a subscription silently.
+    payload["lifecycleNotificationUrl"] = settings.ms_webhook_url
     body = await t.request("POST", GRAPH_SUBSCRIPTIONS, headers=h, json=payload)
     mailbox.push_subscription_id = body.get("id")
     mailbox.push_expires_at = _parse(body.get("expirationDateTime")) or expires
@@ -119,10 +130,14 @@ async def ensure_push(
     """Create or renew this mailbox's subscription if it is missing or due.
     True when one was created or renewed."""
     now = now or datetime.now(UTC)
+    renew_under = (
+        RENEW_WHEN_UNDER if mailbox.push_subscription_id == GMAIL_WATCH_ID
+        else GRAPH_RENEW_WHEN_UNDER
+    )
     if (
         mailbox.push_subscription_id
         and mailbox.push_expires_at
-        and mailbox.push_expires_at - now > RENEW_WHEN_UNDER
+        and mailbox.push_expires_at - now > renew_under
     ):
         return False
     from envelock.db import set_current_tenant

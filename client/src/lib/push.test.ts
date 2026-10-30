@@ -10,6 +10,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./api", () => ({
+  API_BASE: "",
   api: {
     sensorConfig: vi.fn(),
     pushSubscribe: vi.fn(),

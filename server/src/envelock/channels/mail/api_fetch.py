@@ -19,7 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import logging
+from collections.abc import AsyncIterator, Collection
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import quote
@@ -41,20 +43,33 @@ class HttpTransport(Protocol):
 
 
 class HttpxTransport:
-    """Default transport — real GETs against the provider API."""
+    """Default transport — real GETs against the provider API.
 
-    async def get_json(self, url: str, *, headers: dict) -> dict:
+    Pass `client` to reuse one connection for a whole sync. Without it every
+    request built its own client: a new TLS handshake, and a CA bundle loaded on
+    the event loop, for each of the dozens of calls one sync makes."""
+
+    def __init__(self, client=None) -> None:  # noqa: ANN001 — httpx.AsyncClient
+        self._client = client
+
+    @contextlib.asynccontextmanager
+    async def _http(self) -> AsyncIterator:
+        if self._client is not None:
+            yield self._client
+            return
         import httpx
 
         async with httpx.AsyncClient(timeout=20) as client:
+            yield client
+
+    async def get_json(self, url: str, *, headers: dict) -> dict:
+        async with self._http() as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             return resp.json()
 
     async def get_bytes(self, url: str, *, headers: dict) -> bytes:
-        import httpx
-
-        async with httpx.AsyncClient(timeout=20) as client:
+        async with self._http() as client:
             resp = await client.get(url, headers=headers)
             resp.raise_for_status()
             return resp.content
@@ -114,9 +129,14 @@ async def gmail_fetch_raw(
     limit: int = 50,
     transport: HttpTransport | None = None,
     backoff: float = 0.5,
+    known: Collection[str] = (),
 ) -> list[FetchedMessage]:
     """Recent INBOX messages as raw RFC822 (`format=raw`). `in:inbox` matters: an
-    unfiltered listing also returned sent mail and drafts."""
+    unfiltered listing also returned sent mail and drafts.
+
+    Ids in `known` are listed but not downloaded — the caller has already run
+    them through the pipeline. Without it every sync, push-triggered or not,
+    downloaded the fifty newest messages in full before looking at any."""
     transport = transport or HttpxTransport()
     headers = _bearer(access_token)
     listing = await _retry(
@@ -129,7 +149,7 @@ async def gmail_fetch_raw(
     out: list[FetchedMessage] = []
     for ref in listing.get("messages", []) or []:
         msg_id = ref.get("id")
-        if not msg_id:
+        if not msg_id or msg_id in known:
             continue
         detail = await _retry(
             lambda mid=msg_id: transport.get_json(
@@ -357,13 +377,14 @@ async def gmail_fetch_outbound(
     limit: int = 20,
     transport: HttpTransport | None = None,
     backoff: float = 0.5,
+    known: Collection[str] = (),
 ) -> list[FetchedMessage]:
     """Recent SENT messages as raw RFC822 — the owner's own outbound mail, which
     C5 (signature tampering) and A12 (reply-stall) need and nothing else fetches.
     `in:sent` is the whole query; read-only, never written back to."""
     return await gmail_fetch_raw(
         access_token=access_token, query="in:sent newer_than:2d", limit=limit,
-        transport=transport, backoff=backoff,
+        transport=transport, backoff=backoff, known=known,
     )
 
 
@@ -404,10 +425,12 @@ async def graph_fetch_raw(
     limit: int = 50,
     transport: HttpTransport | None = None,
     backoff: float = 0.5,
+    known: Collection[str] = (),
 ) -> list[FetchedMessage]:
     """Recent inbox messages as raw RFC822 via `/$value` — the full MIME, so the
     shared parser gets the same fidelity (URLs, auth results, attachments) as
-    IMAP/Gmail, richer than Graph's JSON projection."""
+    IMAP/Gmail, richer than Graph's JSON projection. Ids in `known` are not
+    downloaded (see `gmail_fetch_raw`)."""
     transport = transport or HttpxTransport()
     headers = _bearer(access_token)
     base = f"{GRAPH_API}/users/{mailbox_address}" if mailbox_address else f"{GRAPH_API}/me"
@@ -422,7 +445,7 @@ async def graph_fetch_raw(
     out: list[FetchedMessage] = []
     for ref in listing.get("value", []) or []:
         msg_id = ref.get("id")
-        if not msg_id:
+        if not msg_id or msg_id in known:
             continue
         raw = await _retry(
             lambda mid=msg_id: transport.get_bytes(
@@ -525,6 +548,7 @@ async def graph_fetch_outbound(
     limit: int = 20,
     transport: HttpTransport | None = None,
     backoff: float = 0.5,
+    known: Collection[str] = (),
 ) -> list[FetchedMessage]:
     """Recent SENT messages as raw RFC822 via the Sent Items folder on /me — the
     owner's own outbound mail for C5 and A12. Delegated token → /me (a stored
@@ -542,7 +566,7 @@ async def graph_fetch_outbound(
     out: list[FetchedMessage] = []
     for ref in listing.get("value", []) or []:
         msg_id = ref.get("id")
-        if not msg_id:
+        if not msg_id or msg_id in known:
             continue
         raw = await _retry(
             lambda mid=msg_id: transport.get_bytes(

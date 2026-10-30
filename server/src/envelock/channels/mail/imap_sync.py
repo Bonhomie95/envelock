@@ -422,6 +422,7 @@ def idle_watch(
     timeout: float = 30.0,
     client_factory: ClientFactory | None = None,
     pin_sha256: str | None = None,
+    since_uid: int | None = None,
 ) -> bool:
     """Hold IMAP IDLE (RFC 2177) on ``folder`` and call ``on_new_mail()`` the
     moment the server announces a message — the server's own push, which is
@@ -431,6 +432,12 @@ def idle_watch(
     Returns True after ``max_seconds`` or once ``stop`` is set (the caller
     reconnects with a freshly read credential), False when the server cannot
     IDLE (polling keeps covering it). Connection and login failures raise.
+
+    ``since_uid`` is the caller's cursor, when it has one. IDLE only announces
+    mail that lands while it listens, so anything that arrived during a
+    reconnect or a backoff was announced to nobody and waited for the poll; if
+    the folder's UIDNEXT has moved past the cursor (or the server does not say),
+    ``on_new_mail()`` fires once before listening.
     """
     client = _open(
         host=host, port=port, security=security, username=username,
@@ -442,7 +449,10 @@ def idle_watch(
             supported = False
         else:
             supported = True
-            client.select_folder(folder, readonly=True)
+            info = client.select_folder(folder, readonly=True)
+            uidnext = _as_int(info.get(b"UIDNEXT") or info.get("UIDNEXT"))
+            if since_uid is not None and (uidnext is None or uidnext - 1 > since_uid):
+                on_new_mail()
             deadline = time.monotonic() + max_seconds
             while not stop.is_set() and time.monotonic() < deadline:
                 client.idle()
@@ -669,6 +679,8 @@ def fetch_sent(
     timeout: float = 30.0,
     client_factory: ClientFactory | None = None,
     pin_sha256: str | None = None,
+    since_uid: int | None = None,
+    uidvalidity: int | None = None,
 ) -> FetchResult:
     """The most recent ``limit`` messages from the owner's Sent folder, newest
     first — the data A12 (reply-stall) and C5 (signature tampering) need.
@@ -676,7 +688,11 @@ def fetch_sent(
     Read-only: the owner's sent mail is never modified. The Sent folder is named
     differently per provider, so the first of ``SENT_FOLDER_CANDIDATES`` that the
     server reports as existing is used; if none do, this is a clean no-op rather
-    than an error (not every mailbox exposes a Sent folder over IMAP)."""
+    than an error (not every mailbox exposes a Sent folder over IMAP).
+
+    With a cursor (``since_uid`` under the folder's ``uidvalidity``) only mail
+    sent after it is downloaded; ``highest_uid`` in the result is the next
+    cursor."""
     client: ImapClientLike | None = None
     try:
         client = _open(
@@ -689,17 +705,29 @@ def fetch_sent(
         )
         if folder is None:
             return FetchResult(messages=[], ok=True)
-        client.select_folder(folder, readonly=True)
-        uids = sorted(_as_int_list(client.search(["ALL"])))[-limit:]
+        info = client.select_folder(folder, readonly=True)
+        server_uidvalidity = _as_int(info.get(b"UIDVALIDITY") or info.get("UIDVALIDITY"))
+        if since_uid is not None and uidvalidity is not None and server_uidvalidity == uidvalidity:
+            # `N:*` always matches the highest message, so filter to new ones.
+            candidates = sorted(_as_int_list(client.search(["UID", f"{since_uid + 1}:*"])))
+            uids = [u for u in candidates if u > since_uid][-limit:]
+            highest: int | None = max(uids, default=since_uid)
+        else:
+            uids = sorted(_as_int_list(client.search(["ALL"])))[-limit:]
+            highest = max(uids, default=None)
         if not uids:
-            return FetchResult(messages=[], ok=True)
+            return FetchResult(
+                messages=[], uidvalidity=server_uidvalidity, highest_uid=highest, ok=True
+            )
         raw_by_uid = client.fetch(uids, [BODY_FETCH])
         messages: list[FetchedMessage] = []
         for uid in reversed(uids):  # newest first — C5 reads the latest signature
             raw = _raw_body(raw_by_uid.get(uid) or {})
             if raw:
                 messages.append(FetchedMessage(uid=int(uid), raw=raw))
-        return FetchResult(messages=messages, ok=True)
+        return FetchResult(
+            messages=messages, uidvalidity=server_uidvalidity, highest_uid=highest, ok=True
+        )
     except _AuthError as exc:
         return FetchResult(ok=False, error=f"login rejected: {exc}", auth_failed=True)
     except Exception as exc:  # noqa: BLE001

@@ -38,6 +38,20 @@ def provider_from_sources(sources: list[str] | None) -> str | None:
     return None
 
 
+#: The servers an OAuth "imap" connection logs in to (api/channels
+#: `_IMAP_ENDPOINTS`). Such a mailbox carries only IMAP sources, so the provider
+#: that issued its token is known by its server — `provider_from_sources` alone
+#: answered None, and its token was never refreshed: dark within the hour.
+_IMAP_HOST_PROVIDERS = {"outlook.office365.com": "microsoft", "imap.gmail.com": "google"}
+
+
+def provider_for(mailbox: Mailbox, cred: MailboxCredential) -> str | None:
+    """The OAuth provider behind this mailbox's stored token, if any."""
+    return provider_from_sources(mailbox.sources) or _IMAP_HOST_PROVIDERS.get(
+        (cred.imap_host or "").strip().lower()
+    )
+
+
 def _open_token_payload(cred: MailboxCredential) -> dict:
     sealed = SealedSecret(
         ciphertext=cred.ciphertext, wrapped_dek=cred.wrapped_dek, key_id=cred.key_id or ""
@@ -57,7 +71,7 @@ async def refresh_one(
     session: AsyncSession, cred: MailboxCredential, mailbox: Mailbox
 ) -> bool:
     """Refresh a single mailbox's access token. Returns True on success."""
-    provider_name = provider_from_sources(mailbox.sources)
+    provider_name = provider_for(mailbox, cred)
     prov = oauth.provider_for(provider_name) if provider_name else None
     if prov is None or not oauth.is_configured(prov):
         return False
@@ -181,7 +195,7 @@ async def current_access_token(
     if row is None:
         return None
     cred, mailbox = row
-    provider_name = provider_from_sources(mailbox.sources)
+    provider_name = provider_for(mailbox, cred)
     if provider_name is None:
         return None
     now = datetime.now(UTC)

@@ -24,6 +24,7 @@ import asyncio
 import contextlib
 import logging
 import threading
+import weakref
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
@@ -181,7 +182,7 @@ async def quarantine_persisted_message(
     except ValueError:
         return False, "no provider handle stored for this message"
     try:
-        password, access_token = _imap_secret(cred)
+        password, access_token = await _login_secret(session, cred)
     except CryptoError:
         return False, "the stored credential can no longer be decrypted — reconnect the mailbox"
     if password is None and access_token is None:
@@ -251,16 +252,65 @@ async def _run_requested_quarantines(
     return done
 
 
+async def _login_secret(
+    session: AsyncSession, cred: MailboxCredential
+) -> tuple[str | None, str | None]:
+    """`(password, access_token)` to log in with, refreshing a stale OAuth token
+    first.
+
+    `_imap_secret` alone hands IMAP the access token as stored, and nothing on
+    the IMAP path ever refreshed it: an XOAUTH2 mailbox logged in for about an
+    hour, then every poll and IDLE attempt was refused and the mailbox was
+    flagged "the server rejected the stored password". The API path has always
+    gone through `current_access_token`; this is the same door."""
+    if cred.kind == "oauth_token":
+        from envelock.channels.mail.oauth_refresh import current_access_token
+
+        tok = await current_access_token(session, cred.mailbox_id)
+        return (None, tok[0]) if tok else (None, None)
+    return _imap_secret(cred)
+
+
+async def clear_sync_request(
+    session: AsyncSession, mailbox_id: UUID, requested: datetime | None
+) -> None:
+    """Answer a push notification or "Sync now" — unless a newer one arrived.
+
+    The flag is set by the API while a sync may already be running. Clearing it
+    unconditionally when that sync finished erased a request the sync had never
+    seen, and the message it announced waited for the fallback poll. Only the
+    value this sync started from is cleared; a fresh stamp survives and is
+    drained again."""
+    if requested is None:
+        return
+    from sqlalchemy import update
+
+    await session.execute(
+        update(Mailbox)
+        .where(Mailbox.id == mailbox_id, Mailbox.sync_requested_at == requested)
+        .values(sync_requested_at=None)
+        .execution_options(synchronize_session=False)
+    )
+
+
 async def sync_mailbox(
     session: AsyncSession,
     mailbox: Mailbox,
     *,
     client_factory=None,  # noqa: ANN001 — imap_sync.ClientFactory, injected in tests
+    light: bool = False,
 ) -> dict:
-    """Poll one mailbox once and analyse every new message. Commits on success."""
+    """Poll one mailbox once and analyse every new message. Commits on success.
+
+    `light` is the sync an IDLE wake runs: new mail only. The read-watch and the
+    Sent-folder scan are two more logins and up to twenty full downloads, and
+    they are not what the wake is for — the next poll runs them. Our own
+    protected-copy APPEND wakes IDLE as well, so paying for them per wake cost
+    two full syncs for every rewritten message."""
     from envelock.db import set_current_tenant
 
     set_current_tenant(mailbox.tenant_id)  # scope RLS to this mailbox's tenant
+    requested = mailbox.sync_requested_at
     cred = (
         await session.execute(
             select(MailboxCredential).where(MailboxCredential.mailbox_id == mailbox.id)
@@ -270,7 +320,7 @@ async def sync_mailbox(
         return {"ok": False, "reason": "no imap credential", "fetched": 0}
 
     try:
-        password, access_token = _imap_secret(cred)
+        password, access_token = await _login_secret(session, cred)
         if password is None and access_token is None:
             return {
                 "ok": False,
@@ -377,6 +427,17 @@ async def sync_mailbox(
                     "title": pr.assessment.title if pr.assessment else None,
                 }
             )
+            # Notify first, enforce after. The push lands within a second and
+            # whoever opens it must find the alert — not wait behind a
+            # quarantine MOVE or a protected-copy APPEND, each a fresh login and
+            # the second a full upload of the message. Nothing in a notification
+            # depends on the outcome: the report states what the tier does.
+            await session.commit()
+            await deliver_pending(session, alert_id=pr.alert_id)
+            # At once, not at the end of the sync: `deliver_pending` holds the
+            # rows it claimed until a commit, and a later rollback in this sync
+            # would put them back to pending for the scheduler to send again.
+            await session.commit()
             # What we do to the message itself is decided by tier, because the
             # tiers are *defined* by required action (PRD §8):
             #
@@ -443,11 +504,6 @@ async def sync_mailbox(
                     banner_allowed=tier is AlertTier.HIGH,
                 ):
                     rewritten += 1
-            # Commit before notifying: the push lands within a second, and
-            # whoever opens it must find the alert — not wait for this sync's
-            # read-watch and Sent-folder scan to finish first.
-            await session.commit()
-            await deliver_pending(session, alert_id=pr.alert_id)
         elif protected and settings.link_rewrite_enabled and event.urls:
             # Feature 1's core: mail that looks clean NOW is exactly the mail
             # whose links get weaponised later, so its links are rewritten to
@@ -458,7 +514,7 @@ async def sync_mailbox(
                 host=host, port=port, security=security,
                 username=username, password=password,
                 access_token=access_token, client_factory=client_factory,
-                        pin_sha256=pin,
+                pin_sha256=pin,
             ):
                 rewritten += 1
 
@@ -474,17 +530,19 @@ async def sync_mailbox(
     # a message someone opened. Only for mailboxes whose owner has armed the
     # detection and that have a sensor to vouch for them — without a sensor
     # every read is unvouched, and without arming a phone read is an "intruder".
-    reads = await _watch_reads(
-        session, mailbox, cred,
-        host=host, port=port, security=security, username=username,
-        password=password, access_token=access_token,
-        client_factory=client_factory, pin_sha256=pin, owned=owned,
-    )
+    reads = {"observed": 0, "alerted": 0}
+    if not light:
+        reads = await _watch_reads(
+            session, mailbox, cred,
+            host=host, port=port, security=security, username=username,
+            password=password, access_token=access_token,
+            client_factory=client_factory, pin_sha256=pin, owned=owned,
+        )
 
     # Outbound (Sent folder): A12 reply-stall data + C5 signature watch. Read-only
     # and best-effort — a Sent-folder quirk must never fail an otherwise good poll.
     outbound = {"outbound_ingested": 0, "signature_alert": False}
-    if settings.outbound_scan_enabled:
+    if settings.outbound_scan_enabled and not light:
         outbound = await _scan_sent(
             session, mailbox,
             host=host, port=port, security=security, username=username,
@@ -498,8 +556,9 @@ async def sync_mailbox(
     if result.highest_uid is not None:
         cred.imap_last_uid = result.highest_uid
     mailbox.last_sync_at = datetime.now(UTC)
-    # This poll answers any "Sync now" the API could not carry out itself.
-    mailbox.sync_requested_at = None
+    # This poll answers any "Sync now" the API could not carry out itself — the
+    # one it started from, not one pressed while it ran.
+    await clear_sync_request(session, mailbox.id, requested)
     # A successful poll clears any prior connection problem.
     if mailbox.needs_reconnect:
         mailbox.needs_reconnect = False
@@ -533,14 +592,25 @@ async def _scan_sent(
 
     Isolated here (not inline) so a sent-mail failure is contained: the main poll
     has already committed its work conceptually, and the owner's inbox protection
-    must not hinge on whether their provider exposes a Sent folder over IMAP."""
+    must not hinge on whether their provider exposes a Sent folder over IMAP.
+
+    Only mail sent since the last look is downloaded. Every poll used to fetch
+    the twenty newest sent messages in full — attachments included — for every
+    mailbox, every minute, and that download was most of what a poll cost."""
+    cursor = _SENT_CURSOR.get(mailbox.id)
     result = await asyncio.to_thread(
         imap_sync.fetch_sent,
-        limit=20, client_factory=client_factory, **conn,
+        limit=20, client_factory=client_factory,
+        uidvalidity=cursor[0] if cursor else None,
+        since_uid=cursor[1] if cursor else None,
+        **conn,
     )
-    if not result.ok or not result.messages:
-        if not result.ok:
-            logger.info("imap sent-scan skipped for %s: %s", mailbox.id, result.error)
+    if not result.ok:
+        logger.info("imap sent-scan skipped for %s: %s", mailbox.id, result.error)
+        return {"outbound_ingested": 0, "signature_alert": False}
+    if not result.messages:
+        if result.highest_uid is not None:
+            _SENT_CURSOR[mailbox.id] = (result.uidvalidity, result.highest_uid)
         return {"outbound_ingested": 0, "signature_alert": False}
 
     from envelock.channels.mail.api_fetch import FetchedMessage
@@ -552,9 +622,20 @@ async def _scan_sent(
         else SourceMechanism.IMAP_POLL
     )
     fetched = [FetchedMessage(ref=str(m.uid), raw=m.raw) for m in result.messages]
-    return await process_outbound(
+    outcome = await process_outbound(
         session, mailbox, fetched, source=source, owned=owned, recipients=recipients,
     )
+    # Advanced only once the batch went through: a failure above is retried.
+    if result.highest_uid is not None:
+        _SENT_CURSOR[mailbox.id] = (result.uidvalidity, result.highest_uid)
+    return outcome
+
+
+#: The newest Sent-folder UID handed to the outbound processor, per mailbox,
+#: with that folder's UIDVALIDITY. In memory on purpose: after a restart the
+#: first poll looks at the last twenty sent messages once, which is what every
+#: poll used to cost.
+_SENT_CURSOR: dict[UUID, tuple[int | None, int]] = {}
 
 
 async def _watch_reads(
@@ -642,7 +723,7 @@ async def backfill_mailbox(
 
     set_current_tenant(mailbox.tenant_id)
     try:
-        password, access_token = _imap_secret(cred)
+        password, access_token = await _login_secret(session, cred)
     except CryptoError:
         return {"ok": False, "reason": "credential could not be decrypted", "analysed": 0}
 
@@ -890,7 +971,23 @@ async def _run_queued_backfill(mailbox_id, days: int, *, client_factory=None) ->
 _SYNC_LOCKS: dict[UUID, asyncio.Lock] = {}
 
 
-async def _sync_one(mailbox_id: UUID, *, client_factory=None) -> dict | None:  # noqa: ANN001
+#: Semaphores shared by every task of one event loop. asyncio primitives bind to
+#: the loop that first waits on them, so a plain module-level one breaks the
+#: moment a second loop uses it (a re-elected leader, every test).
+_LOOP_SEMAPHORES: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+
+def shared_semaphore(name: str, size: int) -> asyncio.Semaphore:
+    """The semaphore called `name` for the running loop, created at `size`."""
+    per_loop = _LOOP_SEMAPHORES.setdefault(asyncio.get_running_loop(), {})
+    if name not in per_loop:
+        per_loop[name] = asyncio.Semaphore(max(1, size))
+    return per_loop[name]
+
+
+async def _sync_one(
+    mailbox_id: UUID, *, client_factory=None, light: bool = False  # noqa: ANN001
+) -> dict | None:
     """Load and sync one mailbox in its own session. Never raises."""
     from envelock.db_rls import system_scope
 
@@ -901,20 +998,42 @@ async def _sync_one(mailbox_id: UUID, *, client_factory=None) -> dict | None:  #
     # `async with`, it cannot share its clause.)
     lock = _SYNC_LOCKS.setdefault(mailbox_id, asyncio.Lock())
     with system_scope("imap poll: load mailbox"):
-        async with lock, get_sessionmaker()() as session:
-            mailbox = await session.get(Mailbox, mailbox_id)
-            if mailbox is None:
-                return None
+        async with lock:
+            # The load is inside the try on purpose: a database out of
+            # connections fails right here, and outside the try that escaped the
+            # cycle's gather and marked the whole poller crashed.
             try:
-                return await sync_mailbox(session, mailbox, client_factory=client_factory)
+                async with get_sessionmaker()() as session:
+                    mailbox = await session.get(Mailbox, mailbox_id)
+                    if mailbox is None:
+                        return None
+                    return await sync_mailbox(
+                        session, mailbox, client_factory=client_factory, light=light
+                    )
             except Exception:  # noqa: BLE001 — never let one mailbox kill the cycle
                 logger.exception("imap: unexpected error polling mailbox %s", mailbox_id)
                 return {"crashed": True}
 
 
-async def run_imap_poll_cycle(*, client_factory=None) -> dict:  # noqa: ANN001
+#: Mailboxes with a poll in flight — queued for a slot, or syncing. A cycle no
+#: longer waits for its slowest mailbox, so the next one can start while an
+#: earlier poll is still out; it skips those instead of queueing a second.
+_POLLING: set[UUID] = set()
+
+#: Polls still running when their cycle moved on. Held so the tasks are not
+#: garbage-collected mid-await (asyncio keeps only a weak reference).
+_STRAGGLERS: set[asyncio.Task] = set()
+
+
+async def run_imap_poll_cycle(*, client_factory=None, deadline: float | None = None) -> dict:  # noqa: ANN001
     """Poll every connected IMAP mailbox once. Each mailbox gets its own session
-    so a failure is isolated. Returns an aggregate summary for diagnostics."""
+    so a failure is isolated. Returns an aggregate summary for diagnostics.
+
+    With `deadline`, returns after that many seconds even if some mailboxes are
+    still syncing. They carry on in the background and the next cycle skips
+    them. Waiting for every one made the slowest mail server set the cadence
+    for all of them: one half-dead host (each blocking step has a 30-second
+    timeout) delayed every mailbox's next poll by as long as it took to fail."""
     from time import monotonic
 
     from envelock.db_rls import system_scope
@@ -937,22 +1056,46 @@ async def run_imap_poll_cycle(*, client_factory=None) -> dict:  # noqa: ANN001
     # (each poll holds a database connection and a thread while it waits on the
     # network) and one per mail server, because providers cap simultaneous
     # connections per source IP and answer a burst by refusing all of them.
+    # Both are shared across cycles: one that overlaps a straggler from the last
+    # must not get a fresh budget of its own on top.
     settings = get_settings()
-    overall = asyncio.Semaphore(max(1, settings.imap_poll_concurrency))
+    overall = shared_semaphore("imap-poll", settings.imap_poll_concurrency)
     per_host = max(1, settings.imap_max_connections_per_egress_ip)
-    host_gates: dict[str, asyncio.Semaphore] = {}
 
     async def _poll(mailbox_id: UUID) -> dict | None:
-        gate = host_gates.setdefault(hosts.get(mailbox_id, ""), asyncio.Semaphore(per_host))
-        async with overall, gate:
-            return await _sync_one(mailbox_id, client_factory=client_factory)
+        lock = _SYNC_LOCKS.get(mailbox_id)
+        if mailbox_id in _POLLING or (lock is not None and lock.locked()):
+            # Already being read — an IDLE wake, or a slow server left over
+            # from the last cycle. Queueing behind it would only hold a slot.
+            return {"busy": True}
+        _POLLING.add(mailbox_id)
+        try:
+            gate = shared_semaphore(f"imap-host:{hosts.get(mailbox_id, '')}", per_host)
+            async with overall, gate:
+                return await _sync_one(mailbox_id, client_factory=client_factory)
+        finally:
+            _POLLING.discard(mailbox_id)
+
+    tasks = [asyncio.create_task(_poll(m)) for m in mailbox_ids]
+    finished = tasks
+    if tasks:
+        done, pending = await asyncio.wait(tasks, timeout=deadline)
+        for task in pending:
+            _STRAGGLERS.add(task)
+            task.add_done_callback(_STRAGGLERS.discard)
+        finished = [t for t in tasks if t in done]
 
     totals = {
         "mailboxes": 0, "fetched": 0, "alerted": 0,
         "quarantined": 0, "rewritten": 0, "errors": 0,
+        "busy": 0, "running": len(tasks) - len(finished),
     }
-    for summary in await asyncio.gather(*(_poll(m) for m in mailbox_ids)):
+    for task in finished:
+        summary = task.result()
         if summary is None:
+            continue
+        if summary.get("busy"):
+            totals["busy"] += 1
             continue
         if summary.get("crashed"):
             totals["errors"] += 1
@@ -1023,7 +1166,7 @@ async def _idle_connection(mailbox_id: UUID) -> dict | None:
             if cred is None or not cred.imap_host:
                 return None
             try:
-                password, access_token = _imap_secret(cred)
+                password, access_token = await _login_secret(session, cred)
             except CryptoError:
                 return None
             if password is None and access_token is None:
@@ -1036,7 +1179,30 @@ async def _idle_connection(mailbox_id: UUID) -> dict | None:
                 "password": password,
                 "access_token": access_token,
                 "pin_sha256": cred.imap_cert_sha256,
+                # Mail that landed while no session was listening — a reconnect,
+                # a backoff — is announced by nobody; the session compares the
+                # folder's UIDNEXT with this and wakes a sync if it moved.
+                "since_uid": cred.imap_last_uid,
             }
+
+
+#: A session that held IDLE at least this long proved the credential and the
+#: network path, so the drop that ended it does not count toward the backoff.
+IDLE_HEALTHY_SECONDS = 60.0
+
+#: Backoff unit: a reconnect waits this times 2**(failures in a row), up to 300 s.
+IDLE_BACKOFF_SECONDS = 1.0
+
+
+async def _wake_sync(mailbox_id: UUID) -> dict | None:
+    """The sync an IDLE wake runs: light (no read-watch or Sent scan — the poll
+    runs those), and inside a small budget of its own. Wakes used to bypass every
+    limit, so one phishing run reaching every Protected mailbox of a tenant at
+    once started as many syncs, each holding a database connection across its
+    IMAP round trips, on top of the poll's — and ran the pool dry for both."""
+    slots = shared_semaphore("imap-idle-sync", get_settings().imap_idle_sync_concurrency)
+    async with slots:
+        return await _sync_one(mailbox_id, light=True)
 
 
 async def _idle_watch(mailbox_id: UUID, release: threading.Event) -> None:
@@ -1053,7 +1219,7 @@ async def _idle_watch(mailbox_id: UUID, release: threading.Event) -> None:
             await wake.wait()
             wake.clear()
             try:
-                await _sync_one(mailbox_id)
+                await _wake_sync(mailbox_id)
             except Exception:  # noqa: BLE001 — the next arrival, or the poll, retries
                 logger.exception("imap idle: sync failed for mailbox %s", mailbox_id)
 
@@ -1061,6 +1227,7 @@ async def _idle_watch(mailbox_id: UUID, release: threading.Event) -> None:
     attempt = 0
     try:
         while not release.is_set():
+            began = loop.time()
             try:
                 conn = await _idle_connection(mailbox_id)
                 if conn is None:
@@ -1076,9 +1243,18 @@ async def _idle_watch(mailbox_id: UUID, release: threading.Event) -> None:
                     ),
                 )
             except Exception as exc:  # noqa: BLE001
-                attempt += 1
-                logger.info("imap idle: %s dropped (%s); retrying", mailbox_id, exc)
-                await asyncio.sleep(min(2**attempt, 300))
+                # Only failures in a row escalate the wait. It used to reset
+                # only when a session lasted its full refresh period, so any
+                # server that ends sessions early — a BYE on a timer, a load
+                # balancer's connection age, a NAT drop found at the renew —
+                # ratcheted every reconnect to five minutes for good.
+                healthy = loop.time() - began >= IDLE_HEALTHY_SECONDS
+                attempt = 1 if healthy else attempt + 1
+                delay = min(IDLE_BACKOFF_SECONDS * 2**attempt, 300.0)
+                logger.info(
+                    "imap idle: %s dropped (%s); retrying in %.3gs", mailbox_id, exc, delay
+                )
+                await asyncio.sleep(delay)
                 continue
             attempt = 0
             if not supported:
@@ -1092,9 +1268,12 @@ async def _idle_watch(mailbox_id: UUID, release: threading.Event) -> None:
 async def _reconcile_idle() -> None:
     """Hold IDLE on exactly the Protected IMAP mailboxes this process polls.
 
-    Each server gets at most `imap_max_connections_per_egress_ip` IDLE
-    connections; past that a mailbox stays on the poll rather than tripping the
-    provider's per-IP limit for everyone."""
+    Each server gets at most `imap_idle_max_per_host` IDLE connections (by
+    default `imap_max_connections_per_egress_ip`); past that a mailbox stays on
+    the poll rather than tripping the provider's per-IP limit for everyone. The
+    cap is per mail server across every customer — imap.gmail.com or
+    imap.zoho.com fill it fast — so the mailboxes it leaves out are counted and
+    logged, never dropped silently."""
     from envelock.db_rls import system_scope
 
     with system_scope("imap idle: select protected mailboxes"):
@@ -1113,12 +1292,19 @@ async def _reconcile_idle() -> None:
             task.cancel()
             del _IDLE[mailbox_id]
 
-    per_host = max(1, get_settings().imap_max_connections_per_egress_ip)
+    settings = get_settings()
+    per_host = max(
+        1, settings.imap_idle_max_per_host or settings.imap_max_connections_per_egress_ip
+    )
     held = Counter(hosts.get(m, "") for m in _IDLE)
     before = len(_IDLE)
+    capped: Counter[str] = Counter()
     for mailbox_id in wanted:
         host = hosts.get(mailbox_id, "")
-        if mailbox_id in _IDLE or held[host] >= per_host:
+        if mailbox_id in _IDLE:
+            continue
+        if held[host] >= per_host:
+            capped[host] += 1
             continue
         held[host] += 1
         release = threading.Event()
@@ -1126,8 +1312,25 @@ async def _reconcile_idle() -> None:
     # Logged and counted in the health snapshot, so "is real-time on?" is a
     # fact you can check rather than one you assume.
     _LAST_CYCLE["idle_mailboxes"] = len(_IDLE)
+    _LAST_CYCLE["idle_capped"] = sum(capped.values())
     if len(_IDLE) != before:
         logger.info("imap idle: holding %d protected mailbox(es) in IDLE", len(_IDLE))
+    if capped != _IDLE_CAPPED:
+        if capped:
+            logger.warning(
+                "imap idle: %d protected mailbox(es) left on the poll — the IDLE cap "
+                "of %d per mail server is full (%s). Raise ENVELOCK_IMAP_IDLE_MAX_PER_HOST "
+                "once the provider's per-IP connection limit is measured.",
+                sum(capped.values()), per_host,
+                ", ".join(f"{h or '?'}: {n}" for h, n in sorted(capped.items())),
+            )
+        _IDLE_CAPPED.clear()
+        _IDLE_CAPPED.update(capped)
+
+
+#: Last reported per-host count of Protected mailboxes the IDLE cap left out, so
+#: the warning is logged when it changes rather than every cycle.
+_IDLE_CAPPED: Counter[str] = Counter()
 
 
 def _release_idle() -> None:
@@ -1156,11 +1359,14 @@ async def imap_poll_loop(stop: asyncio.Event, *, interval_seconds: int) -> None:
     )
     logger.info("imap poll loop started (interval=%ss)", interval_seconds)
     idle_enabled = get_settings().imap_idle_enabled
+    loop = asyncio.get_running_loop()
     try:
         while not stop.is_set():
+            started = loop.time()
             try:
-                started = asyncio.get_running_loop().time()
-                totals = await run_imap_poll_cycle()
+                # A cycle may not outlast the interval: a mailbox still syncing
+                # then finishes in the background and the next cycle skips it.
+                totals = await run_imap_poll_cycle(deadline=interval_seconds)
                 if totals["mailboxes"]:
                     # The duration is the capacity signal: once a cycle takes most
                     # of the interval, new mail starts arriving late (LAUNCH-GUIDE,
@@ -1179,9 +1385,14 @@ async def imap_poll_loop(stop: asyncio.Event, *, interval_seconds: int) -> None:
                     await _reconcile_idle()
                 except Exception:  # noqa: BLE001 — IDLE is latency; the poll still covers every mailbox
                     logger.exception("imap idle: could not update watchers")
-            # Sleep the interval, but wake immediately if asked to stop.
+            # Cycles START `interval` apart. Sleeping the full interval after
+            # each one made the real period interval + cycle time, so a Monitored
+            # mailbox's "60 s" was a minute plus however long everyone else's
+            # poll took. Wake immediately if asked to stop.
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(stop.wait(), timeout=interval_seconds)
+                await asyncio.wait_for(
+                    stop.wait(), timeout=max(0.0, interval_seconds - (loop.time() - started))
+                )
     finally:
         _release_idle()
     logger.info("imap poll loop stopped")

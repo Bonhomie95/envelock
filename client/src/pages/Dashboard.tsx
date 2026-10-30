@@ -73,6 +73,7 @@ import {
   disablePush,
   enablePush,
   getPushState,
+  needsHomeScreenForPush,
   type PushState,
 } from "../lib/push";
 
@@ -3008,9 +3009,10 @@ function UpgradePlans({
 }
 
 /* L1 browser-push toggle. Reflects THIS browser's real subscription state and lets
-   the user turn alert push on/off. Hidden entirely when the browser can't
-   do push or the deployment has no VAPID key configured — no dead controls. */
-function PushAlerts() {
+   the user turn alert push on/off. Hidden when the browser can't do push or the
+   deployment has no VAPID key configured — no dead controls — except in an
+   iPhone/iPad browser tab, where it says how to get push (the Home Screen). */
+export function PushAlerts() {
   const [state, setState] = useState<PushState | "loading">("loading");
   const [busy, setBusy] = useState(false);
   // Declared with the other hooks, NOT after the early return below. It used to
@@ -3030,6 +3032,18 @@ function PushAlerts() {
     };
   }, []);
 
+  // iPhone/iPad: push exists only once Envelock is on the Home Screen, so say
+  // how to get there rather than hiding the panel.
+  if (state === "unsupported" && needsHomeScreenForPush())
+    return (
+      <div className="panel p-5">
+        <h2 className="sect-label">Browser alerts</h2>
+        <p className="fg-3 mt-2 text-xs leading-relaxed">
+          On iPhone and iPad, alerts arrive once Envelock is on your Home Screen: tap
+          Share, then Add to Home Screen, open Envelock from there and turn alerts on.
+        </p>
+      </div>
+    );
   if (state === "loading" || state === "unsupported" || state === "unavailable")
     return null;
 

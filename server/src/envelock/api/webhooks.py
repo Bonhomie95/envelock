@@ -30,7 +30,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, Request, Response
-from sqlalchemy import select
+from sqlalchemy import func, or_, select
 
 from envelock.auth.deps import SystemScoped
 from envelock.db import get_sessionmaker
@@ -53,9 +53,13 @@ MAX_VALIDATION_TOKEN = 512
 
 
 async def _fetch_mailbox(
-    address: str, *, tenant_id: UUID | None, require_source: str | None = None
+    address: str,
+    *,
+    tenant_id: UUID | None,
+    require_source: str | None = None,
+    renew_push: bool = False,
 ) -> bool:
-    """Flag one mailbox for an immediate sync, scoped to the tenant the
+    """Flag a mailbox for an immediate sync, scoped to the tenant the
     notification was issued for. True when a mailbox matched.
 
     Flag, don't fetch: this runs in the API, which under split key custody can
@@ -70,6 +74,14 @@ async def _fetch_mailbox(
     hold, the Gmail path also requires the mailbox to actually be configured for
     the named provider source — a forged notification for an IMAP-only mailbox
     matches nothing.
+
+    The flag is stamped afresh on every notification, never only when it is
+    empty: a sync clears the stamp it started from, so a notification landing
+    while that sync runs must leave a newer one behind — otherwise the message
+    it announced waits for the fallback poll.
+
+    `renew_push` (a Graph lifecycle event) also marks the subscription for the
+    worker to renew or recreate on its next pass.
     """
     async with get_sessionmaker()() as session:
         query = select(Mailbox).where(Mailbox.is_active.is_(True))
@@ -78,17 +90,29 @@ async def _fetch_mailbox(
         try:
             query = query.where(Mailbox.id == UUID(address))
         except ValueError:
-            query = query.where(Mailbox.address == address.lower())
+            wanted = address.strip().lower()
+            # Gmail names the account the token reads, which is the mailbox's
+            # `connected_address` when that differs from the label it was
+            # added under (an alias, a second domain).
+            query = query.where(
+                or_(
+                    Mailbox.address == wanted,
+                    func.lower(Mailbox.connected_address) == wanted,
+                )
+            )
         if tenant_id is not None:
             query = query.where(Mailbox.tenant_id == tenant_id)
         if require_source is not None:
             query = query.where(Mailbox.sources.contains([require_source]))
-        mailbox = (await session.execute(query)).scalars().first()
-        if mailbox is None:
+        mailboxes = (await session.execute(query)).scalars().all()
+        if not mailboxes:
             return False
-        if mailbox.sync_requested_at is None:
-            mailbox.sync_requested_at = datetime.now(UTC)
-            await session.commit()
+        now = datetime.now(UTC)
+        for mailbox in mailboxes:
+            mailbox.sync_requested_at = now
+            if renew_push:
+                mailbox.push_expires_at = None
+        await session.commit()
         return True
 
 
@@ -114,8 +138,18 @@ async def graph_notifications(request: Request) -> Response:
             logger.warning("graph webhook rejected: clientState did not verify")
             continue
         tenant_id, address = verified
+        # Lifecycle events arrive here too (the subscription names this URL for
+        # both). `subscriptionRemoved` and `reauthorizationRequired` mean push
+        # has stopped or is about to: have the worker renew or recreate it, and
+        # sync now for anything already missed. `missed` asks for the sync only.
+        lifecycle = note.get("lifecycleEvent")
+        if lifecycle:
+            logger.info("graph lifecycle event %s for mailbox %s", lifecycle, address)
         try:
-            await _fetch_mailbox(address, tenant_id=tenant_id)
+            if lifecycle in ("subscriptionRemoved", "reauthorizationRequired"):
+                await _fetch_mailbox(address, tenant_id=tenant_id, renew_push=True)
+            else:
+                await _fetch_mailbox(address, tenant_id=tenant_id)
         except Exception as exc:  # noqa: BLE001 — never fail a provider callback
             logger.warning("graph webhook fetch failed for %s: %s", address, exc)
     return Response(status_code=202)

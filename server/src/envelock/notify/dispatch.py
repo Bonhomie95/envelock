@@ -33,12 +33,6 @@ from envelock.notify.senders import Dispatcher, Notification, SendResult, notifi
 from envelock.obs.metrics import observe_delivery
 from envelock.platform import alerts as alert_svc
 
-#: Push-service responses that mean the subscription is dead for good — the
-#: browser unsubscribed, cleared its data, or the endpoint expired. We delete the
-#: row so it stops failing on every future alert (and a stale one no longer
-#: starves a live sibling subscription on another device).
-_PUSH_GONE_MARKERS = ("410", "404", "gone", "unsubscribed", "expired", "not found")
-
 
 async def _push_to_all(
     session: AsyncSession,
@@ -70,7 +64,10 @@ async def _push_to_all(
             delivered = True
             continue
         last_error = result.reason
-        if any(m in result.reason.lower() for m in _PUSH_GONE_MARKERS):
+        # The push service said this subscription is dead for good (the browser
+        # unsubscribed, cleared its data, or the endpoint expired). Forget it so
+        # it stops failing on every future alert.
+        if result.gone:
             await session.delete(sub)
     return SendResult(Rung.L1_PUSH, delivered, "web push sent" if delivered else last_error)
 
@@ -120,13 +117,22 @@ async def deliver_pending(
     dispatcher: Dispatcher | None = None,
 ) -> list[NotificationDelivery]:
     """Send every pending delivery for an alert (or a whole tenant). Idempotent:
-    a row leaves `pending` once attempted, so re-running never double-sends."""
+    a row leaves `pending` once attempted, so re-running never double-sends.
+
+    The rows are claimed (`FOR UPDATE SKIP LOCKED`), not just read. Two drains
+    run at once by design — the sync that raised the alert, and the scheduler's
+    sweep of everything still pending — and with a plain SELECT both saw the
+    same row as pending and both sent it: the email (and the SMS) went twice.
+    A row another drain holds is its to send, so it is skipped, never waited on.
+    The claim lasts until the caller commits, so callers commit straight after.
+    """
     dispatcher = dispatcher or Dispatcher()
     query = select(NotificationDelivery).where(NotificationDelivery.status == "pending")
     if alert_id is not None:
         query = query.where(NotificationDelivery.alert_id == alert_id)
     if tenant_id is not None:
         query = query.where(NotificationDelivery.tenant_id == tenant_id)
+    query = query.with_for_update(skip_locked=True)
 
     rows = (await session.execute(query)).scalars().all()
     touched: list[NotificationDelivery] = []
