@@ -80,6 +80,18 @@ def _history() -> list[bytes]:
     ]
 
 
+#: The same, from a UK vendor that dates its invoices and pays by sort code.
+def _dated_history() -> list[bytes]:
+    return [
+        msg(
+            f"Invoice 50{n} dated 2026-0{n + 6}-28. Pay by bank transfer to "
+            "sort code 60-16-13, account 31926819.",
+            subject=f"Invoice 50{n}",
+        )
+        for n in (1, 2, 3)
+    ]
+
+
 CASES: list[Case] = []
 
 
@@ -172,6 +184,23 @@ _add(
         ],
         why="Fullwidth digit forms. NFKC folds them; without that the regex sees nothing.",
         tags=("A1", "evasion", "unicode"),
+    )
+)
+
+_add(
+    Case(
+        id="bank-change-sort-code",
+        label="fraud",
+        messages=[
+            *_dated_history(),
+            msg(
+                "Invoice 504 dated 2026-10-28. Our bank has changed: sort code "
+                "40-11-62, account 87654321. Please pay today.",
+                subject="Invoice 504",
+            ),
+        ],
+        why="The wedge with UK details: a known vendor's sort code changes.",
+        tags=("A1", "wedge", "sortcode"),
     )
 )
 
@@ -323,6 +352,72 @@ _add(
             "high-severity alert then every onboarding is one too."
         ),
         tags=("precision", "first-contact"),
+    )
+)
+
+_add(
+    Case(
+        id="dated-invoice-known-vendor",
+        label="benign",
+        messages=[
+            *_dated_history(),
+            msg(
+                "Invoice 504 dated 2026-10-28. Pay by bank transfer to sort code "
+                "60-16-13, account 31926819.",
+                subject="Invoice 504",
+            ),
+        ],
+        why=(
+            "Same vendor, same account, a new month. The sort-code pattern read "
+            "the date 2026-07-28 as 202607 and learned it as an account, so every "
+            "later month's invoice was a 'bank details changed' Critical."
+        ),
+        tags=("precision", "A1", "sortcode"),
+    )
+)
+
+_add(
+    Case(
+        id="invoice-link-token-known-vendor",
+        label="benign",
+        messages=[
+            *_history(),
+            msg(
+                "Invoice 406 is ready: https://portal.northwind-supplies.example/v"
+                "?t=x7Kq-DE89370400440532013000Qz9wLm . Account IBAN "
+                f"{GOOD_IBAN} as always. Payment terms 30 days.",
+                subject="Invoice 406",
+            ),
+        ],
+        why=(
+            "A routine invoice whose view-online link carries a token. Some "
+            "random tokens contain a run that passes the IBAN checksum, which "
+            "read as a second account: a Critical about a link."
+        ),
+        tags=("precision", "A1"),
+    )
+)
+
+_add(
+    Case(
+        id="html-only-routine-invoice",
+        label="benign",
+        messages=[
+            *_history(),
+            msg(
+                "<html><head><style>p{color:#333333}</style></head><body>"
+                f"<p>Invoice 404 attached. Account IBAN {GOOD_IBAN} as always.</p>"
+                "</body></html>",
+                subject="Invoice 404",
+                content_type="text/html; charset=utf-8",
+            ),
+        ],
+        why=(
+            "A routine invoice in HTML only, the way accounting systems send "
+            "them. The colour #333333 in its stylesheet read as sort code "
+            "333333: a 'bank details changed' Critical about a font colour."
+        ),
+        tags=("precision", "A1", "html"),
     )
 )
 
