@@ -16,6 +16,7 @@ mailbox surgery; the worker decides when.
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
 import logging
@@ -23,6 +24,8 @@ import re
 from dataclasses import dataclass, field
 from email import message_from_bytes, policy
 from email.message import EmailMessage
+
+from envelock.channels.mail.parser import HREF_RE, normalise_href
 
 logger = logging.getLogger("envelock.enforce")
 
@@ -134,6 +137,23 @@ def _rewrite(text: str, link_map: dict[str, str], redirect_base: str) -> str:
     return text
 
 
+def _rewrite_hrefs(html: str, link_map: dict[str, str], redirect_base: str) -> str:
+    """Point each href at the redirector by what it resolves to, not its spelling.
+
+    The literal pass in `_rewrite` only finds a URL spelled the way the parser
+    stored it. `href="&#104;ttps://..."` resolves to that URL in every browser
+    but never matched, so the click went straight to the page while the visible
+    anchor text was the part rewritten.
+    """
+
+    def swap(match: re.Match[str]) -> str:
+        url = normalise_href(next(g for g in match.groups() if g is not None))
+        token = link_map.get(url) if url else None
+        return match.group(0) if token is None else f'href="{redirect_base}/r/{token}"'
+
+    return HREF_RE.sub(swap, html)
+
+
 def build_protected_copy(
     raw: bytes,
     *,
@@ -159,13 +179,24 @@ def build_protected_copy(
         subtype = part.get_content_subtype()
         if subtype not in ("plain", "html"):
             continue
+        raw_bytes = False
         try:
             content = part.get_content()
+        except (LookupError, ValueError):
+            # An unknown charset. Skipping the part left its links unrewritten
+            # while every client still rendered them. surrogateescape gives each
+            # byte back untouched on the way out, so only the links change.
+            payload = part.get_payload(decode=True)
+            if not isinstance(payload, bytes):
+                continue
+            content, raw_bytes = payload.decode("utf-8", errors="surrogateescape"), True
         except Exception as exc:  # noqa: BLE001 — undecodable part: leave it untouched
             # Logged, not silent: a part we cannot decode is a part whose links
             # go unrewritten, and that is worth being able to find later.
             logger.debug("skipping undecodable part %s: %s", subtype, exc)
             continue
+        if subtype == "html":
+            content = _rewrite_hrefs(content, link_map, redirect_base)
         content = _rewrite(content, link_map, redirect_base)
         if banner is not None and subtype == "html" and not banner_done_html:
             injected = banner_html(banner)
@@ -179,6 +210,14 @@ def build_protected_copy(
         elif banner is not None and subtype == "plain" and not banner_done_text:
             content = banner_text(banner) + content
             banner_done_text = True
+        if raw_bytes:
+            # Keep the part's own Content-Type, charset and all; only the body
+            # bytes change, carried as base64 so any byte survives transport.
+            data = content.encode("utf-8", errors="surrogateescape")
+            del part["Content-Transfer-Encoding"]
+            part["Content-Transfer-Encoding"] = "base64"
+            part.set_payload(base64.encodebytes(data).decode("ascii"))
+            continue
         part.set_content(content, subtype=subtype, charset="utf-8")
         # set_content on a non-multipart re-adds MIME-Version; harmless on the
         # top level, noise on a sub-part.

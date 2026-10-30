@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from functools import lru_cache
 
 from envelock.core.capabilities import Capability
 from envelock.core.enums import AlertTier, AuthResult, MailDirection
@@ -17,7 +18,12 @@ from envelock.detections.base import (
     FindingResult,
     register,
 )
-from envelock.util.domains import classify_lookalike, is_free_mail, registrable_domain
+from envelock.util.domains import (
+    classify_lookalike,
+    display_skeleton,
+    is_free_mail,
+    registrable_domain,
+)
 from envelock.util.payments import (
     extract_bank_identifiers,
     has_payment_context,
@@ -48,6 +54,23 @@ def _body(ctx: DetectionContext) -> str:
     return mail_text(mail) if mail is not None else ""
 
 
+@lru_cache(maxsize=256)
+def _html_adds_payment(text: str, html: str) -> bool:
+    """Whether the HTML part says something about money the text part does not.
+
+    Clients show the HTML of a multipart/alternative, so "please see below" in
+    text/plain and a new IBAN in text/html was a changed account nobody here
+    read: A1 silent, A2 deferring to A1, the shared fraud-account lookup missed.
+    Only a difference adds the HTML. Adding it always would count every urgency
+    word twice in ordinary mail, where both parts say the same thing.
+    """
+    shown = _strip_tags(html)
+    if has_payment_context(shown) and not has_payment_context(text):
+        return True
+    known = {b.identifier for b in extract_bank_identifiers(text)}
+    return any(b.identifier not in known for b in extract_bank_identifiers(shown))
+
+
 def mail_text(mail: MailEvent) -> str:
     """Subject, body and attachment text — everything the payment detections read."""
     parts = [mail.subject, mail.body_text]
@@ -56,7 +79,9 @@ def mail_text(mail: MailEvent) -> str:
     # reads HTML) still fired — the alert then said "no callback number on file"
     # instead of "the bank details changed". Tags stripped, entities left: the
     # identifiers the payment detections match are digits and IBAN letters.
-    if not mail.body_text and mail.body_html:
+    if mail.body_html and (
+        not mail.body_text or _html_adds_payment(mail.body_text, mail.body_html)
+    ):
         parts.append(_strip_tags(mail.body_html))
     # A1's most common real case: the changed IBAN lives inside an attached PDF or
     # Word invoice, or an image. The parser extracted that text; fold it in so the
@@ -190,10 +215,11 @@ class _A3A4A5Impersonation:
         # CEO / staff impersonation: the sender uses the name of someone at the
         # client's own company, but the email came from outside. This is the classic
         # "urgent request from the boss" fraud, and it isn't a brand lookalike.
-        display = (mail.sender.display or "").strip().lower()
+        # Folded the way it renders: "Jane D<ZWNJ>oe" showed "Jane Doe".
+        display = display_skeleton(mail.sender.display or "")
         if display and not findings and ctx.internal_names:
             for name in ctx.internal_names:
-                if len(name) >= 4 and name in display:
+                if len(name) >= 4 and display_skeleton(name) in display:
                     findings.append(
                         FindingResult(
                             service="A5",
@@ -382,7 +408,13 @@ class _A8ThreadHijack:
                     )
                 )
             prior_dkim = {t.dkim for t in ctx.thread_history if t.dkim}
-            if prior_dkim == {"pass"} and mail.authentication.dkim.value != "pass":
+            # Only against a host stamp: with none, NONE means "unknown", and
+            # earlier messages stored no result to compare (pipeline).
+            if (
+                prior_dkim == {"pass"}
+                and mail.authentication.stamped
+                and mail.authentication.dkim.value != "pass"
+            ):
                 findings.append(
                     FindingResult(
                         service="A8",

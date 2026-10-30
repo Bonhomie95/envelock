@@ -89,18 +89,29 @@ class AttachmentRef(_Base):
 
 
 class AuthenticationResults(_Base):
-    """Header-derived, free, and feeds B8."""
+    """The receiving host's own verdicts, from its stamp alone (see the parser).
+
+    Every field comes from the topmost Authentication-Results header and nothing
+    else, so B8, A8, A10, learning, the stored columns and the AI judge can only
+    ever read the host's results, never a header the sender wrote lower down.
+    """
 
     spf: AuthResult = AuthResult.NONE
     dkim: AuthResult = AuthResult.NONE
+    """PASS when any signature verified."""
     dmarc: AuthResult = AuthResult.NONE
+    """NONE when the stamp's verdict was about a different domain than From."""
     dkim_domain: str | None = None
-    """A counterparty whose DKIM signing domain suddenly changes is a signal (A10)."""
+    """The verified signing domain, preferring one aligned with From. A
+    counterparty whose signing domain suddenly changes is a signal (A10)."""
     provider_dmarc: AuthResult = AuthResult.NONE
-    """DMARC as the mailbox provider itself stamped it, on a channel where it always
-    stamps above anything the sender wrote (see the parser). `dmarc` is the first
-    result in any header, so it can be the sender's own words; this cannot. NONE
-    wherever no provider stamp is guaranteed."""
+    """`dmarc`, on a channel where the provider always stamps above anything the
+    sender wrote (Gmail API, Graph). NONE wherever no provider stamp is
+    guaranteed: an IMAP host that stamps nothing leaves the sender's header on
+    top. This is the one result the platform-notice skip believes."""
+    stamped: bool = False
+    """A host stamp was found and read. False means nothing is known: NONE then
+    means "unknown", not "unsigned"."""
 
 
 class NetworkContext(_Base):
@@ -208,6 +219,10 @@ class MailEvent(EventEnvelope):
     E2 and B2 are impossible no matter what we detect (PRD §4 fn.3). Detections
     must consult this before promising remediation in an alert.
     """
+
+    protected_copy: bool = False
+    """The raw message carries our own processed stamp for this mailbox: it is a
+    copy we wrote back, not new mail. Unforgeable (keyed HMAC)."""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
