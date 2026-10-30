@@ -235,14 +235,16 @@ _COUNTERPARTY_SERVICES = frozenset({"A1", "A2", "A7", "A9", "A10", "A11", "A13",
 
 
 def is_platform_notice(mail: MailEvent | None) -> bool:
-    """Mail that DMARC proves came from Envelock or a big provider.
+    """Mail its mailbox provider vouches came from Envelock or a big provider.
 
-    DMARC, not the From header: a spoofed alerts@envelock.org or google.com
-    fails it and is judged in full.
+    `provider_dmarc`, not the From header or `dmarc`: a spoofed alerts@envelock.org
+    or google.com fails it, and a pass the sender wrote into the message is never
+    read. Only Gmail and Graph guarantee that stamp, so on IMAP and forwarding the
+    skip does not apply and the full suite runs.
     """
     return (
         mail is not None
-        and mail.authentication.dmarc is AuthResult.PASS
+        and mail.authentication.provider_dmarc is AuthResult.PASS
         and is_platform_domain(mail.sender.domain)
     )
 

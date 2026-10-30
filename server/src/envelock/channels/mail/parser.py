@@ -81,8 +81,41 @@ def _addresses(raw: str | None) -> tuple[EmailAddress, ...]:
     return tuple(out)
 
 
-def _parse_auth_results(msg: EmailMessage) -> AuthenticationResults:
-    header = " ".join(msg.get_all("Authentication-Results", []))
+#: Channels whose mailbox provider stamps its own Authentication-Results on every
+#: inbound message, above anything the sender wrote, and the authserv-id it
+#: stamps with (Exchange Online writes none). IMAP hosts, forwarding and
+#: journaling promise no stamp, and where there is none the sender's header is on top.
+_PROVIDER_STAMP: dict[SourceMechanism, str | None] = {
+    SourceMechanism.GMAIL_API: "mx.google.com",
+    SourceMechanism.GRAPH_API: None,
+}
+
+
+def _provider_dmarc(top: str, *, source: SourceMechanism, sender_domain: str) -> AuthResult:
+    """DMARC from the provider's own stamp (the topmost header), or NONE.
+
+    The joined result below takes the first `dmarc=` in ANY header, so a sender
+    who writes `Authentication-Results: x; dmarc=pass` is believed wherever the
+    host stamps nothing, or stamps no dmarc clause. This reads only the top
+    header, only on a channel where the provider always writes it, and only for
+    the From domain we parsed.
+    """
+    if source not in _PROVIDER_STAMP:
+        return AuthResult.NONE
+    authserv = _PROVIDER_STAMP[source]
+    if authserv is not None and top.split(";", 1)[0].strip().lower() != authserv:
+        return AuthResult.NONE
+    match = re.search(r"\bdmarc=(\w+)[^;]*?\bheader\.from=([\w.-]+)", top, re.IGNORECASE)
+    if not match or registrable_domain(match.group(2)) != registrable_domain(sender_domain):
+        return AuthResult.NONE
+    return _AUTH_MAP.get(match.group(1).lower(), AuthResult.NONE)
+
+
+def _parse_auth_results(
+    msg: EmailMessage, *, source: SourceMechanism, sender_domain: str
+) -> AuthenticationResults:
+    headers = [str(h) for h in msg.get_all("Authentication-Results", [])]
+    header = " ".join(headers)
     if not header:
         return AuthenticationResults()
 
@@ -96,7 +129,11 @@ def _parse_auth_results(msg: EmailMessage) -> AuthenticationResults:
         dkim_domain = domain_match.group(1).lower()
 
     return AuthenticationResults(
-        spf=find("spf"), dkim=find("dkim"), dmarc=find("dmarc"), dkim_domain=dkim_domain
+        spf=find("spf"),
+        dkim=find("dkim"),
+        dmarc=find("dmarc"),
+        dkim_domain=dkim_domain,
+        provider_dmarc=_provider_dmarc(headers[0], source=source, sender_domain=sender_domain),
     )
 
 
@@ -257,7 +294,7 @@ def parse_message(
         body_html=html,
         attachments=attachments,
         urls=urls,
-        authentication=_parse_auth_results(msg),
+        authentication=_parse_auth_results(msg, source=source, sender_domain=sender.domain),
         received_headers=tuple(msg.get_all("Received", [])),
         # Forwarding arrives post-delivery: nothing can be quarantined no matter
         # what we detect (PRD §4 fn.3).

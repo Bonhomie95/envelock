@@ -5,9 +5,11 @@ own "Confirm your email for Envelock" message, and a MEDIUM on Google's
 "Explore your Google Workspace trial". Both came from the counterparty checks:
 "first email from envelock.org about payment" (the word "account"), and "no
 verified phone number on file for google.com". The AI judge only ever saw them
-because those rule findings opened its gate. DMARC-authenticated mail from a
-platform domain skips those checks. A spoof, or a bad link riding on a real
-platform's mail, still alerts.
+because those rule findings opened its gate.
+
+Mail whose mailbox provider stamps a DMARC pass for a platform domain now skips
+those checks. A spoof still alerts, a bad link riding on a real platform's mail
+still alerts, and a DMARC pass the sender wrote into the message is never read.
 """
 
 from __future__ import annotations
@@ -28,17 +30,23 @@ from envelock.risk.engine import RiskAssessment, assess
 
 OWNED = frozenset({"acme-widgets.com"})
 
-#: What the receiving mailbox provider stamps on delivery (Gmail's shape).
-_AUTH = (
+#: Gmail's own stamp, which it prepends on delivery above everything the sender wrote.
+_GMAIL = (
     "mx.google.com; dkim=pass header.i=@{d}; spf=pass smtp.mailfrom={d}; "
-    "dmarc={dmarc} header.from={d}"
+    "dmarc={dmarc} (p=REJECT sp=REJECT dis=NONE) header.from={d}"
 )
 
 
+def _delivered(raw: bytes, *stamps: str) -> bytes:
+    """`raw` as the mailbox holds it, with each receiving-host header on top."""
+    return "".join(f"Authentication-Results: {s}\n" for s in stamps).encode() + raw
+
+
 def _assess(
-    raw: bytes, counterparty: CounterpartyState | None = None
+    raw: bytes,
+    counterparty: CounterpartyState | None = None,
+    source: SourceMechanism = SourceMechanism.GMAIL_API,
 ) -> RiskAssessment | None:
-    source = SourceMechanism.IMAP_IDLE
     event = parse_message(
         raw, tenant_id=uuid4(), mailbox_id=uuid4(), source=source,
         owned_domains=OWNED, remediable=True,
@@ -61,7 +69,7 @@ def _quiet(assessment: RiskAssessment | None) -> bool:
 
 
 @pytest.fixture
-def verify_email(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
+async def verify_email(monkeypatch: pytest.MonkeyPatch) -> bytes:
     """The confirm-your-email message exactly as `send_mail` hands it to the relay."""
     from envelock.api.auth import _send_verification_email
     from envelock.notify import mail
@@ -74,28 +82,25 @@ def verify_email(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
 
     monkeypatch.setattr(mail, "is_configured", lambda: True)
     monkeypatch.setattr(EmailSender, "_deliver", capture)
-
-    async def build(dmarc: str) -> bytes:
-        user = SimpleNamespace(
-            id=uuid4(), tenant_id=uuid4(), email="owner@acme-widgets.com", role="owner"
-        )
-        await _send_verification_email(user)  # type: ignore[arg-type]
-        message = sent.pop()
-        message["Authentication-Results"] = _AUTH.format(d="envelock.org", dmarc=dmarc)
-        return message.as_bytes()
-
-    return build
+    user = SimpleNamespace(
+        id=uuid4(), tenant_id=uuid4(), email="owner@acme-widgets.com", role="owner"
+    )
+    await _send_verification_email(user)  # type: ignore[arg-type]
+    (message,) = sent
+    return message.as_bytes()
 
 
-async def test_envelock_verify_email_raises_nothing(verify_email) -> None:  # noqa: ANN001
-    assessment = _assess(await verify_email("pass"))
+def test_envelock_verify_email_raises_nothing(verify_email: bytes) -> None:
+    raw = _delivered(verify_email, _GMAIL.format(d="envelock.org", dmarc="pass"))
+    assessment = _assess(raw)
     assert _quiet(assessment), (
         f"Envelock's own confirm-your-email message alerted: {assessment}"
     )
 
 
-async def test_spoofed_envelock_mail_is_still_judged(verify_email) -> None:  # noqa: ANN001
-    assessment = _assess(await verify_email("fail"))
+def test_spoofed_envelock_mail_is_still_judged(verify_email: bytes) -> None:
+    raw = _delivered(verify_email, _GMAIL.format(d="envelock.org", dmarc="fail"))
+    assessment = _assess(raw)
     assert assessment is not None and assessment.is_alertable
     assert "A7" in assessment.services, "a spoof of our mail must keep the payee checks"
 
@@ -123,22 +128,21 @@ def test_envelock_alert_email_raises_nothing_after_a_baseline() -> None:
         ),
         to="owner@acme-widgets.com",
     )
-    message["Authentication-Results"] = _AUTH.format(d="envelock.org", dmarc="pass")
     learned = CounterpartyState(
         registrable_domain="envelock.org",
         message_count=12,
         known_bank_ids=frozenset({"202610"}),
     )
-    assessment = _assess(message.as_bytes(), counterparty=learned)
+    raw = _delivered(message.as_bytes(), _GMAIL.format(d="envelock.org", dmarc="pass"))
+    assessment = _assess(raw, counterparty=learned)
     assert _quiet(assessment), f"Envelock's own alert email alerted: {assessment}"
 
 
-GOOGLE_TRIAL = """\
+GOOGLE_TRIAL = b"""\
 From: Google Workspace <workspace-noreply@google.com>
 To: owner@acme-widgets.com
 Subject: Explore your Google Workspace trial
 Message-ID: <trial-1@google.com>
-Authentication-Results: {auth}
 Content-Type: text/plain
 
 Your Google Workspace trial for acme-widgets.com is active.
@@ -148,18 +152,69 @@ Manage billing: https://admin.google.com/ac/billing
 
 
 def test_google_trial_mail_raises_nothing() -> None:
-    raw = GOOGLE_TRIAL.format(auth=_AUTH.format(d="google.com", dmarc="pass"))
-    assessment = _assess(raw.encode())
+    raw = _delivered(GOOGLE_TRIAL, _GMAIL.format(d="google.com", dmarc="pass"))
+    assessment = _assess(raw)
     assert _quiet(assessment), f"Google's own account mail alerted: {assessment}"
 
 
 def test_platform_mail_still_gets_link_checks() -> None:
     """Drive, Docs and Forms carry attacker-written text on google.com's own
     DKIM, so a dangerous link there must still alert."""
-    raw = (
-        GOOGLE_TRIAL.format(auth=_AUTH.format(d="google.com", dmarc="pass"))
-        + "Shared with you: http://203.0.113.10/login\n"
+    raw = _delivered(
+        GOOGLE_TRIAL + b"Shared with you: http://203.0.113.10/login\n",
+        _GMAIL.format(d="google.com", dmarc="pass"),
     )
-    assessment = _assess(raw.encode())
+    assessment = _assess(raw)
     assert assessment is not None and assessment.is_alertable
     assert "B1" in assessment.services
+
+
+#: A fake Amazon invoice that writes its own DMARC pass into the header block.
+FAKE_AMAZON_INVOICE = b"""\
+From: Amazon Payments <payments@amazon.com>
+To: owner@acme-widgets.com
+Subject: Updated remittance details
+Message-ID: <inv-1@amazon.com>
+Authentication-Results: mx.google.com; dkim=pass header.i=@amazon.com;
+ spf=pass smtp.mailfrom=amazon.com; dmarc=pass header.from=amazon.com
+Content-Type: text/plain
+
+Our bank account has changed. Please pay invoice INV-2026-1188 to
+IBAN GB29 NWBK 6016 1331 9268 19 from today.
+"""
+
+
+@pytest.mark.parametrize(
+    ("source", "stamps"),
+    [
+        pytest.param(SourceMechanism.IMAP_IDLE, (), id="imap-host-stamps-nothing"),
+        pytest.param(
+            SourceMechanism.IMAP_IDLE,
+            ("mail.host.example; spf=pass smtp.mailfrom=amazon.com",),
+            id="imap-host-stamp-without-dmarc",
+        ),
+        pytest.param(
+            SourceMechanism.GMAIL_API,
+            ("mx.google.com; spf=pass smtp.mailfrom=amazon.com",),
+            id="gmail-stamp-without-dmarc",
+        ),
+        pytest.param(
+            SourceMechanism.GRAPH_API,
+            ("spf=pass (sender IP is 192.0.2.1) smtp.mailfrom=amazon.com",),
+            id="graph-stamp-without-dmarc",
+        ),
+    ],
+)
+def test_sender_written_dmarc_never_skips_the_payee_checks(
+    source: SourceMechanism, stamps: tuple[str, ...]
+) -> None:
+    learned = CounterpartyState(
+        registrable_domain="amazon.com",
+        message_count=40,
+        known_bank_ids=frozenset({"GB33BUKB20201555555555"}),
+    )
+    assessment = _assess(_delivered(FAKE_AMAZON_INVOICE, *stamps), learned, source)
+    assert assessment is not None and "A1" in assessment.services, (
+        f"a forged dmarc=pass skipped the bank-change check: {assessment}"
+    )
+    assert assessment.tier is AlertTier.CRITICAL
