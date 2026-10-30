@@ -65,15 +65,21 @@ function VendorImport({ onDone }: { onDone: () => Promise<void> }) {
   const [csv, setCsv] = useState("");
   const [preview, setPreview] = useState<VendorImportResult | null>(null);
   const [busy, setBusy] = useState(false);
+  // The real import writes verified bank details, so it asks for the password;
+  // the preview writes nothing and doesn't.
+  const [reauthOpen, setReauthOpen] = useState(false);
+  const [reauthError, setReauthError] = useState<string | null>(null);
 
-  async function run(dryRun: boolean) {
+  async function run(dryRun: boolean, creds?: ReauthCreds) {
     if (!csv.trim()) return;
     setBusy(true);
+    setReauthError(null);
     try {
-      const result = await api.importVendors(csv, dryRun);
+      const result = await api.importVendors(csv, dryRun, creds);
       if (dryRun) {
         setPreview(result);
       } else {
+        setReauthOpen(false);
         toast.success(
           `Imported ${result.suppliers_created} supplier${
             result.suppliers_created === 1 ? "" : "s"
@@ -87,9 +93,15 @@ function VendorImport({ onDone }: { onDone: () => Promise<void> }) {
         await onDone();
       }
     } catch (e) {
-      toast.error(
-        e instanceof ApiError ? e.message : "Could not read that file.",
-      );
+      // A wrong password keeps the prompt open; anything else is a toast.
+      if (!dryRun && e instanceof ApiError && e.status === 401) {
+        setReauthError(e.message);
+      } else {
+        setReauthOpen(false);
+        toast.error(
+          e instanceof ApiError ? e.message : "Could not read that file.",
+        );
+      }
     } finally {
       setBusy(false);
     }
@@ -221,7 +233,10 @@ function VendorImport({ onDone }: { onDone: () => Promise<void> }) {
           variant="accent"
           size="sm"
           disabled={busy || !preview || preview.rows_parsed === 0}
-          onClick={() => void run(false)}
+          onClick={() => {
+            setReauthError(null);
+            setReauthOpen(true);
+          }}
           title={!preview ? "Check the file first" : undefined}
         >
           {busy && preview ? (
@@ -243,6 +258,17 @@ function VendorImport({ onDone }: { onDone: () => Promise<void> }) {
           CANCEL
         </Button>
       </div>
+
+      <ReAuthDialog
+        open={reauthOpen}
+        title="Confirm it's you"
+        body="This import saves the accounts and callback numbers we check future invoices against, so confirm your password."
+        confirmLabel="IMPORT"
+        busy={busy}
+        error={reauthError}
+        onConfirm={(creds) => void run(false, creds)}
+        onCancel={() => setReauthOpen(false)}
+      />
     </section>
   );
 }
@@ -471,7 +497,7 @@ function SupplierDetailPanel({
 
   // Run a gated write, keeping the prompt open with an error on a wrong password
   // (401) and closing it (with a toast) on anything else.
-  async function runGated(creds: ReauthCreds, work: () => Promise<void>) {
+  async function runGated(work: () => Promise<void>) {
     setBusy(true);
     setReauthError(null);
     try {
@@ -500,7 +526,7 @@ function SupplierDetailPanel({
       body: "Recording an expected account is what we check future invoices against, so confirm your password.",
       label: "SAVE DETAILS",
       run: (creds) =>
-        runGated(creds, async () => {
+        runGated(async () => {
           await api.addBankRecord(
             domain,
             { scheme: scheme_, identifier: id_, ...(bank_ ? { bank_name: bank_ } : {}) },
@@ -523,7 +549,7 @@ function SupplierDetailPanel({
       body: "The callback number is what we tell people to ring to verify a change, so confirm your password to set it.",
       label: "SAVE NUMBER",
       run: (creds) =>
-        runGated(creds, async () => {
+        runGated(async () => {
           await api.setCallbackNumber(domain, phone_, creds);
           toast.success("Callback number saved.");
           await load();
@@ -539,7 +565,7 @@ function SupplierDetailPanel({
       body: `We'll stop treating ${record.identifier} as this supplier's expected account, and start flagging payments to it. The record is kept as history. Confirm your password to continue.`,
       label: "MARK AS OLD",
       run: (creds) =>
-        runGated(creds, async () => {
+        runGated(async () => {
           await api.retireBankRecord(domain, record.id, creds);
           toast.success("Marked as no longer in use.");
           await load();

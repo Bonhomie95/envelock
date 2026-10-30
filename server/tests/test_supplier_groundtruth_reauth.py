@@ -156,3 +156,32 @@ def test_upsert_needs_reauth_only_when_it_sets_the_phone_and_audits_it(
     )
     assert ok.status_code == 201, ok.text
     assert "counterparty.callback_number_set" in _audit_actions(client, admin)
+
+
+# ── Vendor-master import (the same ground truth, in bulk) ────────────────────
+def test_importing_the_vendor_master_needs_reauth_but_the_preview_does_not(
+    client: TestClient, admin: dict
+) -> None:
+    csv = "Supplier,Email,IBAN\nAcme Ltd,accounts@acme-import.example,GB33BUKB20201555555555\n"
+    url = "/api/v1/counterparties/import"
+
+    # The preview writes nothing, so it needs no password.
+    preview = client.post(url, json={"csv": csv, "dry_run": True}, headers=admin)
+    assert preview.status_code == 200
+    assert preview.json()["bank_records_created"] == 1
+
+    # A real import on the session alone, or with the wrong password, is refused.
+    assert client.post(url, json={"csv": csv}, headers=admin).status_code == 401
+    assert (
+        client.post(
+            url, json={"csv": csv, "current_password": "not-the-password"}, headers=admin
+        ).status_code
+        == 401
+    )
+
+    # With the password it writes — and the record is new, so neither refused
+    # attempt slipped anything in first.
+    ok = client.post(url, json={"csv": csv, "current_password": PW}, headers=admin)
+    assert ok.status_code == 200
+    assert ok.json()["bank_records_created"] == 1
+    assert "counterparty.vendor_master_imported" in _audit_actions(client, admin)

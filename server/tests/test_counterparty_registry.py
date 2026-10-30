@@ -265,7 +265,7 @@ def test_the_vendor_master_import_creates_suppliers_and_records(
 ) -> None:
     r = client.post(
         "/api/v1/counterparties/import",
-        json={"csv": VENDOR_CSV},
+        json={"csv": VENDOR_CSV, "current_password": PW},
         headers=admin,
     )
     assert r.status_code == 200, r.text
@@ -287,7 +287,11 @@ def test_an_email_address_in_the_domain_column_is_accepted(
 ) -> None:
     """It is the single most common export shape. Rejecting it would mean asking
     finance to reformat a file before the product does anything useful."""
-    client.post("/api/v1/counterparties/import", json={"csv": VENDOR_CSV}, headers=admin)
+    client.post(
+        "/api/v1/counterparties/import",
+        json={"csv": VENDOR_CSV, "current_password": PW},
+        headers=admin,
+    )
     listed = client.get("/api/v1/counterparties", headers=admin).json()["counterparties"]
     assert "globex.example" in {c["domain"] for c in listed}
 
@@ -307,9 +311,15 @@ def test_re_importing_the_same_file_adds_nothing(
     client: TestClient, admin: dict
 ) -> None:
     """Finance re-exports and re-imports. That must top up, not duplicate."""
-    client.post("/api/v1/counterparties/import", json={"csv": VENDOR_CSV}, headers=admin)
+    client.post(
+        "/api/v1/counterparties/import",
+        json={"csv": VENDOR_CSV, "current_password": PW},
+        headers=admin,
+    )
     again = client.post(
-        "/api/v1/counterparties/import", json={"csv": VENDOR_CSV}, headers=admin
+        "/api/v1/counterparties/import",
+        json={"csv": VENDOR_CSV, "current_password": PW},
+        headers=admin,
     ).json()
     assert again["suppliers_created"] == 0
     assert again["bank_records_created"] == 0
@@ -326,7 +336,7 @@ def test_a_semicolon_separated_export_is_understood(
         "Umbrella;ap@umbrella.example;FR1420041010050500013M02606\n"
     )
     body = client.post(
-        "/api/v1/counterparties/import", json={"csv": csv}, headers=admin
+        "/api/v1/counterparties/import", json={"csv": csv, "current_password": PW}, headers=admin
     ).json()
     assert body["rows_parsed"] == 1
     assert body["bank_records_created"] == 1
@@ -343,7 +353,7 @@ def test_bad_rows_are_reported_and_the_rest_still_import(
         "Broken,not-a-domain,GB29NWBK60161331926819\n"
     )
     body = client.post(
-        "/api/v1/counterparties/import", json={"csv": csv}, headers=admin
+        "/api/v1/counterparties/import", json={"csv": csv, "current_password": PW}, headers=admin
     ).json()
     assert body["suppliers_created"] == 1
     assert any("line 3" in p for p in body["problems"])
@@ -353,7 +363,7 @@ def test_a_file_with_no_domain_column_says_so(client: TestClient, admin: dict) -
     """The error has to name the fix, not just refuse."""
     body = client.post(
         "/api/v1/counterparties/import",
-        json={"csv": "Vendor,IBAN\nAcme,GB29NWBK60161331926819\n"},
+        json={"csv": "Vendor,IBAN\nAcme,GB29NWBK60161331926819\n", "current_password": PW},
         headers=admin,
     ).json()
     assert body["rows_parsed"] == 0

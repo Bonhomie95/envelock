@@ -2780,6 +2780,10 @@ class VendorImportRequest(BaseModel):
     #: Preview without writing. The import screen calls this first so the person
     #: sees exactly what will be created before anything is.
     dry_run: bool = False
+    #: Required for a real import: it writes verified bank records and callback
+    #: numbers in bulk, the same ground truth the single-record routes gate.
+    current_password: str | None = Field(default=None, max_length=256)
+    mfa_code: str | None = Field(default=None, pattern=r"^\d{6}$")
 
 
 #: Accepted header spellings → our field. Finance exports come out of Sage, Xero,
@@ -2885,7 +2889,18 @@ async def import_vendor_master(
 
     Idempotent by (counterparty, scheme, identifier), so re-importing an updated
     export adds what is new and leaves the rest alone.
+
+    A real import takes a fresh re-auth, like every single-record write to the
+    ground truth: one stolen session could otherwise seed every supplier's
+    known-good account with the attacker's. The preview writes nothing and
+    needs none.
     """
+    if not req.dry_run:
+        await _step_up(
+            session,
+            principal,
+            ReauthRequest(current_password=req.current_password or "", mfa_code=req.mfa_code),
+        )
     rows, problems = _vendor_rows(req.csv)
     from envelock.services.suppliers import apply_supplier_rows
 

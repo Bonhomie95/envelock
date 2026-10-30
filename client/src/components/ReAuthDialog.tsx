@@ -38,7 +38,7 @@ export default function ReAuthDialog({
 }) {
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
-  const dialogRef = useModalFocus<HTMLDivElement>(open, onCancel, busy);
+  const dialogRef = useModalFocus<HTMLFormElement>(open, onCancel, busy);
   const everOpen = useRef(false);
 
   // Clear the fields each time the dialog opens, so a password is never left

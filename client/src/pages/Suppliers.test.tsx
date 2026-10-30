@@ -196,7 +196,9 @@ describe("importing the vendor master", () => {
     );
 
     await userEvent.click(screen.getByText("CHECK THE FILE"));
-    await waitFor(() => expect(importVendors).toHaveBeenCalledWith(expect.any(String), true));
+    await waitFor(() =>
+      expect(importVendors).toHaveBeenCalledWith(expect.any(String), true, undefined),
+    );
     expect(await screen.findByText("3 rows read")).toBeVisible();
 
     importVendors.mockResolvedValueOnce({
@@ -209,9 +211,17 @@ describe("importing the vendor master", () => {
       problems: [],
       suppliers: [],
     });
+    // The real import writes verified bank details, so it asks for the password
+    // first and nothing is sent until it's given.
     await userEvent.click(screen.getByText("IMPORT"));
+    const dialog = await screen.findByRole("dialog");
+    expect(importVendors).toHaveBeenCalledTimes(1);
+    await userEvent.type(within(dialog).getByLabelText("Current password"), "pw-123456");
+    await userEvent.click(within(dialog).getByRole("button", { name: "IMPORT" }));
     await waitFor(() =>
-      expect(importVendors).toHaveBeenLastCalledWith(expect.any(String), false),
+      expect(importVendors).toHaveBeenLastCalledWith(expect.any(String), false, {
+        current_password: "pw-123456",
+      }),
     );
   });
 

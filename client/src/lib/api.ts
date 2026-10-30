@@ -1181,11 +1181,12 @@ export const api = {
       { method: "POST", body: JSON.stringify({ phone, ...reauth }) },
     ),
 
-  /** Import the AP vendor master. `dry_run` previews without writing. */
-  importVendors: (csv: string, dryRun = false) =>
+  /** Import the AP vendor master. `dry_run` previews without writing; a real
+   *  import writes verified bank details in bulk, so it needs a re-auth. */
+  importVendors: (csv: string, dryRun = false, reauth?: ReauthCreds) =>
     request<VendorImportResult>("/api/v1/counterparties/import", {
       method: "POST",
-      body: JSON.stringify({ csv, dry_run: dryRun }),
+      body: JSON.stringify({ csv, dry_run: dryRun, ...reauth }),
     }),
 
   /** Progress of a background job (currently: onboarding backfill). */
