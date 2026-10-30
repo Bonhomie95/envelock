@@ -28,9 +28,13 @@ async def _lock_holder_pid() -> int | None:
     async with get_engine().connect() as conn:
         row = (
             await conn.execute(
+                # This run's database only: a concurrent run holds the same key
+                # in its own, and terminating its backend would be a bad day.
                 text(
                     "SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted "
-                    "AND objsubid = 1 AND (classid::bigint << 32) | objid::bigint = :k"
+                    "AND objsubid = 1 AND (classid::bigint << 32) | objid::bigint = :k "
+                    "AND database = (SELECT oid FROM pg_database "
+                    "WHERE datname = current_database())"
                 ),
                 {"k": _KEY},
             )
