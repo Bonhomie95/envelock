@@ -201,6 +201,15 @@ Into your password manager:
    in `/home/ubuntu/apps/server/.env.worker`. **Losing it means every customer
    must reconnect every mailbox.** It's the same key as on your laptop if your
    laptop `.env` had one; otherwise the script generated a new one and says so.
+3. **`ENVELOCK_SECRET_KEY`** — in `/home/ubuntu/apps/server/.env`, generated on
+   the server and nowhere else. It is not just sessions: it seals every
+   authenticator (MFA) seed and SIEM webhook secret, and keys the shared
+   fraud-account list, the protected-mail stamps and push authentication.
+   **Losing it locks every MFA user out and silently empties the fraud list.**
+
+Simplest is to save the two files whole, `.env` and `.env.worker`. Once step
+16 is done (an `ENVELOCK_BACKUP_AGE_RECIPIENT`), every backup also carries both,
+encrypted to your offline key, so a lost server is not a lost key.
 
 Then delete the plain-text copy: `rm /root/envelock-secrets`
 
@@ -475,13 +484,21 @@ With IONOS **S3 Object Storage** (any S3-compatible storage works the same way):
    ~/apps/server/deploy/backup.sh --label encrypted
    ```
 
-   Only the `.age` file is uploaded from now on. To restore one, copy the key
-   in for the restore only, then delete it:
+   Only the `.age` files are uploaded from now on — the dump, and beside it
+   `…dump.env.age`: `.env` and `.env.worker` (SECRET_KEY, the credential private
+   key), streamed straight into age and never stored unencrypted. Without them a
+   restored database cannot be used. To restore, copy the key in for the restore
+   only, then delete it:
 
    ```bash
    ENVELOCK_BACKUP_AGE_IDENTITY=~/envelock-backup.key \
      ~/apps/server/deploy/restore.sh --drill /path/to/envelock-….dump.age
+   # the settings files, on a rebuilt server (before setup-server.sh):
+   age -d -i ~/envelock-backup.key envelock-….dump.env.age | tar -xf - -C /root/
    ```
+
+   A failed backup now mails `ENVELOCK_OPS_ALERT_EMAIL` (else
+   `ENVELOCK_CONTACT_EMAIL`) through your SMTP relay.
 
 ---
 
@@ -684,6 +701,44 @@ This was rehearsed end to end on two Ubuntu 24.04 VMs: build, replicate, the
 refusal while the primary was up, the promotion after it went down, and an
 interrupted failover resumed.
 
+**Give the standby the certificates, or failover is an HTTPS outage.** The
+standby is built without TLS, and both `setup-server.sh --tls-only` and
+`failover.sh` only request a certificate when the DNS A records show the
+server's own IP — which proxied (orange-cloud) Cloudflare records never do. With
+Full (strict), the failed-over site answers 521 until someone grey-clouds all
+five names. So copy them once the standby exists, and again every ~60 days (the
+primary renews them; the copy does not):
+
+```bash
+# on the LIVE server, as root
+tar -czf - -C /etc letsencrypt | ssh root@STANDBY_IP 'tar -xzf - -C /etc'
+# on the STANDBY, as root
+certbot install --cert-name envelock.org --nginx --redirect --non-interactive
+nginx -t && systemctl reload nginx
+```
+
+(If the copy has expired when you fail over: grey-cloud the five records, run
+`setup-server.sh --tls-only`, then turn the proxy back on.)
+
+**Nothing fences the old server.** Its services are enabled, so if it comes back
+(after a network split rather than a dead disk) it starts polling every mailbox
+again from its stale database — duplicate alerts, and rewritten links whose
+tokens exist only there. Power it off in the IONOS panel before or right after
+failing over, and wipe it before reusing it.
+
+**Replication is checked with channel binding** (`channel_binding=require`, so
+an impostor on the path between the two datacenters cannot read the stream). New
+standbys get it from `setup-server.sh`. A standby built before 30 Oct needs it
+added once, on the standby as root:
+
+```bash
+# Generates the ALTER SYSTEM from the current value, so the replication password
+# in it never lands on a command line or in shell history.
+sudo -u postgres psql -tAc "SELECT format('ALTER SYSTEM SET primary_conninfo = %L;', \
+  current_setting('primary_conninfo') || ' channel_binding=require')" | sudo -u postgres psql
+sudo systemctl reload postgresql && bash /home/ubuntu/apps/server/deploy/replica-status.sh
+```
+
 # Part D — Test with real things
 
 ## 17. 👤 Try the add-ons in the real apps
@@ -746,10 +801,19 @@ On your laptop: `git push`. On the server, as `ubuntu`:
 ~/deploy/deploy.sh
 ```
 
-It pulls the repo, backs up, migrates, rebuilds, restarts **both** the API and
-the worker, and checks each site. If anything is wrong it stops and leaves the
-running version untouched. If it says "a newer deploy.sh is in the repo", run
-the `cp` it prints.
+It pulls the repo and then runs **the repo's own copy of itself** (it replaces
+`~/deploy/deploy.sh` when the repo's is newer). Then, in order: installs the
+server and preflights both `.env` and `.env.worker`; builds the web app and the
+console into `dist.next`; installs any changed nginx security-header snippets
+(checked with `nginx -t`); backs up; migrates; restarts **both** the API and the
+worker and waits for both to be ready; and only then swaps the new web builds in
+(the previous ones stay in `dist.prev`).
+
+If anything fails **before the migration** it rolls the checkout and the venv
+back to the running release, so a later restart or reboot cannot boot the build
+that failed. After the migration it stops and says so: fix forward, or restore
+the pre-deploy backup. If it reports systemd units that differ from the repo's,
+see "Updating the systemd units" below.
 
 (Until 21 Sep the worker restart failed about 4 times in 5 — the worker, which
 reads mail, would have kept running the previous release after most deploys.
@@ -767,10 +831,33 @@ sudo tail -f /var/log/nginx/error.log
 
 A free uptime monitor (UptimeRobot, Better Stack) on
 `https://api.envelock.org/ready`, every minute, alerting your phone. Use
-`/ready` — it fails when the database or Redis is down; `/health` doesn't.
+`/ready` — it fails when the database is down; `/health` doesn't.
 Add a second check on `https://go.envelock.org/r/check` (step 21): it should
 answer quickly, even with a "not recognised" page — a timeout means the link
 edge itself is down.
+
+`/ready` is the API only. The worker — the process that actually reads mail —
+is covered by the public status: add a **keyword** monitor on
+`https://api.envelock.org/api/v1/status/public` that alerts when the response
+does not contain `"state":"operational"`. It turns red when no process holds the
+poller's or the scheduler's lock, i.e. when the worker is dead or crash-looping.
+
+## Updating the systemd units
+
+`deploy.sh` does not install unit files itself (a sandboxing change to a live
+service deserves someone watching it restart); it tells you when the installed
+ones differ from the repo's, and prints this:
+
+```bash
+cd ~/apps/server/deploy
+for u in envelock-api.service envelock-worker.service envelock-backup.service \
+         envelock-backup.timer envelock-notify@.service; do
+  sed "s#/home/ubuntu#$HOME#g; s#^User=ubuntu#User=$(id -un)#" "$u" | sudo tee /etc/systemd/system/"$u" >/dev/null
+done
+sudo systemctl daemon-reload
+sudo systemctl restart envelock-api envelock-worker
+curl -fsS localhost:8010/ready && curl -fsS localhost:8011/ready
+```
 
 ## Rolling back
 
@@ -785,9 +872,84 @@ migration damaged data, the pre-deploy backup is the restore point:
 `~/apps/server/deploy/restore.sh --list`, then the guarded
 `restore.sh --PRODUCTION <file>` (take a fresh backup first).
 
+## Upgrading a server built before 30 October
+
+Once, in this order, as `ubuntu` on the live server:
+
+1. **Check two settings the new boot checks require.** Both Turnstile keys set,
+   or both blank; and both public origins are `https://` names of yours:
+
+   ```bash
+   grep -E '^ENVELOCK_(TURNSTILE_SITE_KEY|TURNSTILE_SECRET_KEY|REDIRECT_BASE_URL|PUBLIC_BASE_URL)=' \
+     ~/apps/server/.env ~/apps/server/.env.worker
+   ```
+
+   (`make_prod_env.py` has always written the two origins. A half-set Turnstile
+   pair used to boot and refuse every sign-in; it now refuses to boot.)
+2. **Adopt the new deploy tool before deploying with it**, so its rollback and
+   worker checks protect this deploy too:
+
+   ```bash
+   cd ~/apps && git fetch -q origin main \
+     && git show origin/main:server/deploy/deploy.sh > ~/deploy/deploy.sh.new \
+     && chmod 755 ~/deploy/deploy.sh.new && mv ~/deploy/deploy.sh.new ~/deploy/deploy.sh
+   ~/deploy/deploy.sh
+   ```
+
+   This deploy installs the nginx header snippets that never shipped (the
+   Turnstile CSP among them) and then reports the systemd units as different.
+3. **Install the units** — "Updating the systemd units" above. That brings the
+   read-only sandboxes, the hidden key file and dumps, the restart policy, the
+   worker's memory cap and the backup failure mail. Confirm both are ready
+   (`curl -fsS localhost:8010/ready && curl -fsS localhost:8011/ready`).
+4. **Who gets the failure mail:** `echo 'ENVELOCK_OPS_ALERT_EMAIL=you@envelock.org' >> ~/apps/server/.env`
+   (else `ENVELOCK_CONTACT_EMAIL`), then send one to see it arrive:
+   `sudo systemctl start envelock-notify@test.service`.
+5. **Back up the keys.** With `ENVELOCK_BACKUP_AGE_RECIPIENT` set (step 16):
+   `~/apps/server/deploy/backup.sh --label keys`, and check the bucket has the
+   `…dump.env.age`. Save `.env` and `.env.worker` in your password manager too.
+6. **Run the drill** (`~/apps/server/deploy/restore.sh --drill`); it now prints
+   real row counts and fails a backup with no tenants.
+7. **The apex headers.** The installed `envelock-root.conf` is certbot's copy,
+   so add `include snippets/headers-app.conf;` by hand to each `server` block for
+   `envelock.org` (port 80 and the 443 block certbot added) and to its
+   `location /assets/`, then `sudo nginx -t && sudo systemctl reload nginx`.
+8. **Uptime:** add the status-page keyword monitor (see "Uptime alerts").
+9. **If you have a standby:** copy the certificates and add channel binding —
+   step 22.
+
+The admin console's system status now shows the worker, the newest mailbox sync
+and any production warnings — Stripe test keys among them.
+
+## Hardening the worker (follow-up)
+
+The API and the worker still run as the same Unix user. The API's unit hides
+`.env.worker` and the backup directory from it and can no longer write the code
+directory, but a same-user process can read another's environment through
+`/proc`, and the worker's environment holds the credential private key. The real
+fix is a user of its own for the worker. It is not done yet because two things
+need changing with it, and both break the worker if missed:
+
+1. pydantic-settings also reads `./.env` from the working directory. Under a
+   different user that file is unreadable and the worker refuses to start — give
+   the worker its own working directory, or make `.env` group-readable for it.
+2. Relative paths (`ENVELOCK_YARA_RULES_PATH=./rules/yara`) resolve against that
+   working directory; set them absolute.
+
+Then `DynamicUser=yes` (or `User=envelock-worker`) in `envelock-worker.service`,
+`.env.worker` owned by root and mode 0600 (systemd reads it before dropping
+privileges), and `backup.sh` reading it through `LoadCredential=` rather than
+directly.
+
 ## Before rotating any key
 
-- **SECRET_KEY:** changing it signs everyone out; nothing else is lost.
+- **SECRET_KEY — never just replace it.** Changing it signs everyone out, and
+  that is the least of it: it is the root of the key that seals every
+  authenticator seed and webhook secret (those become unreadable — every MFA
+  user is locked out), and it keys the shared fraud-account list, the
+  protected-mail stamps and the push authentication for Microsoft and Google
+  (all silently stop matching). There is no migration tool for it yet; treat it
+  as permanent. `make_prod_env.py --keep-secret-key` keeps it when re-running.
 - **Credential private key — never just replace it.** Generate a new pair
   (`./.venv/bin/python -m envelock.security.keygen`), put it in `.env.worker`
   while the old private key is still reachable, then run the migration with the

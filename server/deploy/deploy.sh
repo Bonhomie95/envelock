@@ -13,14 +13,19 @@
 #
 # Being outside the repo means a bad deploy cannot leave the deploy tool itself
 # in a half-updated state, and it keeps working even if the clone is wiped and
-# re-made. The cost is that `git pull` does not update this file, so the tail
-# end compares it against the copy in the repo and tells you when yours has
-# fallen behind.
+# re-made. `git pull` cannot update this file, so right after pulling it compares
+# itself with the copy in the repo and, if that one is newer, swaps it in and
+# re-runs it — every deploy runs the deploy tool of the release it deploys.
 #
 # The important part is the PREFLIGHT: the new server code is imported and its
 # settings constructed *before* the running API is touched. A config error — the
 # class of bug that takes the API down for every customer at once — is caught
-# while the old process is still serving.
+# while the old process is still serving. And because `pip install` has already
+# put the new code in the live venv by then, a failed preflight (or build, or
+# backup, or migration) ROLLS BACK: the checkout and the venv go back to the
+# commit that is running, so the next crash or reboot does not boot the build
+# that just failed. Nothing customer-facing changes until the new API is ready:
+# the web builds go to dist.next and are swapped in only after that.
 set -euo pipefail
 
 # Override with ENVELOCK_APPS=/somewhere ./deploy.sh if your layout differs.
@@ -28,6 +33,12 @@ APPS="${ENVELOCK_APPS:-/home/ubuntu/apps}"
 API_BASE="${ENVELOCK_API_BASE:-https://api.envelock.org}"   # baked into the client build
 API_UNIT="envelock-api"
 WORKER_UNIT="envelock-worker"         # only exists once key custody is split
+# Where the installed copies live. Overridable so the script can be tested.
+NGINX_SNIPPETS="${ENVELOCK_NGINX_SNIPPETS:-/etc/nginx/snippets}"
+SYSTEMD_DIR="${ENVELOCK_SYSTEMD_DIR:-/etc/systemd/system}"
+API_READY="${ENVELOCK_API_READY_URL:-http://localhost:8010/ready}"
+WORKER_READY="${ENVELOCK_WORKER_READY_URL:-http://localhost:8011/ready}"
+READY_SLEEP="${ENVELOCK_READY_SLEEP:-2}"
 
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 DEPLOY_DIR="$(dirname "$SELF")"
@@ -83,12 +94,60 @@ pull() {                              # $1 = repo dir
   [ "$before" = "$after" ] && echo "   (already up to date)" || echo "   ${before:0:7} → ${after:0:7}"
 }
 
-# ---- 1. Pull, then the server (API) ----
+# The commit the services are running, so a failed deploy can put the checkout
+# and the venv back to it. Exported so it survives the re-exec below.
+export ENVELOCK_DEPLOY_BEFORE="${ENVELOCK_DEPLOY_BEFORE:-$(git -C "$APPS" rev-parse HEAD)}"
+SNIPPET_BACKUP=""
+
+restore_snippets() {
+  [ -n "$SNIPPET_BACKUP" ] || return 0
+  if ! { sudo cp -a "$SNIPPET_BACKUP/." "$NGINX_SNIPPETS/" \
+         && sudo nginx -t -q && sudo systemctl reload nginx; }; then
+    warn "could not restore the previous nginx snippets — check: sudo nginx -t"
+  fi
+  SNIPPET_BACKUP=""
+}
+
+# Only for failures BEFORE the migration and the restart: then the running
+# services are still the previous release, and the files on disk must match them
+# again. After a migration the schema has moved on; rolling the code back then
+# would be the wrong direction, so later failures stop and say so instead.
+rollback() {                          # $1 = what failed
+  warn "$1 — rolling back to ${ENVELOCK_DEPLOY_BEFORE:0:7}"
+  restore_snippets
+  rm -rf "$APPS/client/dist.next" "$APPS/admin/dist.next"
+  if git -C "$APPS" reset -q --hard "$ENVELOCK_DEPLOY_BEFORE" \
+     && ( cd "$APPS/server" && ./.venv/bin/pip install -q . ); then
+    fail "$1. Rolled back to ${ENVELOCK_DEPLOY_BEFORE:0:7}: the checkout and the venv match
+  the release that is still serving, so a restart or reboot brings back that one."
+  fi
+  fail "$1 — AND the rollback failed, so the venv may hold the new build. Fix that
+  before anything restarts the services:
+      cd $APPS && git reset --hard ${ENVELOCK_DEPLOY_BEFORE:0:7} && cd server && ./.venv/bin/pip install ."
+}
+
+# ---- 1. Pull ----
 pull "$APPS"
+
+# ---- 1a. Run the deploy tool of the release being deployed ----
+# A rename, not a copy over the top: bash reads a running script as it goes, so
+# overwriting it in place corrupts this very run. The new file is a new inode;
+# this process keeps reading the old one until exec replaces it.
+CANON="$APPS/server/deploy/deploy.sh"
+if [ -z "${ENVELOCK_DEPLOY_REEXEC:-}" ] && [ -f "$CANON" ] && [ "$CANON" != "$SELF" ] \
+   && ! cmp -s "$CANON" "$SELF"; then
+  if install -m 755 "$CANON" "$SELF.new" && mv -f "$SELF.new" "$SELF"; then
+    log "deploy.sh: the repository has a newer version — re-running that one"
+    ENVELOCK_DEPLOY_REEXEC=1 exec "$SELF" "$@"
+  fi
+  warn "could not replace $SELF with the repository's newer copy — continuing with this one"
+fi
+
+# ---- 2. The server: install, then prove it boots ----
 log "server: installing deps"
 # Not -q: a dependency floor raised for a security fix (e.g. pypdf, cryptography)
 # upgrades here, and you want to see that happen rather than wonder later.
-( cd "$APPS/server" && ./.venv/bin/pip install . )
+( cd "$APPS/server" && ./.venv/bin/pip install . ) || rollback "pip install failed"
 
 log "server: preflight (import + settings + routes)"
 # Run it from the same working directory systemd uses, so `.env` is found the
@@ -130,9 +189,51 @@ if custody["mode"] == "local" and settings.env == "production":
     print("    WARNING: mailbox passwords are wrapped with a key in an environment")
     print("             variable, readable by this web process. See server/docs/LAUNCH-GUIDE.md, Part B.")
 PY
-) || fail "server preflight failed — NOT restarting; the old build is still serving"
+) || rollback "server preflight failed — NOT restarting; the old build is still serving"
 
-# ---- 2. Client ----
+# The worker boots from its own file, which the check above never read: a key
+# the worker cannot use, or a setting only it gets wrong, crash-looped it while
+# the deploy reported success. Same loader, run from a directory with no `.env`
+# so only the worker's values count. Read through sudo when it is root-only.
+WORKER_ENV="$APPS/server/.env.worker"
+if [ -f "$WORKER_ENV" ]; then
+  log "worker: preflight (its own settings + key custody)"
+  WORKER_PREFLIGHT="$(cat <<'PY'
+import os
+import sys
+
+from dotenv import dotenv_values
+
+for key in [k for k in os.environ if k.startswith("ENVELOCK_")]:
+    del os.environ[key]
+os.environ.update({k: v for k, v in dotenv_values(stream=sys.stdin).items() if v is not None})
+try:
+    from envelock.config import get_settings
+    from envelock.security.keys import custody_summary
+
+    settings = get_settings()
+    custody = custody_summary()
+except RecursionError:
+    sys.exit("worker preflight: settings recursed")
+except Exception as exc:
+    sys.exit(f"worker preflight: {type(exc).__name__}: {exc}")
+if not custody["ok"]:
+    sys.exit(f"worker preflight: credential key custody unusable — {custody.get('error')}")
+if not custody.get("can_decrypt"):
+    sys.exit("worker preflight: .env.worker cannot decrypt stored credentials, so the worker would read no mail")
+print(f"    worker env={settings.env}  key custody={custody['key_id']} (can decrypt)")
+PY
+)"
+  read_worker_env() { if [ -r "$WORKER_ENV" ]; then cat "$WORKER_ENV"; else sudo -n cat "$WORKER_ENV"; fi; }
+  read_worker_env | ( cd / && "$APPS/server/.venv/bin/python" -c "$WORKER_PREFLIGHT" ) \
+    || rollback "worker preflight failed — NOT restarting; the old build is still serving"
+fi
+
+# ---- 3. Web builds, into dist.next ----
+# Built now, so a broken build stops the deploy while it can still roll back, and
+# into dist.next, so nginx keeps serving the current build until the API that
+# matches the new one is up (step 7).
+#
 # The client has no hardcoded API host: an absent env file means same-origin,
 # which would 404 against the static host. Write it before every build.
 #
@@ -146,25 +247,52 @@ PY
   fi
 } > "$APPS/client/.env.production"
 log "client: building"
-( cd "$APPS/client" && { npm ci || npm install; } && npm run build )
-[ -f "$APPS/client/dist/index.html" ] || fail "client build produced no index.html"
-grep -q "$API_BASE" "$APPS/client"/dist/assets/*.js \
-  || fail "client bundle does not reference $API_BASE — the env file was not picked up"
+( cd "$APPS/client" && { npm ci || npm install; } && npm run build -- --outDir dist.next ) \
+  || rollback "client build failed"
+[ -f "$APPS/client/dist.next/index.html" ] || rollback "client build produced no index.html"
+grep -q "$API_BASE" "$APPS/client"/dist.next/assets/*.js \
+  || rollback "client bundle does not reference $API_BASE — the env file was not picked up"
 
-# ---- 3. Admin ----
 log "admin: building"
-( cd "$APPS/admin" && { npm ci || npm install; } && npm run build )
-[ -f "$APPS/admin/dist/index.html" ] || fail "admin build produced no index.html"
+( cd "$APPS/admin" && { npm ci || npm install; } && npm run build -- --outDir dist.next ) \
+  || rollback "admin build failed"
+[ -f "$APPS/admin/dist.next/index.html" ] || rollback "admin build produced no index.html"
 
-# ---- 3b. Database: back up, then migrate ----
+# ---- 3a. nginx security headers ----
+# setup-server.sh copied these snippets once; nothing ever updated them, so a CSP
+# change (Turnstile's challenges.cloudflare.com, 29 Oct) stayed in the repo while
+# production kept the old policy and blocked the widget. They are installed
+# verbatim, so they can be synced safely — unlike the site files, which certbot
+# edits. Checked with `nginx -t` and put back if nginx refuses them.
+sync_snippets() {
+  local src="$APPS/server/deploy/nginx" f changed=0
+  for f in "$src"/headers-*.conf "$src"/cloudflare-realip.conf; do
+    cmp -s "$f" "$NGINX_SNIPPETS/$(basename "$f")" || changed=1
+  done
+  if [ "$changed" = 0 ]; then
+    echo "    nginx snippets: unchanged"
+    return 0
+  fi
+  log "nginx: installing changed security-header snippets"
+  SNIPPET_BACKUP="$(mktemp -d)"
+  sudo cp -a "$NGINX_SNIPPETS/." "$SNIPPET_BACKUP/"
+  sudo install -m 644 "$src"/headers-*.conf "$src"/cloudflare-realip.conf "$NGINX_SNIPPETS/"
+  if ! sudo nginx -t -q; then
+    rollback "nginx rejected the new snippets (the previous ones are back in place)"
+  fi
+  sudo systemctl reload nginx || rollback "nginx did not reload with the new snippets"
+}
+sync_snippets
+
+# ---- 4. Database: back up, then migrate ----
 # Order is not negotiable. A migration is the most likely thing in a deploy to
 # damage data, so the backup that would let you undo it has to exist BEFORE it
 # runs, not on tonight's timer.
 log "database: pre-deploy backup"
 if [ -x "$APPS/server/deploy/backup.sh" ]; then
   ( cd "$APPS/server" && ./deploy/backup.sh --label "predeploy" ) \
-    || fail "pre-deploy backup failed — NOT migrating. Fix the backup first: a
-  migration you cannot roll back is not a migration, it is a gamble."
+    || rollback "pre-deploy backup failed — NOT migrating. Fix the backup first: a
+  migration you cannot roll back is not a migration, it is a gamble"
 else
   warn "deploy/backup.sh missing — skipping the pre-deploy backup. Install it."
 fi
@@ -176,20 +304,19 @@ fi
 # migrate data. Every index written since launch therefore never reached
 # production. This is where that stops.
 log "database: alembic upgrade head"
+# A failed upgrade is rolled back by Postgres (transactional DDL), so the old
+# code still matches the schema and rolling the files back is safe.
 ( cd "$APPS/server" && ./.venv/bin/alembic upgrade head ) \
-  || fail "migration failed — NOT restarting; the old build is still serving.
-  The pre-deploy backup above is your restore point:
-    ./deploy/restore.sh --list"
+  || rollback "migration failed — NOT restarting; the old build is still serving.
+  The pre-deploy backup above is your restore point: ./deploy/restore.sh --list"
+# Past the migration there is no rolling back, so the old snippets are not needed.
+if [ -n "$SNIPPET_BACKUP" ]; then
+  sudo rm -rf "$SNIPPET_BACKUP"
+  SNIPPET_BACKUP=""
+fi
 
-# ---- 4. Publish + restart ----
-log "making builds readable by nginx + restarting the API"
-# Readable files are not enough: nginx (www-data) must be able to walk EVERY
-# directory on the way down. Ubuntu creates /home/<user> as 750, so without the
-# execute bit here nginx cannot enter the path at all and answers 403 for a
-# perfectly good build. `o+x` grants traversal only — not listing, which would
-# need `o+r` — so nothing becomes browsable.
-chmod o+x "$HOME" "$APPS" "$APPS/client" "$APPS/admin"
-chmod -R a+rX "$APPS/client/dist" "$APPS/admin/dist"
+# ---- 5. Restart ----
+log "restarting the API"
 sudo systemctl restart "$API_UNIT"
 # The worker only exists on a split-custody deployment; restart it if it is there.
 # `systemctl cat`, not a fixed file path: the unit can live under /lib, /run, a
@@ -198,33 +325,63 @@ sudo systemctl restart "$API_UNIT"
 # worker running the PREVIOUS release on every deploy (it 403'd on stale Graph
 # URLs for a full release cycle before this was caught). `systemctl cat` exits 0
 # iff the unit is known, wherever its file is, and needs no pipe under pipefail.
+HAS_WORKER=0
 if systemctl cat "$WORKER_UNIT" >/dev/null 2>&1; then
+  HAS_WORKER=1
   sudo systemctl restart "$WORKER_UNIT"
   log "restarted $WORKER_UNIT"
 else
   log "no $WORKER_UNIT unit found — skipping (single-process deployment)"
 fi
 
-# ---- 5. Verify ----
+# ---- 6. Verify ----
 # /ready, not /health. /health is liveness: it answers 200 as soon as the event
 # loop is up and deliberately touches no dependency, so gating a deploy on it
 # reported "deployed successfully" for a release that could not reach Postgres.
 # /ready runs the actual dependency checks and 503s when the database is gone.
+# The worker serves the same app on its own loopback port, and answers only once
+# its start-up — settings, schema, key custody — has finished.
+wait_ready() {                        # $1 = url, $2 = unit
+  local attempt
+  for attempt in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -fsS --max-time 5 "$1" >/dev/null 2>&1; then
+      echo "    $2: $(curl -fsS --max-time 5 "$1")"
+      return 0
+    fi
+    [ "$attempt" = 10 ] || sleep "$READY_SLEEP"
+  done
+  # Show what actually failed rather than only the exit status: the body names
+  # the failing dependency.
+  curl -sS --max-time 5 "$1" || true
+  echo
+  fail "$2 did not become ready — sudo journalctl -u $2 -n 50 --no-pager
+  The database IS migrated, so fix forward; the pre-deploy backup is the way back."
+}
 log "readiness check"
-for attempt in 1 2 3 4 5 6 7 8 9 10; do
-  if curl -fsS --max-time 5 localhost:8010/ready >/dev/null 2>&1; then
-    curl -fsS localhost:8010/ready && echo
-    break
-  fi
-  if [ "$attempt" = 10 ]; then
-    # Show what actually failed rather than only the exit status: the body
-    # names the failing dependency.
-    curl -sS --max-time 5 localhost:8010/ready || true
-    echo
-    fail "API did not become ready — sudo journalctl -u $API_UNIT -n 50 --no-pager"
-  fi
-  sleep 2
-done
+wait_ready "$API_READY" "$API_UNIT"
+if [ "$HAS_WORKER" = 1 ]; then
+  wait_ready "$WORKER_READY" "$WORKER_UNIT"
+fi
+
+# ---- 7. Publish the web builds ----
+# Two renames: the window with no dist/ is a few microseconds, and the previous
+# build stays in dist.prev until the next deploy in case it has to come back.
+publish() {                           # $1 = app dir
+  [ -d "$1/dist.next" ] || return 0
+  rm -rf "$1/dist.prev"
+  if [ -d "$1/dist" ]; then mv "$1/dist" "$1/dist.prev"; fi
+  mv "$1/dist.next" "$1/dist"
+}
+log "publishing the web builds + making them readable by nginx"
+publish "$APPS/client"
+publish "$APPS/admin"
+# Readable files are not enough: nginx (www-data) must be able to walk EVERY
+# directory on the way down. Ubuntu creates /home/<user> as 750, so without the
+# execute bit here nginx cannot enter the path at all and answers 403 for a
+# perfectly good build. `o+x` grants traversal only — not listing, which would
+# need `o+r` — so nothing becomes browsable.
+chmod o+x "$HOME" "$APPS" "$APPS/client" "$APPS/admin"
+chmod -R a+rX "$APPS/client/dist" "$APPS/admin/dist"
 
 # The static sites are served by nginx, not the API, so check them separately —
 # a perfectly healthy API with a broken vhost is still an outage for customers.
@@ -255,14 +412,27 @@ else
   echo "    admin /api proxy  $code  <-- nginx is not proxying /api to the API"
 fi
 
-# ---- 6. Is this script itself out of date? ----
-# Living outside the repos is what makes this tool independent, and also what
-# stops `git pull` from ever updating it. The repo keeps the canonical copy, so
-# compare against it rather than letting yours quietly rot.
-CANON="$APPS/server/deploy/deploy.sh"
-if [ -f "$CANON" ] && ! cmp -s "$CANON" "$SELF"; then
-  warn "a newer deploy.sh is in the server repo. To adopt it:"
-  warn "    cp $CANON $SELF"
+# ---- 8. Are the installed systemd units the repository's? ----
+# Like the nginx snippets, setup-server.sh installed these once. They are not
+# synced automatically — a sandboxing change to a running service deserves a
+# person watching it restart — but drift is reported every time, with the fix.
+drift=""
+for unit in envelock-api.service envelock-worker.service envelock-backup.service \
+            envelock-backup.timer envelock-notify@.service; do
+  src="$APPS/server/deploy/$unit"
+  [ -f "$src" ] || continue
+  [ -f "$SYSTEMD_DIR/$unit" ] || [ "$unit" = envelock-notify@.service ] || continue
+  if ! sed "s#/home/ubuntu#$HOME#g; s#^User=ubuntu#User=$(id -un)#" "$src" \
+       | cmp -s - "$SYSTEMD_DIR/$unit"; then
+    drift="$drift $unit"
+  fi
+done
+if [ -n "$drift" ]; then
+  warn "these systemd units differ from the repository's:$drift
+  Review the change, then install them (docs/LAUNCH-GUIDE.md, \"Updating the systemd units\"):
+      cd $APPS/server/deploy && for u in$drift; do
+        sed \"s#/home/ubuntu#\$HOME#g; s#^User=ubuntu#User=\$(id -un)#\" \"\$u\" | sudo tee $SYSTEMD_DIR/\"\$u\" >/dev/null
+      done && sudo systemctl daemon-reload && sudo systemctl restart $API_UNIT $WORKER_UNIT"
 fi
 
 log "deploy complete."

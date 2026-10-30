@@ -46,6 +46,9 @@ os.environ.setdefault(
 # exercises the one gate it is about rather than tripping this one first.
 os.environ.setdefault("ENVELOCK_REQUIRE_EMAIL_VERIFICATION", "true")
 os.environ.setdefault("ENVELOCK_SMTP_HOST", "smtp.example.com")
+# Public origins, as deploy/make_prod_env.py writes them.
+os.environ.setdefault("ENVELOCK_REDIRECT_BASE_URL", "https://api.example.com")
+os.environ.setdefault("ENVELOCK_PUBLIC_BASE_URL", "https://app.example.com")
 try:
     from envelock.config import get_settings
 
@@ -222,3 +225,100 @@ def test_a_webhook_must_use_https_outside_development(monkeypatch) -> None:  # n
     get_settings.cache_clear()
     with pytest.raises(UnsafeUrlError, match="https"):
         assert_safe_url("http://siem.example.com/hook")
+
+
+# ── Turnstile: both keys or neither ──────────────────────────────────────────
+def test_a_turnstile_site_key_without_its_secret_is_refused() -> None:
+    out = _boot({"ENVELOCK_RLS_ENABLED": "true", "ENVELOCK_TURNSTILE_SITE_KEY": "0x4AAA"})
+    assert out.startswith("REFUSED"), out
+    assert "ENVELOCK_TURNSTILE_SECRET_KEY" in out
+
+
+def test_a_turnstile_secret_without_its_site_key_is_refused() -> None:
+    """The secret alone switches enforcement on (`turnstile.verify`), but only the
+    site key makes the browser render a challenge — so this pairing refused
+    every sign-in and registration, and booted without a word."""
+    out = _boot({"ENVELOCK_RLS_ENABLED": "true", "ENVELOCK_TURNSTILE_SECRET_KEY": "0x4BBB"})
+    assert out.startswith("REFUSED"), out
+    assert "every sign-in" in out
+
+
+def test_turnstile_with_both_keys_or_neither_starts() -> None:
+    both = {
+        "ENVELOCK_RLS_ENABLED": "true",
+        "ENVELOCK_TURNSTILE_SITE_KEY": "0x4AAA",
+        "ENVELOCK_TURNSTILE_SECRET_KEY": "0x4BBB",
+    }
+    assert _boot(both) == "STARTED"
+    # Blank lines, as `.env.example` ships them, mean "off" — not "half set".
+    neither = {
+        "ENVELOCK_RLS_ENABLED": "true",
+        "ENVELOCK_TURNSTILE_SITE_KEY": "",
+        "ENVELOCK_TURNSTILE_SECRET_KEY": "",
+    }
+    assert _boot(neither) == "STARTED"
+
+
+# ── Public origins written into customers' mail and checkout ─────────────────
+def test_production_refuses_to_rewrite_links_to_localhost() -> None:
+    """Unset, the redirect origin fell back to http://localhost:8010 — and the
+    rewritten links are written permanently into customers' mailboxes."""
+    for value in ("", "http://localhost:8010", "https://127.0.0.1", "http://10.0.0.4:8010"):
+        out = _boot({"ENVELOCK_RLS_ENABLED": "true", "ENVELOCK_REDIRECT_BASE_URL": value})
+        assert out.startswith("REFUSED"), (value, out)
+        assert "ENVELOCK_REDIRECT_BASE_URL" in out
+
+
+def test_production_refuses_a_local_checkout_return_origin() -> None:
+    out = _boot({"ENVELOCK_RLS_ENABLED": "true", "ENVELOCK_PUBLIC_BASE_URL": ""})
+    assert out.startswith("REFUSED"), out
+    assert "ENVELOCK_PUBLIC_BASE_URL" in out
+
+
+def test_development_keeps_its_local_redirect_origin() -> None:
+    out = _boot({"ENVELOCK_ENV": "development", "ENVELOCK_REDIRECT_BASE_URL": ""})
+    assert out == "STARTED", out
+
+
+# ── Allowed, but loud ────────────────────────────────────────────────────────
+def _production_settings(monkeypatch, env: dict[str, str]):  # noqa: ANN001, ANN202
+    from envelock.config import Settings
+
+    base = {
+        "ENVELOCK_ENV": "production",
+        "ENVELOCK_SECRET_KEY": "s" * 64,
+        "ENVELOCK_CREDENTIAL_MASTER_KEY": "m" * 64,
+        "ENVELOCK_RLS_ENABLED": "true",
+        "ENVELOCK_REQUIRE_EMAIL_VERIFICATION": "true",
+        "ENVELOCK_SMTP_HOST": "smtp.example.com",
+        "ENVELOCK_REDIRECT_BASE_URL": "https://api.example.com",
+        "ENVELOCK_PUBLIC_BASE_URL": "https://app.example.com",
+    }
+    for key, value in {**base, **env}.items():
+        monkeypatch.setenv(key, value)
+    return Settings(_env_file=None)
+
+
+def test_stripe_test_keys_boot_in_production_with_a_warning(monkeypatch, caplog) -> None:  # noqa: ANN001
+    """Test keys are a legitimate pre-launch state, so not a refusal — but a
+    forgotten one lets anyone activate a paid plan with Stripe's public test
+    card, so it is logged at every start and listed on the operator console."""
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="envelock.config"):
+        settings = _production_settings(monkeypatch, {"ENVELOCK_STRIPE_SECRET_KEY": "sk_test_abc"})
+    assert any("TEST mode" in w for w in settings.production_warnings())
+    assert "TEST mode" in caplog.text
+
+
+def test_live_stripe_keys_raise_no_warning(monkeypatch) -> None:  # noqa: ANN001
+    settings = _production_settings(monkeypatch, {"ENVELOCK_STRIPE_SECRET_KEY": "sk_live_abc"})
+    assert settings.production_warnings() == []
+
+
+def test_production_warnings_are_production_only(monkeypatch) -> None:  # noqa: ANN001
+    settings = _production_settings(
+        monkeypatch,
+        {"ENVELOCK_ENV": "development", "ENVELOCK_STRIPE_SECRET_KEY": "sk_test_abc"},
+    )
+    assert settings.production_warnings() == []

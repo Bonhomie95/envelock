@@ -97,6 +97,41 @@ jobs:
           ENVELOCK_TEST_RLS: ${{ matrix.rls }}
         run: pytest -q
 
+  # The deploy tooling runs as root (or a sudoer) on the production box, so it is
+  # checked like code. shellcheck at warning level (the info-level notes are
+  # style). systemd-analyze on the units, rendered the way setup-server.sh
+  # renders them, against stub executables so it checks the units rather than
+  # this runner: it would have reported that StartLimitIntervalSec sat in
+  # [Service], where systemd silently ignores it.
+  deploy-tooling:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -S warning deploy/*.sh
+      - name: systemd units
+        run: |
+          home="$RUNNER_TEMP/home"
+          app="$home/apps/server"
+          units="$RUNNER_TEMP/units"
+          mkdir -p "$app/.venv/bin" "$app/deploy" "$units"
+          printf '#!/bin/sh\n' > "$app/.venv/bin/uvicorn"
+          chmod +x "$app/.venv/bin/uvicorn"
+          cp -p deploy/backup.sh deploy/notify_failure.py "$app/deploy/"
+          touch "$app/.env" "$app/.env.worker"
+          for u in deploy/*.service deploy/*.timer; do
+            sed "s#/home/ubuntu#$home#g; s#^User=ubuntu#User=$(id -un)#" "$u" > "$units/$(basename "$u")"
+          done
+          cd "$units"
+          systemd-analyze verify --man=no ./*.service ./*.timer > verify.log 2>&1 || true
+          cat verify.log
+          # verify's exit status also reflects this runner (absent postgresql
+          # and redis units); what must never pass is a setting systemd ignores
+          # or cannot use.
+          if grep -Ei "unknown (key|section)|failed to parse|invalid|not executable|no such file" verify.log; then
+            exit 1
+          fi
+
   # Proves the production image builds AND that it carries every module the
   # runtime actually imports. `pip install .` omits the dev extra, which is how
   # httpx — imported at twelve runtime call sites — shipped missing from every

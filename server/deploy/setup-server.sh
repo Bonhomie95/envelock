@@ -164,9 +164,14 @@ if [ -n "$PRIMARY_IP" ]; then
   else
     systemctl stop postgresql
     rm -rf "$PGDATA"
+    # channel_binding=require: sslmode=require encrypts but never checks whose
+    # certificate it got, so anyone on the path could terminate TLS and read the
+    # whole stream — every table. Channel binding ties the SCRAM login to the
+    # certificate actually presented, which an impostor cannot satisfy. `-R`
+    # writes these options into primary_conninfo, so streaming keeps them.
     sudo -u postgres env PGPASSWORD="$ENVELOCK_REPLICATION_PASSWORD" pg_basebackup \
       -h "$PRIMARY_IP" -U envelock_replicator -D "$PGDATA" \
-      -X stream -S envelock_standby -R -d "sslmode=require" \
+      -X stream -S envelock_standby -R -d "sslmode=require channel_binding=require" \
       || fail "could not copy the database from $PRIMARY_IP — did replication-primary.sh run there with --standby-ip $(public_ip)?"
     systemctl start postgresql
     ok "copied from $PRIMARY_IP; streaming"
@@ -307,7 +312,8 @@ fi
 
 # ---- 10. services ------------------------------------------------------------
 log "10/13 services"
-for unit in envelock-api.service envelock-worker.service envelock-backup.service envelock-backup.timer; do
+for unit in envelock-api.service envelock-worker.service envelock-backup.service \
+            envelock-backup.timer envelock-notify@.service; do
   sed "s#/home/ubuntu#$APP_HOME#g; s#^User=ubuntu#User=$APP_USER#" \
     "$APPS/server/deploy/$unit" > "/etc/systemd/system/$unit"
 done
@@ -404,8 +410,13 @@ cat <<EOF
    • the three database passwords in $SECRETS
    • the credential PRIVATE key (in $APPS/server/.env.worker):
        ${PRIVATE:0:6}…  — losing it means every customer reconnects every mailbox
+   • ENVELOCK_SECRET_KEY (in $APPS/server/.env) — losing it locks every MFA
+       user out and empties the shared fraud list; it is NOT just sessions
+   Simplest: save both files whole, .env and .env.worker. Once
+   ENVELOCK_BACKUP_AGE_RECIPIENT is set (LAUNCH-GUIDE step 16) every backup
+   also carries them, encrypted to your offline key.
 
- Next (docs/LAUNCH-GUIDE.md, step 14): create your operator account:
+ Next (docs/LAUNCH-GUIDE.md, step 7): create your operator account:
    sudo -u $APP_USER -H bash -c 'cd $APPS/server && ./.venv/bin/python -m \\
      envelock.security.bootstrap_staff --email you@envelock.org --name "Your Name" --department leadership'
 

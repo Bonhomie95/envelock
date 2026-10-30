@@ -11,6 +11,10 @@
 Description=Envelock mailbox worker (credential-holding)
 After=network-online.target postgresql.service redis-server.service
 Wants=network-online.target
+# Restart for ever: a worker that gives up after a 30-second Postgres restart is
+# mail analysis stopped until someone notices. (StartLimitIntervalSec=60 used to
+# sit in [Service], where systemd ignores it — this was already the behaviour.)
+StartLimitIntervalSec=0
 
 [Service]
 Type=exec
@@ -24,14 +28,18 @@ ExecStart=/home/ubuntu/apps/server/.venv/bin/uvicorn envelock.main:app \
 
 Restart=always
 RestartSec=5
-StartLimitBurst=5
-StartLimitIntervalSec=60
+
+# This process parses attacker-controlled attachments (PDF, DOCX, images). If
+# one blows up its memory, it is the one the kernel kills — systemd restarts it
+# in seconds — rather than Postgres. The ceiling is half the machine.
+MemoryMax=50%
+OOMScoreAdjust=500
 
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/ubuntu/apps/server
+# Read-only: the worker writes nothing to disk except /tmp (private, above).
 
 [Install]
 WantedBy=multi-user.target

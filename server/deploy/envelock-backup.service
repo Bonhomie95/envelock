@@ -6,6 +6,9 @@
 Description=Envelock database backup
 After=network-online.target postgresql.service
 Wants=network-online.target
+# A failed backup mails the operator (deploy/notify_failure.py). The journal on
+# its own is where a failure waits, unread, until the day a restore is needed.
+OnFailure=envelock-notify@%n.service
 
 [Service]
 Type=oneshot

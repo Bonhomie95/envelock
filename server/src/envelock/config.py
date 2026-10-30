@@ -8,6 +8,7 @@ coverage exists.
 
 from __future__ import annotations
 
+import logging
 from functools import lru_cache
 from typing import Literal
 
@@ -781,15 +782,45 @@ class Settings(BaseSettings):
                     "ever sign in. Set ENVELOCK_SMTP_HOST and ENVELOCK_SMTP_FROM."
                 )
 
-        # A site key with no secret renders the widget and then cannot check
+        # Either both Turnstile keys or neither, and both directions matter. A
+        # site key with no secret renders the widget and then cannot check
         # anything it returns — a CAPTCHA that is pure theatre, and worse than
-        # none because it is trusted. Either both or neither.
+        # none because it is trusted. A secret with no site key is an outage:
+        # the server demands a solved challenge (`turnstile.verify` keys off the
+        # secret alone) that no browser is ever shown, so every sign-in and
+        # registration is refused.
         if self.turnstile_site_key and not self.turnstile_secret_key:
             raise ValueError(
                 "ENVELOCK_TURNSTILE_SITE_KEY is set without "
                 "ENVELOCK_TURNSTILE_SECRET_KEY — the challenge would be shown to "
                 "visitors and never verified. Set the secret, or unset both."
             )
+        if self.turnstile_secret_key and not self.turnstile_site_key:
+            raise ValueError(
+                "ENVELOCK_TURNSTILE_SECRET_KEY is set without "
+                "ENVELOCK_TURNSTILE_SITE_KEY — the server would demand a solved "
+                "challenge that no browser is ever shown, refusing every sign-in "
+                "and registration. Set the site key, or unset both."
+            )
+
+        # These origins are written into things customers click: rewritten links
+        # land permanently in their mailboxes, and Stripe sends a paying buyer
+        # back to the other. Unset, both fell back to a localhost address in
+        # production — every protected link in every inbox pointing at
+        # http://localhost:8010 for good. Refuse to start instead.
+        for key, value in (
+            ("ENVELOCK_REDIRECT_BASE_URL", self.redirect_base_url),
+            ("ENVELOCK_PUBLIC_BASE_URL", self.public_base_url),
+        ):
+            if not _is_public_origin(value):
+                raise ValueError(
+                    f"Refusing to start in production with {key}="
+                    f"{value.strip() or '(unset)'} — it must be this deployment's "
+                    "public https origin (deploy/make_prod_env.py writes both). "
+                    "Links built from a local address never reach a customer."
+                )
+        for warning in self.production_warnings():
+            logging.getLogger("envelock.config").warning("%s", warning)
 
         # The forwarding ingest accepts mail addressed to a per-tenant token. The
         # token proves which tenant a copy is for; it does not prove the sender is
@@ -804,6 +835,54 @@ class Settings(BaseSettings):
                 "provider's egress ranges, or set ENVELOCK_INGEST_SMTP_IN_APP=false."
             )
         return self
+
+    def production_warnings(self) -> list[str]:
+        """Production settings that are allowed, but must not go unnoticed.
+
+        Logged at every production start (deploy.sh's preflight prints them too)
+        and listed on the operator console's system status. Deliberately not
+        refusals: each is a legitimate state for a while — Stripe test keys
+        before launch — and dangerous only when forgotten.
+        """
+        if not self.is_production:
+            return []
+        warnings: list[str] = []
+        stripe = self.stripe_secret_key.get_secret_value() if self.stripe_secret_key else ""
+        if stripe.startswith(("sk_test_", "rk_test_")):
+            warnings.append(
+                "Stripe is in TEST mode (ENVELOCK_STRIPE_SECRET_KEY is a test key): "
+                "real cards are declined, and anyone can activate a paid plan with "
+                "Stripe's public test card. Switch to live keys before taking payment."
+            )
+        if not self.redirect_base_url.strip().lower().startswith("https://"):
+            warnings.append(
+                "ENVELOCK_REDIRECT_BASE_URL is not https — every rewritten link in "
+                "protected mail sends the click in clear text."
+            )
+        return warnings
+
+
+def _is_public_origin(url: str) -> bool:
+    """Whether `url` names a host a customer's device can actually reach.
+
+    Not loopback, not a private or link-local address, not `localhost` — the
+    shapes a development value takes. A real hostname is accepted as given:
+    resolving it here would make boot depend on DNS.
+    """
+    import ipaddress
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url.strip())
+    host = (parts.hostname or "").lower()
+    if parts.scheme not in ("http", "https") or not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True  # a hostname
+    return not (ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_unspecified)
 
 
 @lru_cache

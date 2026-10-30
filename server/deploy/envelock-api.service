@@ -3,6 +3,11 @@
 Description=Envelock API
 After=network-online.target postgresql.service redis-server.service
 Wants=network-online.target
+# Restart for ever, every RestartSec. A database or Redis outage must not leave
+# the API down after it ends, and a broken deploy is caught by deploy.sh's
+# readiness check, not by systemd giving up. (StartLimitIntervalSec=60 used to sit
+# in [Service], where systemd ignores it — this was already the behaviour.)
+StartLimitIntervalSec=0
 
 [Service]
 Type=exec
@@ -16,17 +21,19 @@ ExecStart=/home/ubuntu/apps/server/.venv/bin/uvicorn envelock.main:app \
 
 Restart=always
 RestartSec=3
-# Do not thrash on a config error: five failures in a minute and it stays down,
-# so a broken deploy is a visible outage rather than a restart loop that hides
-# the real error at the top of the log.
-StartLimitBurst=5
-StartLimitIntervalSec=60
 
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/ubuntu/apps/server
+# Read-only everywhere: the app writes nothing to disk except /tmp (private,
+# above). It used to be able to write the whole server directory — the venv
+# included, which the credential-holding worker imports and deploy.sh runs as a
+# user with sudo. And what the internet-facing process must never read is not
+# there for it at all: the worker's private key, and the plaintext database
+# dumps. (A separate user for the worker is the follow-up that closes this
+# properly — docs/LAUNCH-GUIDE.md, "Hardening the worker".)
+InaccessiblePaths=-/home/ubuntu/apps/server/.env.worker -/var/backups/envelock
 
 [Install]
 WantedBy=multi-user.target

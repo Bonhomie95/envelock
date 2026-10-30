@@ -1,0 +1,20 @@
+# /etc/systemd/system/envelock-notify@.service
+#
+# Mails the operator that a unit failed. A unit opts in with
+#     OnFailure=envelock-notify@%n.service
+# and %i below is then the failed unit's name. Uses the SMTP settings already in
+# .env (the same relay the product sends alerts through) and the system Python,
+# so it still works when the app's venv is the thing that broke.
+[Unit]
+Description=Envelock: tell the operator that %i failed
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/apps/server
+ExecStart=/usr/bin/python3 /home/ubuntu/apps/server/deploy/notify_failure.py %i
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
