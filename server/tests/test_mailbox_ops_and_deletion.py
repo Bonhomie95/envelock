@@ -186,7 +186,9 @@ def test_a_used_mailbox_can_be_removed_and_its_links_keep_working(client: TestCl
     mid = UUID(_add(client, h, "ap@usedmb.example"))
     token = _use(tid, mid)
 
-    out = client.delete(f"/api/v1/mailboxes/{mid}", headers=h)
+    out = client.request(
+        "DELETE", f"/api/v1/mailboxes/{mid}", json={"current_password": PW}, headers=h
+    )
     assert out.status_code == 200, out.text
 
     async def _token():  # noqa: ANN202

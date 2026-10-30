@@ -34,15 +34,11 @@ def _auth_header(client: TestClient, email: str = "analyst@acme.com") -> dict[st
     login = client.post(
         "/api/v1/auth/login", json={"email": email, "password": pw}
     ).json()
-    setup = client.post(
-        "/api/v1/auth/mfa/setup", json={"token": login["mfa_token"]}
-    ).json()
+    # MFA deferred (skip): nothing these callers exercise needs the second factor,
+    # and a password-only session keeps re-auth (mailbox removal now takes it)
+    # from racing the sign-in code inside one TOTP window.
     tokens = client.post(
-        "/api/v1/auth/mfa/verify",
-        json={
-            "mfa_token": login["mfa_token"],
-            "code": _totp_at(setup["secret"], int(time.time()) // 30),
-        },
+        "/api/v1/auth/mfa/skip", json={"token": login["mfa_token"]}
     ).json()
     return {"Authorization": f"Bearer {tokens['access_token']}"}
 
@@ -561,7 +557,15 @@ def test_remove_mailbox(client: TestClient) -> None:
         json={"address": "x@removeco.dev", "mailbox_class": "monitored", "sources": []},
         headers=h,
     ).json()
-    assert client.delete(f"/api/v1/mailboxes/{mb['id']}", headers=h).status_code == 200
+    assert (
+        client.request(
+            "DELETE",
+            f"/api/v1/mailboxes/{mb['id']}",
+            json={"current_password": "a-long-enough-passphrase"},
+            headers=h,
+        ).status_code
+        == 200
+    )
     remaining = client.get("/api/v1/mailboxes", headers=h).json()["mailboxes"]
     assert all(m["id"] != mb["id"] for m in remaining)
 

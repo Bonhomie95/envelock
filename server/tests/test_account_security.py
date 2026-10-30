@@ -259,7 +259,9 @@ def test_delete_mailbox_with_messages_alerts_and_findings(client: TestClient) ->
 
     alert_id = asyncio.run(_seed())
 
-    out = client.delete(f"/api/v1/mailboxes/{mid}", headers=h)
+    out = client.request(
+        "DELETE", f"/api/v1/mailboxes/{mid}", json={"current_password": PW}, headers=h
+    )
     assert out.status_code == 200
     assert out.json()["removed"] is True
 

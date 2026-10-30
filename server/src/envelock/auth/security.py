@@ -309,13 +309,31 @@ REFRESH_TTL = timedelta(days=14)
 MFA_PENDING_TTL = timedelta(minutes=5)
 
 #: Actions that require a fresh password re-entry regardless of session age.
+#:
+#: This is a CONTRACT the server keeps, not advice to the client: every action
+#: named here has an endpoint that calls `_verify_step_up`, and
+#: `test_sensitive_actions_enforced.py` fails if one does not. The list was
+#: previously advertised by `/auth/sensitive-actions` while the server enforced
+#: none of it — a stolen session could disconnect a mailbox (and delete its
+#: stored credential) with no re-auth — so it is trimmed to exactly what is
+#: enforced:
+#:   * mailbox.disconnect  → tenants.remove_mailbox
+#:   * mfa.enroll          → auth.mfa_enroll / auth.mfa_activate
+#:   * mfa.disable         → auth.mfa_disable
+#:   * tenant.delete       → tenants.delete_tenant
+#:   * export.token_create → governance.create_token
+#:
+#: Two former entries are gone because no CUSTOMER endpoint enforces them:
+#: `user.role_change` happens only in the operator console (staff-gated, separate
+#: auth), and `billing.update` is a one-click plan change whose charge is
+#: confirmed on the billing page / behind Stripe's own portal auth — forcing a
+#: password there is a separate decision for the owner, not a silent gap.
 SENSITIVE_ACTIONS = frozenset(
     {
         "mailbox.disconnect",
-        "tenant.delete",
-        "billing.update",
-        "user.role_change",
+        "mfa.enroll",
         "mfa.disable",
+        "tenant.delete",
         "export.token_create",
     }
 )
