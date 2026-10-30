@@ -15,6 +15,7 @@ payment fraud (§15.4, >95% target) must not depend on a model's confidence.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import replace
 from datetime import UTC, datetime
 from uuid import UUID
@@ -84,6 +85,20 @@ async def _reserve_call(
     if claimed is None or claimed.calls > cap:
         return None
     return await session.get(LlmUsage, claimed.id)
+
+
+#: A URL, or a phone-shaped run of digits. The model's rationale is written from
+#: attacker-controlled email text and then shown to the customer as our own
+#: finding, so a "vendor confirmed, call +1 555 0100" or a link injected into the
+#: body must not ride out on it. Stripped, not trusted.
+_UNSAFE_IN_RATIONALE = re.compile(
+    r"https?://\S+|\b(?:\+?\d[\d().\-\s]{6,}\d)\b", re.IGNORECASE
+)
+
+
+def _plain_rationale(text: str) -> str:
+    """The model's sentence with any URL or phone number removed."""
+    return _UNSAFE_IN_RATIONALE.sub("[removed]", text or "").strip()
 
 
 def _trusted_facts(event, context) -> dict[str, str]:  # noqa: ANN001
@@ -194,6 +209,9 @@ async def refine(
         observe_llm("error")
         return assessment, None
     observe_llm(verdict.verdict)
+    # Sanitise once, here: everything downstream (the alert body below, the stored
+    # verdict row, the report and the digest) reads this cleaned sentence.
+    verdict = replace(verdict, rationale=_plain_rationale(verdict.rationale))
 
     # Cost lands on the already-claimed row (COGS is the number that predicts
     # spend — always record it).
@@ -219,10 +237,10 @@ async def refine(
             rationale=(*assessment.rationale, client_line),
             body=assessment.body + "\n" + client_line,
         )
-    elif assessment is not None and verdict.rationale:
-        # Not escalating, but a short plain note still adds context on the alert.
-        note = f"Note: {verdict.rationale}"
-        assessment = replace(assessment, body=assessment.body + "\n" + note)
+    # A benign or merely-suspicious verdict no longer annotates the alert body: a
+    # sentence the model wrote from attacker text would read as our finding, and
+    # only a confirmed fraud (the escalation above) has earned a line. The verdict
+    # is still recorded for the audit trail.
 
     return assessment, verdict
 

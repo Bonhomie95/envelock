@@ -168,7 +168,11 @@ async def build_digest(
             .all()
         )
         for row in rows:
-            if row.rationale and row.alert_id is not None:
+            # Only a confirmed-fraud verdict's sentence is shown as the reason; a
+            # benign or suspicious note is not why the alert stands, and showing it
+            # as one misleads. (The stored sentence is already URL/phone-stripped
+            # at the point the verdict is recorded — see llm.cascade.)
+            if row.rationale and row.alert_id is not None and row.verdict == "fraud":
                 rationales.setdefault(row.alert_id, row.rationale)
 
     from envelock.platform.alerts import prevented_loss
