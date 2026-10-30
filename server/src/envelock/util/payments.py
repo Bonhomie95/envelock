@@ -85,6 +85,16 @@ _SWIFT_RE = re.compile(
 #: Critical. Never straight after "#" either: that is a CSS colour (#333333) or
 #: an HTML entity (&#128073;), and A2 reads raw HTML.
 _SORTCODE_RE = re.compile(r"(?<!#)\b(\d{2}([-\s]?)\d{2}\2\d{2})\b")
+#: A separated triple that is also a valid day and month ("30-10-26") is a date
+#: with a two-digit year as often as a sort code, so it counts only when a
+#: sort-code label sits just before it. Unlabelled, every month's dated invoice
+#: was a new "account" for A1 to call a bank-details change.
+_SORTCODE_LABEL = re.compile(r"\b(?:sort(?:ing)?\s*code|s/c)\b", re.I)
+
+
+def _date_shaped(six: str) -> bool:
+    first, second = int(six[:2]), int(six[2:4])
+    return (1 <= first <= 31 and 1 <= second <= 12) or (1 <= first <= 12 and 1 <= second <= 31)
 _ACH_RE = re.compile(r"\b(\d{9})\b")
 _ACCOUNT_RE = re.compile(r"\b(\d{8,17})\b")
 _BTC_RE = re.compile(r"\b(bc1[a-z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b")
@@ -99,8 +109,13 @@ _URL_IN_TEXT = re.compile(r"https?://[^\s\"<>]+", re.I)
 #: Presence of these near an identifier is what makes it a *payment instruction*
 #: rather than an incidental number. Drives A1 precision.
 PAYMENT_CONTEXT = re.compile(
-    r"\b(bank|acct|iban|swift|bic|routing|sort\s?code|beneficiary|"
-    r"remit|remittance|wire|transfer|payment|invoice|payable|deposit|"
+    # Inflected forms count: the pattern is anchored by \b at both ends, so
+    # "banking details" and "future payments" matched nothing, and once bare
+    # "account" stopped counting (below), a sort-code change worded that way
+    # extracted no identifiers at all.
+    r"\b(bank(?:s|ing)?|acct|iban|swift|bic|routing|sort\s?codes?|beneficiar(?:y|ies)|"
+    r"remit(?:s|ted|ting)?|remittances?|wire[sd]?|wiring|transfer(?:s|red|ring)?|"
+    r"payments?|invoices?|invoiced|payable|deposits?|"
     # Not "account" alone: that is how every sign-up and security email talks
     # about a login, so "confirm your account" made any first-contact notice an
     # A7 payment alert and opened the AI gate. Only an account NUMBER counts,
@@ -250,8 +265,12 @@ def extract_bank_identifiers(text: str) -> list[BankIdentifier]:
     if PAYMENT_CONTEXT.search(text):
         for match in _SORTCODE_RE.finditer(remainder):
             norm = _normalise(match.group(1))
-            if len(norm) == 6:
-                found.setdefault(norm, BankIdentifier("sortcode", norm))
+            if len(norm) != 6:
+                continue
+            before = remainder[max(0, match.start() - 24) : match.start()]
+            if match.group(2) and _date_shaped(norm) and not _SORTCODE_LABEL.search(before):
+                continue
+            found.setdefault(norm, BankIdentifier("sortcode", norm))
         for match in _ACH_RE.finditer(remainder):
             found.setdefault(match.group(1), BankIdentifier("ach", match.group(1)))
         for match in _ACCOUNT_RE.finditer(remainder):
