@@ -218,20 +218,19 @@ def plan_locked_detections(capabilities: frozenset[Capability], plan: str) -> li
     )
 
 
-#: Detections that judge the sender as a counterparty: a payee or correspondent
-#: whose history (bank details on file, first contact, writing style, sending
-#: setup, invoices, domain age) is the evidence. A platform notice has no such
-#: history. Running them anyway alerted on Envelock's own confirm-your-email
-#: message (A7: "first email from envelock.org, and it's about payment", from
-#: the word "account") and on Google's trial mail (A2: "no verified phone number
-#: on file for google.com"). Our alert emails print the message date, which the
-#: payment extractor reads as a sort code (2026-10 -> 202610), so A2 fired on
-#: payment alerts and A1 would have called next month's a bank-details change.
+#: Detections that mean nothing for a platform's own notices: "first email
+#: you've ever had from google.com" (A7) and "this domain is new" (B9). A7 is
+#: what alerted on Google's Workspace trial mail.
 #:
-#: Content and spoofing checks still run on platform mail: links, attachments,
-#: reply-to, display name, known fraud accounts. Docs, Forms and Drive put
-#: attacker-written text on google.com's DKIM, and those checks are what catch it.
-_COUNTERPARTY_SERVICES = frozenset({"A1", "A2", "A7", "A9", "A10", "A11", "A13", "B9"})
+#: Everything else still runs. The set used to hold every counterparty check
+#: (A1, A2, A9, A10, A11, A13 too), but the platform-domain match covers whole
+#: registrable domains, and those carry text anyone can write under a real DMARC
+#: pass: Amazon seller messages, Docs comments, Teams notifications, Microsoft
+#: invitations. A seller message asking to "pay by bank transfer to IBAN …"
+#: raised nothing. The false alarms that put the payment checks in the set (a
+#: date read as a sort code, "account" read as payment language) are fixed in
+#: the extractor itself (7b9b9e5).
+_COUNTERPARTY_SERVICES = frozenset({"A7", "B9"})
 
 
 def is_platform_notice(mail: MailEvent | None) -> bool:

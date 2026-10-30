@@ -100,6 +100,35 @@ def is_platform_domain(domain: str) -> bool:
     return registrable_domain(domain) in _PLATFORM_DOMAINS
 
 
+#: Width of `Counterparty.registrable_domain`, which a free-mail key must fit.
+_MAX_COUNTERPARTY_KEY = 253
+
+
+def counterparty_key(address: str) -> str:
+    """Who a sender is, for the counterparty history: their domain, or for a
+    free-mail sender their whole address.
+
+    A gmail.com domain is shared by everyone on it. Keyed by domain, every new
+    stranger on Gmail inherited whatever gmail.com had sent before: first-contact
+    (A7) never fired again after one Gmail correspondent, the AI judge was told
+    "known correspondent", and A1 compared their IBAN with someone else's.
+    """
+    domain = registrable_domain(address)
+    if domain in _FREE_MAIL and "@" in address:
+        return address.strip().lower()[:_MAX_COUNTERPARTY_KEY]
+    return domain
+
+
+def display_skeleton(text: str) -> str:
+    """A display name folded the way it renders: invisible characters removed,
+    then the same skeleton as domains (Cyrillic and Greek look-alikes, digits for
+    letters). `Gem<ZWSP>ini` and a Cyrillic `Gеmini` both showed "Gemini" to the
+    reader while the plain substring check saw neither."""
+    from envelock.util.payments import normalise_text
+
+    return skeleton(normalise_text(text))
+
+
 def skeleton(domain: str) -> str:
     """Collapse a domain to its visual skeleton.
 

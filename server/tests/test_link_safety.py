@@ -36,7 +36,7 @@ def test_rewritable_urls_filters_owned_unsubscribe_and_own_redirector():
     urls = [
         "https://evil.example.com/pay",
         "https://acme.com/portal",  # tenant's own domain — never rewritten
-        "https://news.example.com/unsubscribe?u=1",  # unsubscribe — never
+        "https://acme.us1.list-manage.com/unsubscribe?u=1",  # list unsubscribe — never
         f"{BASE}/r/sometoken",  # already ours — never
         "https://evil.example.com/pay",  # duplicate — once
     ]

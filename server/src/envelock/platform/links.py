@@ -32,9 +32,14 @@ from envelock.util.domains import registrable_domain
 
 logger = logging.getLogger("envelock.links")
 
-#: Link classes that must never be rewritten (plan §7): breaking an unsubscribe
-#: or calendar link creates support pain disproportionate to any protection.
-_NEVER_REWRITE_MARKERS = ("unsubscribe", "list-manage", "calendar.google.com/calendar", ".ics")
+#: Link classes that must never be rewritten (plan §7): breaking a mailing-list
+#: unsubscribe or a calendar link creates support pain disproportionate to any
+#: protection. Matched on the link's HOST. They were substrings of the whole URL,
+#: so a phishing link opted out of the click-time check by ending in
+#: `#unsubscribe` or `?.ics`. Any other unsubscribe link is rewritten like the
+#: rest: the redirector forwards to it after the check, which does not break it.
+_NEVER_REWRITE_DOMAINS = frozenset({"list-manage.com"})
+_NEVER_REWRITE_HOSTS = frozenset({"calendar.google.com"})
 
 
 def url_host(url: str) -> str:
@@ -48,7 +53,7 @@ def rewritable_urls(
     """The subset of a message's URLs that should be rewritten.
 
     Skips the tenant's own domains, anything already pointing at our redirector,
-    and unsubscribe/calendar links.
+    and mailing-list unsubscribe and calendar hosts.
     """
     out: list[str] = []
     seen: set[str] = set()
@@ -62,8 +67,7 @@ def rewritable_urls(
             continue
         if registrable_domain(host) in owned_domains:
             continue
-        lowered = url.lower()
-        if any(marker in lowered for marker in _NEVER_REWRITE_MARKERS):
+        if host in _NEVER_REWRITE_HOSTS or registrable_domain(host) in _NEVER_REWRITE_DOMAINS:
             continue
         out.append(url)
     return out
