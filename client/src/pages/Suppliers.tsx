@@ -39,12 +39,13 @@ import {
   auth,
   type BankRecord,
   type Counterparty,
+  type ReauthCreds,
   type SupplierDetail,
   type VendorImportResult,
 } from "../lib/api";
 import { Button, TierChip, cn } from "../components/primitives";
 import AccountingPanel from "../components/AccountingPanel";
-import ConfirmDialog from "../components/ConfirmDialog";
+import ReAuthDialog from "../components/ReAuthDialog";
 import { toast } from "../lib/toast";
 
 const SCHEMES: { id: BankRecord["scheme"]; label: string; hint: string }[] = [
@@ -260,34 +261,54 @@ function AddSupplier({ onAdded }: { onAdded: (domain: string) => Promise<void> }
   const [identifier, setIdentifier] = useState("");
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
+  // A re-auth is needed only when this form writes verified ground truth — a
+  // callback number or a bank account. Domain + display name alone does not.
+  const [reauthOpen, setReauthOpen] = useState(false);
+  const [reauthError, setReauthError] = useState<string | null>(null);
 
-  async function submit() {
+  function submit() {
     const value = domain.trim().toLowerCase();
     if (!value.includes(".")) {
       toast.error("Enter the supplier's domain, like acme.com.");
       return;
     }
+    if (phone.trim() || identifier.trim()) {
+      setReauthError(null);
+      setReauthOpen(true);
+      return;
+    }
+    void write();
+  }
+
+  async function write(creds?: ReauthCreds) {
+    const value = domain.trim().toLowerCase();
     setBusy(true);
+    setReauthError(null);
     try {
-      const r = await api.addSupplier({
-        domain: value,
-        ...(name.trim() ? { display_name: name.trim() } : {}),
-        ...(phone.trim() ? { verified_phone: phone.trim() } : {}),
-      });
+      const r = await api.addSupplier(
+        {
+          domain: value,
+          ...(name.trim() ? { display_name: name.trim() } : {}),
+          ...(phone.trim() ? { verified_phone: phone.trim() } : {}),
+        },
+        creds,
+      );
       // The bank record is a separate resource, so it is a second call. A
       // failure here must not read as "the supplier wasn't added" — it was.
       let bankWarning = "";
       if (identifier.trim()) {
         try {
-          await api.addBankRecord(r.domain, {
-            scheme,
-            identifier: identifier.trim(),
-          });
+          await api.addBankRecord(
+            r.domain,
+            { scheme, identifier: identifier.trim() },
+            creds ?? { current_password: "" },
+          );
         } catch (e) {
           bankWarning =
             e instanceof ApiError ? ` The account was refused: ${e.message}` : "";
         }
       }
+      setReauthOpen(false);
       setDomain("");
       setName("");
       setIdentifier("");
@@ -297,15 +318,19 @@ function AddSupplier({ onAdded }: { onAdded: (domain: string) => Promise<void> }
       else toast.success(base);
       await onAdded(r.domain);
     } catch (e) {
-      toast.error(
-        e instanceof ApiError ? e.message : "Could not add that supplier.",
-      );
+      // A wrong password keeps the prompt open; anything else is a toast.
+      if (e instanceof ApiError && e.status === 401) {
+        setReauthError(e.message);
+      } else {
+        setReauthOpen(false);
+        toast.error(e instanceof ApiError ? e.message : "Could not add that supplier.");
+      }
     } finally {
       setBusy(false);
     }
   }
 
-  const enter = (e: { key: string }) => e.key === "Enter" && void submit();
+  const enter = (e: { key: string }) => e.key === "Enter" && submit();
 
   return (
     <div className="flex flex-col gap-2">
@@ -372,7 +397,7 @@ function AddSupplier({ onAdded }: { onAdded: (domain: string) => Promise<void> }
         variant="accent"
         className="self-start"
         disabled={busy}
-        onClick={() => void submit()}
+        onClick={() => submit()}
       >
         {busy ? (
           <Loader2 size={14} className="animate-spin" aria-hidden />
@@ -382,6 +407,17 @@ function AddSupplier({ onAdded }: { onAdded: (domain: string) => Promise<void> }
           </>
         )}
       </Button>
+
+      <ReAuthDialog
+        open={reauthOpen}
+        title="Confirm it's you"
+        body="You're saving an account or callback number for this supplier — the details we check future invoices against — so confirm your password."
+        confirmLabel="ADD SUPPLIER"
+        busy={busy}
+        error={reauthError}
+        onConfirm={(creds) => void write(creds)}
+        onCancel={() => setReauthOpen(false)}
+      />
     </div>
   );
 }
@@ -404,7 +440,17 @@ function SupplierDetailPanel({
   const [bankName, setBankName] = useState("");
   const [phone, setPhone] = useState("");
   const [busy, setBusy] = useState(false);
-  const [retiring, setRetiring] = useState<BankRecord | null>(null);
+  // One re-auth gate for the three writes to verified ground truth (recording an
+  // account, retiring one, saving the callback number). The server forces a
+  // fresh re-auth on each, so a stolen session can't quietly point a supplier's
+  // known-good details at an attacker.
+  const [reauth, setReauth] = useState<{
+    title: string;
+    body: string;
+    label: string;
+    run: (creds: ReauthCreds) => Promise<void>;
+  } | null>(null);
+  const [reauthError, setReauthError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -423,59 +469,83 @@ function SupplierDetailPanel({
     void load();
   }, [load]);
 
-  async function addRecord() {
+  // Run a gated write, keeping the prompt open with an error on a wrong password
+  // (401) and closing it (with a toast) on anything else.
+  async function runGated(creds: ReauthCreds, work: () => Promise<void>) {
+    setBusy(true);
+    setReauthError(null);
+    try {
+      await work();
+      setReauth(null);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        setReauthError(e.message);
+      } else {
+        setReauth(null);
+        toast.error(e instanceof ApiError ? e.message : "Could not save that change.");
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function addRecord() {
     if (!identifier.trim()) return;
-    setBusy(true);
-    try {
-      await api.addBankRecord(domain, {
-        scheme,
-        identifier: identifier.trim(),
-        ...(bankName.trim() ? { bank_name: bankName.trim() } : {}),
-      });
-      setIdentifier("");
-      setBankName("");
-      toast.success("Payment details recorded.");
-      await load();
-      await onChanged();
-    } catch (e) {
-      toast.error(
-        e instanceof ApiError ? e.message : "Could not save those details.",
-      );
-    } finally {
-      setBusy(false);
-    }
+    const scheme_ = scheme;
+    const id_ = identifier.trim();
+    const bank_ = bankName.trim();
+    setReauthError(null);
+    setReauth({
+      title: "Confirm it's you",
+      body: "Recording an expected account is what we check future invoices against, so confirm your password.",
+      label: "SAVE DETAILS",
+      run: (creds) =>
+        runGated(creds, async () => {
+          await api.addBankRecord(
+            domain,
+            { scheme: scheme_, identifier: id_, ...(bank_ ? { bank_name: bank_ } : {}) },
+            creds,
+          );
+          setIdentifier("");
+          setBankName("");
+          toast.success("Payment details recorded.");
+          await load();
+          await onChanged();
+        }),
+    });
   }
 
-  async function saveNumber() {
-    setBusy(true);
-    try {
-      await api.setCallbackNumber(domain, phone.trim());
-      toast.success("Callback number saved.");
-      await load();
-      await onChanged();
-    } catch (e) {
-      toast.error(
-        e instanceof ApiError ? e.message : "Could not save that number.",
-      );
-    } finally {
-      setBusy(false);
-    }
+  function saveNumber() {
+    const phone_ = phone.trim();
+    setReauthError(null);
+    setReauth({
+      title: "Confirm it's you",
+      body: "The callback number is what we tell people to ring to verify a change, so confirm your password to set it.",
+      label: "SAVE NUMBER",
+      run: (creds) =>
+        runGated(creds, async () => {
+          await api.setCallbackNumber(domain, phone_, creds);
+          toast.success("Callback number saved.");
+          await load();
+          await onChanged();
+        }),
+    });
   }
 
-  async function confirmRetire() {
-    if (!retiring) return;
-    setBusy(true);
-    try {
-      await api.retireBankRecord(domain, retiring.id);
-      toast.success("Marked as no longer in use.");
-      setRetiring(null);
-      await load();
-      await onChanged();
-    } catch (e) {
-      toast.error(e instanceof ApiError ? e.message : "Could not update that.");
-    } finally {
-      setBusy(false);
-    }
+  function retire(record: BankRecord) {
+    setReauthError(null);
+    setReauth({
+      title: "No longer in use?",
+      body: `We'll stop treating ${record.identifier} as this supplier's expected account, and start flagging payments to it. The record is kept as history. Confirm your password to continue.`,
+      label: "MARK AS OLD",
+      run: (creds) =>
+        runGated(creds, async () => {
+          await api.retireBankRecord(domain, record.id, creds);
+          toast.success("Marked as no longer in use.");
+          await load();
+          await onChanged();
+        }),
+    });
   }
 
   const active = detail?.records.filter((r) => r.active) ?? [];
@@ -515,7 +585,7 @@ function SupplierDetailPanel({
               {canEdit && (
                 <button
                   type="button"
-                  onClick={() => setRetiring(r)}
+                  onClick={() => retire(r)}
                   aria-label={`Mark ${r.identifier} as no longer in use`}
                   className="fg-3 cursor-pointer p-1 transition-colors hover:text-[var(--fg)]"
                 >
@@ -615,18 +685,15 @@ function SupplierDetailPanel({
         </p>
       )}
 
-      <ConfirmDialog
-        open={retiring !== null}
-        title="No longer in use?"
-        body={
-          retiring
-            ? `We'll stop treating ${retiring.identifier} as this supplier's expected account, and start flagging payments to it. The record is kept as history.`
-            : ""
-        }
-        confirmLabel="MARK AS OLD"
+      <ReAuthDialog
+        open={reauth !== null}
+        title={reauth?.title ?? ""}
+        body={reauth?.body ?? ""}
+        confirmLabel={reauth?.label ?? "CONFIRM"}
         busy={busy}
-        onConfirm={() => void confirmRetire()}
-        onCancel={() => setRetiring(null)}
+        error={reauthError}
+        onConfirm={(creds) => void reauth?.run(creds)}
+        onCancel={() => setReauth(null)}
       />
     </div>
   );

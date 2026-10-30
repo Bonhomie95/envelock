@@ -100,6 +100,47 @@ router = APIRouter(prefix="/api/v1", tags=["tenant"])
 
 Session = Annotated[AsyncSession, Depends(get_session)]
 
+
+class ReauthRequest(BaseModel):
+    """Fresh re-authentication for a sensitive change (PRD §15.1 forced re-auth).
+
+    The current password, plus an authenticator code when MFA is on. Carried in
+    the request body so the one shared client prompt can supply it for any of the
+    endpoints that need it, including the DELETE routes.
+    """
+
+    current_password: str = Field(max_length=256)
+    mfa_code: str | None = Field(default=None, pattern=r"^\d{6}$")
+
+
+async def _step_up(
+    session: AsyncSession, principal, reauth: ReauthRequest | None  # noqa: ANN001
+) -> None:
+    """Re-verify the live caller before a sensitive change.
+
+    Shared by every endpoint that mutates something a stolen session must not be
+    able to change on its own — mailbox removal and the supplier ground truth A1
+    checks against. `require_mfa_enrolment=False` so a non-MFA account can still
+    re-auth with its password (same rule as the password-change flow); MFA
+    accounts additionally need a fresh code.
+
+    A missing body (`None`) is treated as an empty password, which fails closed —
+    so a DELETE route can keep its ownership 404 check ahead of this (no body is
+    not a password oracle) and still refuse an owned delete that carries no
+    re-auth.
+    """
+    from envelock.api.auth import _verify_step_up
+
+    user = await session.get(User, principal.user_id)
+    if user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "invalid credentials")
+    await _verify_step_up(
+        user,
+        password=reauth.current_password if reauth else "",
+        mfa_code=reauth.mfa_code if reauth else None,
+        require_mfa_enrolment=False,
+    )
+
 #: Sources that mean a mailbox's MAIL is actually being ingested (vs identity-only
 #: signals). Used to tell "connected" from "unconnected".
 _MAIL_SOURCES = frozenset(
@@ -1473,7 +1514,12 @@ async def mailbox_activity(mailbox_id: UUID, actor: ActiveUser, session: Session
 
 
 @router.delete("/mailboxes/{mailbox_id}")
-async def remove_mailbox(mailbox_id: UUID, principal: AdminUser, session: Session) -> dict:
+async def remove_mailbox(
+    mailbox_id: UUID,
+    principal: AdminUser,
+    session: Session,
+    reauth: ReauthRequest | None = None,
+) -> dict:
     """Disconnect and remove a mailbox and everything that hangs off it.
 
     A mailbox is the parent of messages, findings, sensor sessions and its stored
@@ -1481,8 +1527,14 @@ async def remove_mailbox(mailbox_id: UUID, principal: AdminUser, session: Sessio
     500s (the reported bug). We remove them in FK-safe order — children first —
     and deliberately *keep* alerts as the customer's incident record, detaching
     them from the mailbox rather than deleting the history.
+
+    `mailbox.disconnect` is in SENSITIVE_ACTIONS, so it takes a fresh re-auth: it
+    destroys a stored credential and stops protection, which a stolen session must
+    not be able to do silently. The 404 ownership check runs FIRST, so a
+    cross-tenant id stays a 404 rather than becoming a password oracle.
     """
     mailbox = await _mailbox_or_404(session, mailbox_id, principal.tenant_id)
+    await _step_up(session, principal, reauth)
     address = mailbox.address
     mid = mailbox.id
 
@@ -2317,20 +2369,25 @@ async def run_escalations(principal: AdminUser, session: Session) -> dict:
 BankScheme = Literal["iban", "swift", "ach", "sortcode", "account", "crypto"]
 
 
-class BankRecordRequest(BaseModel):
+class BankRecordRequest(ReauthRequest):
     scheme: BankScheme
     identifier: str = Field(min_length=4, max_length=128)
     bank_name: str | None = Field(default=None, max_length=255)
     country: str | None = Field(default=None, min_length=2, max_length=2)
 
 
-class CounterpartyPhoneRequest(BaseModel):
+class CounterpartyPhoneRequest(ReauthRequest):
     """A2 — the number we tell people to call.
 
     This is the whole point of the registry: when a supplier's bank details
     change, the alert must offer a number the ATTACKER did not supply. It was
     previously a bare query parameter with no validation, which meant it could
     be set to anything, including an empty string.
+
+    Setting it is verified ground truth (F2), so it takes a fresh re-auth: a
+    stolen session changing the callback number to the attacker's would defeat
+    the one check (A2) that is supposed to reach a channel the attacker does not
+    control.
     """
 
     phone: str = Field(min_length=7, max_length=32, pattern=r"^\+?[0-9 ()\-]{7,31}$")
@@ -2349,6 +2406,11 @@ class CounterpartyRequest(BaseModel):
     verified_phone: str | None = Field(
         default=None, max_length=32, pattern=r"^\+?[0-9 ()\-]{7,31}$"
     )
+    #: Required only when `verified_phone` is being set — that write is verified
+    #: ground truth and takes a re-auth (F2). Adding a display name alone does
+    #: not, so these stay optional on the model and are checked in the handler.
+    current_password: str | None = Field(default=None, max_length=256)
+    mfa_code: str | None = Field(default=None, pattern=r"^\d{6}$")
 
 
 @router.get("/counterparties")
@@ -2430,6 +2492,18 @@ async def upsert_counterparty(
     if not valid_domain(reg):
         raise HTTPException(422, f"{req.domain} is not a valid domain")
 
+    # Setting the callback number is verified ground truth (A2), so it takes a
+    # re-auth and is audited — parity with `set_phone`, which already did both.
+    # The previous silent, unaudited write here let a stolen session point the
+    # one attacker-independent verification channel at the attacker, with no trail.
+    setting_phone = req.verified_phone is not None
+    if setting_phone:
+        await _step_up(
+            session,
+            principal,
+            ReauthRequest(current_password=req.current_password or "", mfa_code=req.mfa_code),
+        )
+
     row = (
         await session.execute(
             select(Counterparty).where(
@@ -2451,8 +2525,16 @@ async def upsert_counterparty(
         session.add(row)
     if req.display_name is not None:
         row.display_name = req.display_name
-    if req.verified_phone is not None:
+    if setting_phone:
         row.verified_phone = req.verified_phone
+        await alert_svc.record_audit(
+            session,
+            tenant_id=principal.tenant_id,
+            actor_id=principal.user_id,
+            action="counterparty.callback_number_set",
+            target_type="counterparty",
+            detail={"domain": reg},
+        )
     await session.commit()
     return {"domain": reg, "created": created, "display_name": row.display_name}
 
@@ -2517,7 +2599,11 @@ async def list_bank_records(
 
 @router.delete("/counterparties/{domain}/bank-records/{record_id}")
 async def retire_bank_record(
-    domain: str, record_id: UUID, principal: AdminUser, session: Session
+    domain: str,
+    record_id: UUID,
+    principal: AdminUser,
+    session: Session,
+    reauth: ReauthRequest | None = None,
 ) -> dict:
     """Retire a record — deactivate, never delete.
 
@@ -2526,6 +2612,10 @@ async def retire_bank_record(
     dispute asks "what did we have on file in March", a deleted row cannot
     answer, and an attacker who gained admin access could otherwise erase the
     detection's entire basis and leave nothing behind.
+
+    Retiring the known-good account is a write to verified ground truth (F2), so
+    it takes a fresh re-auth — after the 404 ownership check, so a cross-tenant id
+    is not a password oracle.
     """
     reg = registrable_domain(domain)
     record = await session.get(BankRecord, record_id)
@@ -2536,6 +2626,7 @@ async def retire_bank_record(
     if counterparty is None or counterparty.registrable_domain != reg:
         raise HTTPException(404, "bank record not found")
 
+    await _step_up(session, principal, reauth)
     record.is_active = False
     await alert_svc.record_audit(
         session,
@@ -2571,6 +2662,7 @@ async def set_phone(
     reg = registrable_domain(domain)
     if not valid_domain(reg):
         raise HTTPException(422, f"{domain} is not a valid domain")
+    await _step_up(session, principal, req)
     row = (
         await session.execute(
             select(Counterparty).where(
@@ -2606,7 +2698,15 @@ async def set_phone(
 async def add_bank_record(
     domain: str, req: BankRecordRequest, principal: AdminUser, session: Session
 ) -> dict:
+    """Record a supplier's known-good account (A1 ground truth).
+
+    This is what every inbound bank-change is checked against, so writing it
+    takes a fresh re-auth (F2): a stolen session that could silently set the
+    "known-good" account to the fraudster's would make the fraudulent email
+    match and raise nothing. Audited, for parity with retiring one.
+    """
     reg = registrable_domain(domain)
+    await _step_up(session, principal, req)
     row = (
         await session.execute(
             select(Counterparty).where(
@@ -2653,6 +2753,16 @@ async def add_bank_record(
     record.is_active = True
     record.verified_at = datetime.now(UTC)
     record.verified_by = principal.user_id
+    await session.flush()  # so a newly-created record has its id for the audit link
+    await alert_svc.record_audit(
+        session,
+        tenant_id=principal.tenant_id,
+        actor_id=principal.user_id,
+        action="counterparty.bank_record_added",
+        target_type="bank_record",
+        target_id=record.id,
+        detail={"domain": reg, "scheme": req.scheme},
+    )
     await session.commit()
     return {"domain": reg, "identifier": record.identifier, "verified": True}
 

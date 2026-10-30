@@ -1,5 +1,13 @@
 export type Tier = "low" | "medium" | "high" | "critical";
 
+/** Fresh re-authentication for a sensitive change: the current password, plus an
+ *  authenticator code the server needs only when two-factor is on. Supplied by
+ *  the shared ReAuthDialog. */
+export interface ReauthCreds {
+  current_password: string;
+  mfa_code?: string;
+}
+
 export interface Finding {
   // Null in the customer lab — the internal detection code is withheld
   // server-side (PRD §16); `category` is the public, plain-English grouping.
@@ -708,13 +716,30 @@ async function download(path: string, fallbackName: string, _retried = false): P
 const SESSION_ONLY_AUTH = [
   "/auth/me",
   "/auth/logout",
-  "/auth/mfa/enroll",
+  // NOT /auth/mfa/enroll: it now re-authenticates (current password), so a 401
+  // there is a wrong password to surface, not a dead session to sign out of.
   "/auth/phone/start",
   "/auth/verify-email/resend",
 ];
 
+// Mutations that now take a fresh re-auth (SENSITIVE_ACTIONS + the supplier
+// ground-truth writes). A 401 here answers the password just typed, so it must
+// surface as an error on the form, not sign the person out as a dead session.
+function reauthenticates(path: string, init?: RequestInit): boolean {
+  const method = init?.method ?? "GET";
+  if (method === "DELETE" && /^\/api\/v1\/mailboxes\/[^/]+$/.test(path)) return true;
+  if (
+    (method === "POST" || method === "DELETE") &&
+    (path.includes("/counterparties") || path.includes("/bank-records"))
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function checksCredentials(path: string, init?: RequestInit): boolean {
   if (path === "/api/v1/tenant" && init?.method === "DELETE") return true;
+  if (reauthenticates(path, init)) return true;
   return path.includes("/auth/") && !SESSION_ONLY_AUTH.some((p) => path.includes(p));
 }
 
@@ -935,15 +960,18 @@ export const api = {
     }),
 
   // Turn MFA on from inside an authenticated session (for users who skipped it).
-  mfaEnroll: () =>
+  // Binding a second factor is a sensitive change, so both calls carry the
+  // current password (the server refuses a session that cannot re-authenticate).
+  mfaEnroll: (reauth: { current_password: string; mfa_code?: string }) =>
     request<{ secret: string; otpauth_uri: string }>("/api/v1/auth/mfa/enroll", {
       method: "POST",
+      body: JSON.stringify(reauth),
     }),
 
-  mfaActivate: (code: string) =>
+  mfaActivate: (code: string, current_password: string) =>
     request<{ mfa_enabled: boolean; recovery_codes: string[] }>(
       "/api/v1/auth/mfa/activate",
-      { method: "POST", body: JSON.stringify({ code }) },
+      { method: "POST", body: JSON.stringify({ code, current_password }) },
     ),
 
   // Change the account password behind a step-up re-auth. All other sessions are
@@ -1106,14 +1134,19 @@ export const api = {
    *  rather than a guess. The server has had these endpoints all along; nothing
    *  in the app called them, so the one capability competitors cannot copy was
    *  unreachable. */
-  addSupplier: (body: {
-    domain: string;
-    display_name?: string;
-    verified_phone?: string;
-  }) =>
+  // Setting `verified_phone` is verified ground truth, so it takes a re-auth;
+  // adding a display name alone does not (the server enforces this split).
+  addSupplier: (
+    body: {
+      domain: string;
+      display_name?: string;
+      verified_phone?: string;
+    },
+    reauth?: ReauthCreds,
+  ) =>
     request<{ domain: string; created: boolean }>("/api/v1/counterparties", {
       method: "POST",
-      body: JSON.stringify(body),
+      body: JSON.stringify({ ...body, ...reauth }),
     }),
 
   supplierRecords: (domain: string) =>
@@ -1129,22 +1162,23 @@ export const api = {
       bank_name?: string;
       country?: string;
     },
+    reauth: ReauthCreds,
   ) =>
     request<{ domain: string; identifier: string }>(
       `/api/v1/counterparties/${encodeURIComponent(domain)}/bank-records`,
-      { method: "POST", body: JSON.stringify(body) },
+      { method: "POST", body: JSON.stringify({ ...body, ...reauth }) },
     ),
 
-  retireBankRecord: (domain: string, id: string) =>
+  retireBankRecord: (domain: string, id: string, reauth: ReauthCreds) =>
     request<{ id: string; active: boolean }>(
       `/api/v1/counterparties/${encodeURIComponent(domain)}/bank-records/${id}`,
-      { method: "DELETE" },
+      { method: "DELETE", body: JSON.stringify(reauth) },
     ),
 
-  setCallbackNumber: (domain: string, phone: string) =>
+  setCallbackNumber: (domain: string, phone: string, reauth: ReauthCreds) =>
     request<{ domain: string; verified_phone: string }>(
       `/api/v1/counterparties/${encodeURIComponent(domain)}/phone`,
-      { method: "POST", body: JSON.stringify({ phone }) },
+      { method: "POST", body: JSON.stringify({ phone, ...reauth }) },
     ),
 
   /** Import the AP vendor master. `dry_run` previews without writing. */
@@ -1405,10 +1439,12 @@ export const api = {
   revokeSensorDevice: (deviceId: string) =>
     request<void>(`/api/v1/sensor/devices/${deviceId}`, { method: "DELETE" }),
 
-  removeMailbox: (mailboxId: string) =>
+  // Disconnecting a mailbox deletes its stored credential and stops protection,
+  // so it takes a fresh re-auth (SENSITIVE_ACTIONS: mailbox.disconnect).
+  removeMailbox: (mailboxId: string, reauth: ReauthCreds) =>
     request<{ removed: boolean; address: string }>(
       `/api/v1/mailboxes/${mailboxId}`,
-      { method: "DELETE" },
+      { method: "DELETE", body: JSON.stringify(reauth) },
     ),
 
   ingestAddress: () =>

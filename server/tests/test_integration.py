@@ -41,22 +41,31 @@ async def client():
         yield c
 
 
+_SIGNIN_PW = "a-long-enough-pw"
+
+
 def sign_in(client: TestClient, email="it@acme.com") -> str:
+    """A signed-in owner. MFA is deferred (skip) rather than enrolled: nothing
+    here exercises the second factor, and a password-only session keeps the
+    re-auth these flows now need (step-up on supplier ground truth) from racing
+    the sign-in code inside a single TOTP window."""
     client.post(
         "/api/v1/auth/register",
-        json={"email": email, "password": "a-long-enough-pw", "tenant_name": "Acme"},
+        json={"email": email, "password": _SIGNIN_PW, "tenant_name": "Acme"},
     )
     login = client.post(
-        "/api/v1/auth/login", json={"email": email, "password": "a-long-enough-pw"}
-    ).json()
-    setup = client.post(
-        "/api/v1/auth/mfa/setup", json={"token": login["mfa_token"]}
+        "/api/v1/auth/login", json={"email": email, "password": _SIGNIN_PW}
     ).json()
     tokens = client.post(
-        "/api/v1/auth/mfa/verify",
-        json={"mfa_token": login["mfa_token"], "code": totp(setup["secret"])},
+        "/api/v1/auth/mfa/skip", json={"token": login["mfa_token"]}
     ).json()
     return tokens["access_token"]
+
+
+def step_up(email: str = "it@acme.com") -> dict:
+    """Re-auth fields for a sensitive change on a `sign_in` session: the current
+    password (the session has no second factor to add a code for)."""
+    return {"current_password": _SIGNIN_PW}
 
 
 def auth(token: str) -> dict:
@@ -156,7 +165,7 @@ async def test_whole_journey_signup_to_acknowledged_alert(
     # surfaced further down as a missing callback on the alert.
     phone_set = client.post(
         "/api/v1/counterparties/gemini.com/phone",
-        json={"phone": "+1 803 000 0000"},
+        json={"phone": "+1 803 000 0000", **step_up()},
         headers=h,
     )
     assert phone_set.status_code == 200, phone_set.text

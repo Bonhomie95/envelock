@@ -89,7 +89,11 @@ def test_a_bank_record_is_counted_against_the_supplier(
     exists to move."""
     client.post(
         "/api/v1/counterparties/acme-supplies.example/bank-records",
-        json={"scheme": "iban", "identifier": "GB29 NWBK 6016 1331 9268 19"},
+        json={
+            "scheme": "iban",
+            "identifier": "GB29 NWBK 6016 1331 9268 19",
+            "current_password": PW,
+        },
         headers=admin,
     )
     listed = client.get("/api/v1/counterparties", headers=admin).json()["counterparties"]
@@ -105,7 +109,11 @@ def test_the_identifier_is_stored_without_spacing(
     header. Storing the printed form would mean never matching the wire form."""
     client.post(
         "/api/v1/counterparties/acme-supplies.example/bank-records",
-        json={"scheme": "iban", "identifier": "GB29 NWBK 6016 1331 9268 19"},
+        json={
+            "scheme": "iban",
+            "identifier": "GB29 NWBK 6016 1331 9268 19",
+            "current_password": PW,
+        },
         headers=admin,
     )
     records = client.get(
@@ -121,7 +129,7 @@ def test_a_supplier_with_no_callback_number_is_flagged_as_incomplete(
     and it is the one that fails at the exact moment it matters."""
     client.post(
         "/api/v1/counterparties/acme-supplies.example/bank-records",
-        json={"scheme": "iban", "identifier": "GB29NWBK60161331926819"},
+        json={"scheme": "iban", "identifier": "GB29NWBK60161331926819", "current_password": PW},
         headers=admin,
     )
     listed = client.get("/api/v1/counterparties", headers=admin).json()["counterparties"]
@@ -130,7 +138,7 @@ def test_a_supplier_with_no_callback_number_is_flagged_as_incomplete(
 
     client.post(
         "/api/v1/counterparties/acme-supplies.example/phone",
-        json={"phone": "+1 555 0100"},
+        json={"phone": "+1 555 0100", "current_password": PW},
         headers=admin,
     )
     listed = client.get("/api/v1/counterparties", headers=admin).json()["counterparties"]
@@ -145,7 +153,7 @@ def test_a_callback_number_can_be_set_before_the_supplier_exists(
     recording the number BEFORE the first email is the safe order."""
     r = client.post(
         "/api/v1/counterparties/brand-new.example/phone",
-        json={"phone": "+44 20 7946 0000"},
+        json={"phone": "+44 20 7946 0000", "current_password": PW},
         headers=admin,
     )
     assert r.status_code == 200, r.text
@@ -159,7 +167,7 @@ def test_a_malformed_callback_number_is_refused(
     worse than having none, because someone will trust it."""
     r = client.post(
         "/api/v1/counterparties/acme-supplies.example/phone",
-        json={"phone": "call me"},
+        json={"phone": "call me", "current_password": PW},
         headers=admin,
     )
     assert r.status_code == 422
@@ -173,7 +181,7 @@ def test_retiring_a_record_deactivates_it_without_destroying_the_history(
     anyone who reached admin — must not be able to erase what we held on file."""
     client.post(
         "/api/v1/counterparties/acme-supplies.example/bank-records",
-        json={"scheme": "iban", "identifier": "GB29NWBK60161331926819"},
+        json={"scheme": "iban", "identifier": "GB29NWBK60161331926819", "current_password": PW},
         headers=admin,
     )
     records = client.get(
@@ -181,8 +189,10 @@ def test_retiring_a_record_deactivates_it_without_destroying_the_history(
     ).json()["records"]
     record_id = records[0]["id"]
 
-    r = client.delete(
+    r = client.request(
+        "DELETE",
         f"/api/v1/counterparties/acme-supplies.example/bank-records/{record_id}",
+        json={"current_password": PW},
         headers=admin,
     )
     assert r.status_code == 200, r.text
@@ -204,7 +214,7 @@ def test_one_tenant_cannot_retire_another_tenants_bank_record(
     """The id is a UUID, but tenant scoping must not rest on it being unguessable."""
     client.post(
         "/api/v1/counterparties/acme-supplies.example/bank-records",
-        json={"scheme": "iban", "identifier": "GB29NWBK60161331926819"},
+        json={"scheme": "iban", "identifier": "GB29NWBK60161331926819", "current_password": PW},
         headers=admin,
     )
     record_id = client.get(
@@ -232,7 +242,7 @@ def test_a_member_cannot_edit_the_registry_but_can_read_it(
     the question that stops the payment, so reading must not need admin."""
     client.post(
         "/api/v1/counterparties/acme-supplies.example/bank-records",
-        json={"scheme": "iban", "identifier": "GB29NWBK60161331926819"},
+        json={"scheme": "iban", "identifier": "GB29NWBK60161331926819", "current_password": PW},
         headers=admin,
     )
     r = client.get(
@@ -383,7 +393,8 @@ def test_an_account_can_be_added_again_and_a_retired_one_restored(client: TestCl
     file — imported, or retired after the supplier switched banks and then
     switched back — and a retired account could never become known again."""
     h = _admin(client, "ap@readd.example")
-    body = {"scheme": "iban", "identifier": "GB33BUKB20201555555555", "country": "GB"}
+    body = {"scheme": "iban", "identifier": "GB33BUKB20201555555555", "country": "GB",
+            "current_password": PW}
     url = "/api/v1/counterparties/supplier.example/bank-records"
 
     first = client.post(url, json=body, headers=h)
@@ -393,7 +404,12 @@ def test_an_account_can_be_added_again_and_a_retired_one_restored(client: TestCl
     records = client.get(url, headers=h).json()
     rows = records.get("records") or records.get("bank_records") or records
     record_id = rows[0]["id"]
-    assert client.delete(f"{url}/{record_id}", headers=h).status_code == 200
+    assert (
+        client.request(
+            "DELETE", f"{url}/{record_id}", json={"current_password": PW}, headers=h
+        ).status_code
+        == 200
+    )
     assert client.post(url, json=body, headers=h).status_code == 201  # back again
 
     rows = client.get(url, headers=h).json()

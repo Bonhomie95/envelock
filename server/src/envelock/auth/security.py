@@ -18,7 +18,11 @@ import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from functools import lru_cache
 from uuid import UUID
+
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
 from envelock.config import get_settings
 
@@ -226,8 +230,32 @@ def generate_numeric_otp(digits: int = 6) -> str:
     return "".join(str(secrets.randbelow(10)) for _ in range(digits))
 
 
+@lru_cache(maxsize=4)
+def _derive_otp_key(secret: bytes) -> bytes:
+    # Its own HKDF label, so this key is unrelated to the one sealing fields at
+    # rest (`security/fields.py`) or signing tokens, though all three start from
+    # ENVELOCK_SECRET_KEY.
+    return HKDF(
+        algorithm=hashes.SHA256(), length=32, salt=None, info=b"envelock/phone-otp/v1"
+    ).derive(secret)
+
+
+def _otp_key() -> bytes:
+    settings = get_settings()
+    secret = settings.secret_key.get_secret_value()
+    if not secret:
+        # Same rule as fields at rest: only local development may run keyless.
+        if settings.env != "development":
+            raise RuntimeError("ENVELOCK_SECRET_KEY is required to store one-time codes")
+        secret = "envelock-dev-phone-otp"  # noqa: S105 — development only
+    return _derive_otp_key(secret.encode())
+
+
 def hash_otp(code: str) -> str:
-    return hashlib.sha256(code.strip().encode()).hexdigest()
+    """Keyed, not a bare hash: a six-digit code has a million values, so a plain
+    SHA-256 in a database dump was the code itself. Compare with
+    `hmac.compare_digest`."""
+    return hmac.new(_otp_key(), code.strip().encode(), hashlib.sha256).hexdigest()
 
 
 def generate_recovery_codes(count: int = 10) -> list[str]:
@@ -281,13 +309,31 @@ REFRESH_TTL = timedelta(days=14)
 MFA_PENDING_TTL = timedelta(minutes=5)
 
 #: Actions that require a fresh password re-entry regardless of session age.
+#:
+#: This is a CONTRACT the server keeps, not advice to the client: every action
+#: named here has an endpoint that calls `_verify_step_up`, and
+#: `test_sensitive_actions_enforced.py` fails if one does not. The list was
+#: previously advertised by `/auth/sensitive-actions` while the server enforced
+#: none of it — a stolen session could disconnect a mailbox (and delete its
+#: stored credential) with no re-auth — so it is trimmed to exactly what is
+#: enforced:
+#:   * mailbox.disconnect  → tenants.remove_mailbox
+#:   * mfa.enroll          → auth.mfa_enroll / auth.mfa_activate
+#:   * mfa.disable         → auth.mfa_disable
+#:   * tenant.delete       → tenants.delete_tenant
+#:   * export.token_create → governance.create_token
+#:
+#: Two former entries are gone because no CUSTOMER endpoint enforces them:
+#: `user.role_change` happens only in the operator console (staff-gated, separate
+#: auth), and `billing.update` is a one-click plan change whose charge is
+#: confirmed on the billing page / behind Stripe's own portal auth — forcing a
+#: password there is a separate decision for the owner, not a silent gap.
 SENSITIVE_ACTIONS = frozenset(
     {
         "mailbox.disconnect",
-        "tenant.delete",
-        "billing.update",
-        "user.role_change",
+        "mfa.enroll",
         "mfa.disable",
+        "tenant.delete",
         "export.token_create",
     }
 )

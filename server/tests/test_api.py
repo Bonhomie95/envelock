@@ -550,7 +550,19 @@ def test_imap_test_endpoint_verifies_without_storing(
 
 
 def test_remove_mailbox(client: TestClient) -> None:
-    h = _auth_header(client, email="admin@removeco.dev")
+    # A password-only (MFA-deferred) session: removal now takes a step-up, and on
+    # an MFA session the step-up code would race the sign-in code inside one TOTP
+    # window. `_auth_header` stays MFA-enrolled for the tests that need a seed.
+    pw = "a-long-enough-passphrase"
+    client.post(
+        "/api/v1/auth/register",
+        json={"email": "admin@removeco.dev", "password": pw, "tenant_name": "RemoveCo"},
+    )
+    login = client.post(
+        "/api/v1/auth/login", json={"email": "admin@removeco.dev", "password": pw}
+    ).json()
+    skip = client.post("/api/v1/auth/mfa/skip", json={"token": login["mfa_token"]}).json()
+    h = {"Authorization": f"Bearer {skip['access_token']}"}
     client.post(
         "/api/v1/tenants/bootstrap",
         json={"name": "RemoveCo", "domain": "removeco.dev"},
@@ -561,7 +573,15 @@ def test_remove_mailbox(client: TestClient) -> None:
         json={"address": "x@removeco.dev", "mailbox_class": "monitored", "sources": []},
         headers=h,
     ).json()
-    assert client.delete(f"/api/v1/mailboxes/{mb['id']}", headers=h).status_code == 200
+    assert (
+        client.request(
+            "DELETE",
+            f"/api/v1/mailboxes/{mb['id']}",
+            json={"current_password": "a-long-enough-passphrase"},
+            headers=h,
+        ).status_code
+        == 200
+    )
     remaining = client.get("/api/v1/mailboxes", headers=h).json()["mailboxes"]
     assert all(m["id"] != mb["id"] for m in remaining)
 

@@ -432,6 +432,14 @@ async def oauth_callback(
     )
     # The real inbox the token reads differing from the label is said at once,
     # not left behind a clean success.
+    #
+    # F7: we warn, we do not block. Delegated OAuth's /me returns the CONSENTING
+    # user's primary address, which legitimately differs from the label in the
+    # normal Tier-1 setups — an alias mailbox, an M365 shared mailbox a person
+    # monitors with their own account, or a .onmicrosoft.com UPN behind a vanity
+    # domain. Refusing the connect on a mismatch would break all three; surfacing
+    # it (the dashboard shows "watching <other inbox>") lets the customer catch a
+    # genuinely wrong-account connect without penalising the common ones.
     return _connect_result(
         connected=mailbox.address, **({"mismatch": "1"} if mismatch else {})
     )

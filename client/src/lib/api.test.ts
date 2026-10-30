@@ -208,15 +208,19 @@ describe("registry calls", () => {
     );
   });
 
-  it("sends the callback number as a JSON body", async () => {
+  it("sends the callback number and re-auth as a JSON body", async () => {
     auth.set(fakeToken());
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ domain: "acme.com", verified_phone: "+1 555 0100" }),
     );
-    await api.setCallbackNumber("acme.com", "+1 555 0100");
+    // Setting verified ground truth takes a fresh re-auth, carried in the body.
+    await api.setCallbackNumber("acme.com", "+1 555 0100", { current_password: "pw" });
     const init = fetchMock.mock.calls[0][1] as RequestInit;
     expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({ phone: "+1 555 0100" });
+    expect(JSON.parse(String(init.body))).toEqual({
+      phone: "+1 555 0100",
+      current_password: "pw",
+    });
   });
 
   it("marks a dry-run import so the preview writes nothing", async () => {

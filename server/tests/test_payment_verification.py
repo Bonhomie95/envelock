@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select, update
-from test_integration import FRAUD, LEGIT, auth, sign_in
+from test_integration import FRAUD, LEGIT, auth, sign_in, step_up
 
 from envelock.config import get_settings
 
@@ -56,7 +56,7 @@ def _workspace(client: TestClient, email: str, domain: str) -> dict:
     box = f"pay@{domain}"
     client.post("/api/v1/mailboxes", json={"address": box, "mailbox_class": "protected"},
                 headers=h)
-    return {"h": h, "box": box, "domain": domain}
+    return {"h": h, "box": box, "domain": domain, "email": email}
 
 
 def _ingest(client: TestClient, ws: dict, raw: str) -> None:
@@ -77,8 +77,11 @@ def _bank_change_alert(client: TestClient, ws: dict) -> dict:
 
 
 def _set_supplier_phone(client: TestClient, ws: dict, phone: str = "+1 803 555 0100") -> None:
-    r = client.post("/api/v1/counterparties/gemini.com/phone", json={"phone": phone},
-                    headers=ws["h"])
+    r = client.post(
+        "/api/v1/counterparties/gemini.com/phone",
+        json={"phone": phone, **step_up(ws["email"])},
+        headers=ws["h"],
+    )
     assert r.status_code in (200, 201), r.text
 
 
