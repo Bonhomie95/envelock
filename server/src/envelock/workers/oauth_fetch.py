@@ -24,6 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from envelock.channels.mail import api_enforce, enforce
 from envelock.channels.mail.api_fetch import (
+    HttpxTransport,
     gmail_fetch_history,
     gmail_fetch_outbound,
     gmail_fetch_raw,
@@ -278,11 +279,29 @@ async def _watch_reads_gmail(
     return {"observed": observed, "alerted": alerted}
 
 
+#: Provider message ids this worker has already run through the pipeline, per
+#: mailbox, oldest first. A listing still returns them on every sync; this is
+#: what keeps them from being downloaded again. In memory on purpose: after a
+#: restart the first sync downloads its listing once — what every sync cost.
+_SEEN_REFS: dict[UUID, dict[str, None]] = {}
+
+#: Comfortably more than one inbox listing (50) plus one Sent listing (20).
+_SEEN_PER_MAILBOX = 500
+
+
+def _seen(mailbox_id: UUID) -> dict[str, None]:
+    return _SEEN_REFS.setdefault(mailbox_id, {})
+
+
+def _remember(mailbox_id: UUID, ref: str) -> None:
+    seen = _seen(mailbox_id)
+    seen.pop(ref, None)
+    seen[ref] = None
+    while len(seen) > _SEEN_PER_MAILBOX:
+        del seen[next(iter(seen))]
+
+
 async def sync_oauth_mailbox(
-
-
-
-
     session: AsyncSession,
     mailbox: Mailbox,
     *,
@@ -295,10 +314,37 @@ async def sync_oauth_mailbox(
     Critical is quarantined; High gets a banner + protected links; Medium/Low and
     clean mail get protected links only. Only a Protected-class mailbox is ever
     written to.
+
+    Every provider read in one sync shares one HTTP connection unless a
+    transport is injected.
     """
+    if transport is not None:
+        return await _sync_oauth_mailbox(
+            session, mailbox, transport=transport, write_transport=write_transport
+        )
+    import httpx
+
+    async with httpx.AsyncClient(timeout=20) as client:
+        return await _sync_oauth_mailbox(
+            session, mailbox, transport=HttpxTransport(client),
+            write_transport=write_transport,
+        )
+
+
+async def _sync_oauth_mailbox(
+    session: AsyncSession,
+    mailbox: Mailbox,
+    *,
+    transport,  # noqa: ANN001 — api_fetch.HttpTransport
+    write_transport=None,  # noqa: ANN001 — api_enforce.WriteTransport
+) -> dict:
     from envelock.db import set_current_tenant
+    from envelock.workers.imap_fetch import clear_sync_request
 
     set_current_tenant(mailbox.tenant_id)  # scope RLS to this mailbox's tenant
+    # The push/"Sync now" flag this sync answers. Read before the fetch, so one
+    # set while the sync runs is left standing for the next drain.
+    requested = mailbox.sync_requested_at
     tok = await current_access_token(session, mailbox.id)
     if tok is None:
         return {"ok": False, "reason": "no usable oauth token", "fetched": 0}
@@ -321,10 +367,14 @@ async def sync_oauth_mailbox(
     settings = get_settings()
     protected = mailbox.mailbox_class == MailboxClass.PROTECTED.value
     source = SourceMechanism.GMAIL_API if provider == "google" else SourceMechanism.GRAPH_API
+    # Ids already analysed are listed but not downloaded again.
+    known = _seen(mailbox.id)
 
     try:
         if provider == "google":
-            fetched = await gmail_fetch_raw(access_token=access_token, transport=transport)
+            fetched = await gmail_fetch_raw(
+                access_token=access_token, transport=transport, known=known
+            )
         else:
             # Delegated OAuth token: read as /me, never /users/{address}. The
             # token IS the signed-in user, and /me resolves to their own mailbox
@@ -337,6 +387,7 @@ async def sync_oauth_mailbox(
             fetched = await graph_fetch_raw(
                 access_token=access_token,
                 transport=transport,
+                known=known,
             )
     except Exception as exc:  # noqa: BLE001 — provider/network errors are non-fatal
         logger.warning("oauth fetch failed for mailbox %s: %s", mailbox.id, exc)
@@ -344,59 +395,17 @@ async def sync_oauth_mailbox(
 
     alerted = quarantined = rewritten = 0
     for item in fetched:
-        # Our own protected copy — never re-analyse or re-rewrite it.
-        if enforce.is_processed(item.raw, mailbox.id):
-            continue
-        event = await parse_message_async(
-            item.raw,
-            tenant_id=mailbox.tenant_id,
-            mailbox_id=mailbox.id,
-            source=source,
-            owned_domains=owned,
-            remediable=protected,
-            source_ref=item.ref,
+        outcome = await _handle_inbound(
+            session, mailbox, item,
+            provider=provider, access_token=access_token, source=source,
+            owned=owned, recipients=recipients, protected=protected,
+            write_transport=write_transport,
         )
-        pr = await analyse_event(
-            session,
-            event,
-            tenant_id=mailbox.tenant_id,
-            owned_domains=owned,
-            recipients=recipients,
-        )
-        if pr.duplicate:
-            continue
-        common: dict[str, Any] = {
-            "provider": provider, "access_token": access_token, "mailbox": mailbox,
-            "ref": item.ref,
-        }
-        if pr.alert_id is not None:
-            alerted += 1
-            tier = pr.assessment.tier if pr.assessment else None
-            if protected and tier is AlertTier.CRITICAL and settings.api_quarantine_enabled:
-                if await _quarantine(**common, transport=write_transport):
-                    quarantined += 1
-                    if pr.message_id is not None:
-                        stored = await session.get(Message, pr.message_id)
-                        if stored is not None:
-                            stored.quarantined_at = datetime.now(UTC)
-                elif await _write_back(
-                    session, **common, raw=item.raw, event=event, pr=pr, owned=owned,
-                    banner_allowed=True, transport=write_transport,
-                ):
-                    rewritten += 1
-            elif protected and await _write_back(
-                session, **common, raw=item.raw, event=event, pr=pr, owned=owned,
-                banner_allowed=tier is AlertTier.HIGH, transport=write_transport,
-            ):
-                rewritten += 1
-            # Commit before notifying, so whoever opens the push finds the alert.
-            await session.commit()
-            await deliver_pending(session, alert_id=pr.alert_id)
-        elif protected and event.urls and await _write_back(
-            session, **common, raw=item.raw, event=event, pr=pr, owned=owned,
-            banner_allowed=False, transport=write_transport,
-        ):
-            rewritten += 1
+        # Only once it went through: a message that failed is retried.
+        _remember(mailbox.id, item.ref)
+        alerted += outcome["alerted"]
+        quarantined += outcome["quarantined"]
+        rewritten += outcome["rewritten"]
 
     quarantined += await _run_requested_quarantines(
         session, mailbox, provider=provider, access_token=access_token,
@@ -432,18 +441,22 @@ async def sync_oauth_mailbox(
     outbound = {"outbound_ingested": 0, "signature_alert": False}
     if settings.outbound_scan_enabled:
         try:
-            if provider == "google":
-                sent = await gmail_fetch_outbound(access_token=access_token, transport=transport)
-            else:
-                sent = await graph_fetch_outbound(access_token=access_token, transport=transport)
+            fetch_sent = gmail_fetch_outbound if provider == "google" else graph_fetch_outbound
+            sent = await fetch_sent(
+                access_token=access_token, transport=transport, known=known
+            )
             outbound = await process_outbound(
                 session, mailbox, sent, source=source, owned=owned, recipients=recipients,
             )
+            for item in sent:
+                _remember(mailbox.id, item.ref)
         except Exception as exc:  # noqa: BLE001 — sent-mail scan is non-fatal
             logger.info("oauth outbound scan skipped for %s: %s", mailbox.id, exc)
 
     mailbox.last_sync_at = datetime.now(UTC)
-    mailbox.sync_requested_at = None  # answers any queued push / "Sync now"
+    # Answers the queued push / "Sync now" it started from — not one that
+    # arrived while it ran, which the next drain picks up.
+    await clear_sync_request(session, mailbox.id, requested)
     await session.commit()
     return {
         "ok": True,
@@ -456,6 +469,85 @@ async def sync_oauth_mailbox(
         "signature_alert": outbound["signature_alert"],
         "rule_alerts": rules["rules_alerted"],
     }
+
+
+async def _handle_inbound(
+    session: AsyncSession,
+    mailbox: Mailbox,
+    item,  # noqa: ANN001 — api_fetch.FetchedMessage
+    *,
+    provider: str,
+    access_token: str,
+    source: SourceMechanism,
+    owned: frozenset[str],
+    recipients: list,
+    protected: bool,
+    write_transport=None,  # noqa: ANN001 — api_enforce.WriteTransport
+) -> dict:
+    """Analyse one inbound message, notify, then enforce. Returns its counts."""
+    counts = {"alerted": 0, "quarantined": 0, "rewritten": 0}
+    # Our own protected copy — never re-analyse or re-rewrite it.
+    if enforce.is_processed(item.raw, mailbox.id):
+        return counts
+    event = await parse_message_async(
+        item.raw,
+        tenant_id=mailbox.tenant_id,
+        mailbox_id=mailbox.id,
+        source=source,
+        owned_domains=owned,
+        remediable=protected,
+        source_ref=item.ref,
+    )
+    pr = await analyse_event(
+        session,
+        event,
+        tenant_id=mailbox.tenant_id,
+        owned_domains=owned,
+        recipients=recipients,
+    )
+    if pr.duplicate:
+        return counts
+    common: dict[str, Any] = {
+        "provider": provider, "access_token": access_token, "mailbox": mailbox,
+        "ref": item.ref,
+    }
+    if pr.alert_id is None:
+        if protected and event.urls and await _write_back(
+            session, **common, raw=item.raw, event=event, pr=pr, owned=owned,
+            banner_allowed=False, transport=write_transport,
+        ):
+            counts["rewritten"] += 1
+        return counts
+
+    counts["alerted"] += 1
+    # Notify first, enforce after — see `imap_fetch.sync_mailbox`: the push
+    # must not wait behind the provider round trips of a move or a rewrite.
+    await session.commit()
+    await deliver_pending(session, alert_id=pr.alert_id)
+    # At once: `deliver_pending` holds the rows it claimed until a commit, and a
+    # later rollback would hand them back to the scheduler to send again.
+    await session.commit()
+
+    settings = get_settings()
+    tier = pr.assessment.tier if pr.assessment else None
+    if protected and tier is AlertTier.CRITICAL and settings.api_quarantine_enabled:
+        if await _quarantine(**common, transport=write_transport):
+            counts["quarantined"] += 1
+            if pr.message_id is not None:
+                stored = await session.get(Message, pr.message_id)
+                if stored is not None:
+                    stored.quarantined_at = datetime.now(UTC)
+        elif await _write_back(
+            session, **common, raw=item.raw, event=event, pr=pr, owned=owned,
+            banner_allowed=True, transport=write_transport,
+        ):
+            counts["rewritten"] += 1
+    elif protected and await _write_back(
+        session, **common, raw=item.raw, event=event, pr=pr, owned=owned,
+        banner_allowed=tier is AlertTier.HIGH, transport=write_transport,
+    ):
+        counts["rewritten"] += 1
+    return counts
 
 
 async def _oauth_mailboxes(session: AsyncSession, *, requested_only: bool = False) -> list[UUID]:
@@ -482,36 +574,67 @@ async def _oauth_mailboxes(session: AsyncSession, *, requested_only: bool = Fals
 _SYNC_LOCKS: dict[UUID, asyncio.Lock] = {}
 
 
-async def _sync_ids(ids: list[UUID], *, transport=None, write_transport=None) -> dict:  # noqa: ANN001
+async def _sync_one(
+    mailbox_id: UUID, *, transport=None, write_transport=None  # noqa: ANN001
+) -> dict | None:
+    """Load and sync one mailbox in its own session: None when it no longer
+    exists, `{"crashed": True}` when it failed. Never raises."""
     from envelock.db_rls import system_scope
 
-    sessionmaker = get_sessionmaker()
-    totals = {"mailboxes": 0, "fetched": 0, "alerted": 0, "quarantined": 0,
-              "rewritten": 0, "errors": 0}
-    for mailbox_id in ids:
-        # `system_scope` is a SYNC context manager. It used to share the
-        # `async with` clause with the session, which makes Python demand
-        # `__aenter__` on it — so this raised TypeError on the first mailbox of
-        # every cycle, and no OAuth (Microsoft 365 / Gmail) mailbox was ever
-        # polled. The two have to nest, not share a clause.
-        summary: dict | None = None
-        lock = _SYNC_LOCKS.setdefault(mailbox_id, asyncio.Lock())
-        with system_scope("oauth poll: load mailbox"):
-            async with lock, sessionmaker() as session:
-                mailbox = await session.get(Mailbox, mailbox_id)
-                if mailbox is None:
-                    continue
-                try:
-                    summary = await sync_oauth_mailbox(
+    lock = _SYNC_LOCKS.setdefault(mailbox_id, asyncio.Lock())
+    # `system_scope` is a SYNC context manager. It used to share the `async
+    # with` clause with the session, which makes Python demand `__aenter__` on
+    # it — so this raised TypeError on the first mailbox of every cycle, and no
+    # OAuth (Microsoft 365 / Gmail) mailbox was ever polled. The two have to
+    # nest, not share a clause.
+    with system_scope("oauth poll: load mailbox"):
+        async with lock:
+            try:
+                async with get_sessionmaker()() as session:
+                    mailbox = await session.get(Mailbox, mailbox_id)
+                    if mailbox is None:
+                        return None
+                    return await sync_oauth_mailbox(
                         session, mailbox, transport=transport,
                         write_transport=write_transport,
                     )
-                except Exception:  # noqa: BLE001
-                    logger.exception("oauth fetch: error on mailbox %s", mailbox_id)
-                    totals["errors"] += 1
-                    continue
+            except Exception:  # noqa: BLE001
+                logger.exception("oauth fetch: error on mailbox %s", mailbox_id)
+                return {"crashed": True}
+
+
+async def _sync_ids(
+    ids: list[UUID], *, transport=None, write_transport=None,  # noqa: ANN001
+    budget: str = "oauth-poll",
+) -> dict:
+    """Sync these mailboxes side by side, at most `oauth_sync_concurrency` at a
+    time per `budget`.
+
+    They used to go one at a time, so a push for one mailbox waited behind every
+    other flagged mailbox's sync, and the fallback cycle took the sum of them
+    all — minutes, not the "60 s" it is configured as, past a dozen mailboxes.
+    The push drain has a budget of its own: sharing the poll's, a push flagged
+    mid-cycle queued behind every mailbox the poll had lined up."""
+    from envelock.workers.imap_fetch import shared_semaphore
+
+    slots = shared_semaphore(budget, get_settings().oauth_sync_concurrency)
+
+    async def _one(mailbox_id: UUID) -> dict | None:
+        async with slots:
+            return await _sync_one(
+                mailbox_id, transport=transport, write_transport=write_transport
+            )
+
+    totals = {"mailboxes": 0, "fetched": 0, "alerted": 0, "quarantined": 0,
+              "rewritten": 0, "errors": 0}
+    for summary in await asyncio.gather(*(_one(m) for m in ids)):
+        if summary is None:
+            continue
+        if summary.get("crashed"):
+            totals["errors"] += 1
+            continue
         totals["mailboxes"] += 1
-        if summary is not None and summary.get("ok"):
+        if summary.get("ok"):
             for k in ("fetched", "alerted", "quarantined", "rewritten"):
                 totals[k] += summary.get(k, 0)
         else:
@@ -543,7 +666,9 @@ async def drain_requested(*, transport=None, write_transport=None) -> dict:  # n
             ids = await _oauth_mailboxes(session, requested_only=True)
     if not ids:
         return {"mailboxes": 0}
-    return await _sync_ids(ids, transport=transport, write_transport=write_transport)
+    return await _sync_ids(
+        ids, transport=transport, write_transport=write_transport, budget="oauth-drain"
+    )
 
 
 __all__ = ["drain_requested", "fetch_all_oauth_mailboxes", "sync_oauth_mailbox"]
