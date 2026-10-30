@@ -550,6 +550,11 @@ class Message(Base, UUIDMixin, TimestampMixin):
     mailbox_id: Mapped[UUID] = mapped_column(ForeignKey("mailboxes.id"), index=True)
     rfc_message_id: Mapped[str | None] = mapped_column(String(998), index=True)
     thread_key: Mapped[str | None] = mapped_column(String(255), index=True)
+    #: sha256 of sender/subject/bodies/attachment hashes. The duplicate check
+    #: pairs this with rfc_message_id so a reused Message-ID carrying different
+    #: content is analysed instead of dropped as a re-delivery. Null on rows
+    #: stored before this column existed.
+    content_hash: Mapped[str | None] = mapped_column(String(64))
     direction: Mapped[str] = mapped_column(String(16))
     sender_address: Mapped[str] = mapped_column(String(320), index=True)
     sender_display: Mapped[str | None] = mapped_column(String(255))

@@ -7,6 +7,7 @@ unit-testable and the pipeline the only place that needs integration tests.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from uuid import UUID
@@ -39,7 +40,12 @@ from envelock.platform.alerts import raise_alert
 from envelock.platform.graph import GRAPH
 from envelock.platform.remediation import can_remediate as _can_remediate
 from envelock.risk.engine import RiskAssessment, assess
-from envelock.util.domains import is_free_mail, registrable_domain
+from envelock.util.domains import (
+    counterparty_key,
+    is_free_mail,
+    is_platform_domain,
+    registrable_domain,
+)
 from envelock.util.payments import (
     extract_amounts,
     extract_bank_identifiers,
@@ -52,6 +58,30 @@ from envelock.util.payments import (
 #: that as "money we stopped leaving" would inflate the one number the customer
 #: is most likely to check against their own records.
 _MONEY_SERVICES = frozenset({"A1", "A2", "A3", "A4", "A5", "A13", "A14", "A15"})
+
+
+def content_fingerprint(event: MailEvent) -> str:
+    """A stable hash of what a message actually says — sender, subject, both
+    bodies and its attachment hashes.
+
+    The duplicate check keyed on (mailbox_id, rfc_message_id) alone, so a second
+    message reusing a Message-ID we had already stored was dropped unread: a
+    sender mails something benign, then the phish under the same id, and the
+    attack skipped analysis, quarantine and link rewriting entirely. Pairing the
+    id with this fingerprint means a genuine re-delivery (same id, same content)
+    is still skipped, while reused-id-different-content is analysed.
+    """
+    h = hashlib.sha256()
+    for part in (
+        event.sender.address,
+        event.subject or "",
+        event.body_text or "",
+        event.body_html or "",
+        *sorted(a.sha256 for a in event.attachments),
+    ):
+        h.update(part.encode("utf-8", errors="replace"))
+        h.update(b"\x00")
+    return h.hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -208,8 +238,11 @@ async def build_context(
     malicious_domains: set[str] = set(GRAPH.known_bad())
     if isinstance(event, MailEvent) and event.direction is MailDirection.INBOUND:
         sender_domain = registrable_domain(event.sender.domain)
+        # Identity is keyed per address on free mail (so one gmail.com stranger's
+        # history is not every gmail.com sender's), but per domain for a real
+        # company. Reputation and domain-age below stay on the domain.
         counterparty = await _counterparty_state(
-            session, tenant_id=tenant_id, domain=sender_domain
+            session, tenant_id=tenant_id, domain=counterparty_key(event.sender.address)
         )
         # Prior messages in this stored thread — A8's REAL check. The old A8
         # only caught a forged reply (Re: subject, no chain); the named attack
@@ -304,6 +337,11 @@ async def build_context(
                 reg = registrable_domain(url_host(url))
                 if reg and reg not in owned_domains and reg not in link_regs:
                     link_regs.append(reg)
+            # Spend the per-message budget on the domains most worth a lookup, not
+            # the first few in document order — five padding links to a big
+            # provider otherwise pushed the one unusual link past the cap. A known
+            # platform (google.com, microsoft.com, …) goes last.
+            link_regs.sort(key=is_platform_domain)
             if cfg.domain_reputation_enabled:
                 from envelock.channels.external.reputation import check_sender_domain
 
@@ -315,7 +353,11 @@ async def build_context(
                         malicious_domains.add(reg)
             cascade = get_url_cascade()
             if cascade.safebrowsing:
-                for url in event.urls[:cap]:
+                # Same priority order as the reputation pass above.
+                ranked = sorted(
+                    event.urls, key=lambda u: is_platform_domain(url_host(u))
+                )
+                for url in ranked[:cap]:
                     reg = registrable_domain(url_host(url))
                     if not reg or reg in owned_domains or reg in malicious_domains:
                         continue
@@ -342,6 +384,9 @@ async def build_context(
                 )
             )
         ).all()
+        # Free-mail counterparties are keyed by full address; they are not domains
+        # and must not enter the A3/A5 lookalike comparison set.
+        if row and "@" not in row
     }
 
     # The tenant's own people's names — so we can catch a sender using a
@@ -429,8 +474,11 @@ async def learn(
     """
     if event.direction is not MailDirection.INBOUND:
         return
-    domain = registrable_domain(event.sender.domain)
-    if not domain or domain in {""}:
+    # The same key `build_context` loads by: per address on free mail, per domain
+    # otherwise. Learning and lookup must agree, or every message looks like first
+    # contact.
+    domain = counterparty_key(event.sender.address)
+    if not domain:
         return
 
     row = (
@@ -485,13 +533,12 @@ async def learn(
     if dkim and dkim not in (row.known_dkim_domains or []):
         row.known_dkim_domains = [*(row.known_dkim_domains or []), dkim]
 
-    _learn_text = " ".join(
-        filter(
-            None,
-            [event.subject, event.body_text,
-             *(a.extracted_text for a in event.attachments if a.extracted_text)],
-        )
-    )
+    # The same text the payment detections read, so a vendor whose invoices are
+    # HTML-only still has their real account learned — otherwise A1 would have no
+    # baseline for them and could never fire.
+    from envelock.detections.impersonation import mail_text as _mail_text
+
+    _learn_text = _mail_text(event)
 
     # A13 baselines: invoice numbers (duplicate-billing fraud) and the typical
     # amount (gross-anomaly fraud). The detection read these fields since day
@@ -636,37 +683,54 @@ async def analyse_event(
     attachment_verdicts: dict[str, str] | None = None,
     sender_domain_age_days: int | None = None,
 ) -> PipelineResult:
+    def _as_duplicate() -> PipelineResult:
+        return PipelineResult(
+            findings=[],
+            assessment=None,
+            alert_id=None,
+            protection_level=protection_level(
+                capabilities_for(frozenset({event.source}))
+            ).value,
+            inactive_detections=[],
+            latency_seconds=0.0,
+            duplicate=True,
+        )
+
+    # A copy we wrote back ourselves (rewritten links, banner), recognised by its
+    # unforgeable stamp for this mailbox — not new mail. The IMAP/OAuth pollers
+    # already skip these before calling us; this guard also covers any path that
+    # does not (and its rewritten body would otherwise look like "new content"
+    # under the same Message-ID and re-alert).
+    if persist and isinstance(event, MailEvent) and event.protected_copy:
+        return _as_duplicate()
+
     # Idempotency: the same message reaches us twice whenever a mailbox is on both
     # a live IMAP poll and a forwarding rule (and on any poll overlap). Keyed on
-    # (mailbox_id, rfc_message_id), a message we have already stored is skipped
-    # before any analysis — no duplicate alert, no double-counted counterparty
-    # learning. Messages without an rfc_message_id fall through (nothing to key on).
+    # (mailbox_id, rfc_message_id) AND the content fingerprint: a genuine
+    # re-delivery (same id, same content) is skipped before any analysis — no
+    # duplicate alert, no double-counted learning — while a reused id carrying
+    # DIFFERENT content is analysed, closing a replay that dropped the phish.
+    # Messages without an rfc_message_id fall through (nothing to key on).
     if (
         persist
         and isinstance(event, MailEvent)
         and event.rfc_message_id
         and event.mailbox_id is not None
     ):
-        seen = (
+        prior_hashes = (
             await session.execute(
-                select(Message.id).where(
+                select(Message.content_hash).where(
                     Message.mailbox_id == event.mailbox_id,
                     Message.rfc_message_id == event.rfc_message_id,
                 )
             )
-        ).first()
-        if seen is not None:
-            return PipelineResult(
-                findings=[],
-                assessment=None,
-                alert_id=None,
-                protection_level=protection_level(
-                    capabilities_for(frozenset({event.source}))
-                ).value,
-                inactive_detections=[],
-                latency_seconds=0.0,
-                duplicate=True,
-            )
+        ).scalars().all()
+        if prior_hashes:
+            fingerprint = content_fingerprint(event)
+            # A stored row from before this column existed has NULL; a matching
+            # id with no fingerprint to compare stays a duplicate, as before.
+            if any(h is None or h == fingerprint for h in prior_hashes):
+                return _as_duplicate()
 
     # Attachment cascade (B4's real teeth). `analyse_attachments` existed with
     # zero callers, so `ctx.attachment_verdicts` was always empty and the
@@ -735,6 +799,9 @@ async def analyse_event(
             dkim=event.authentication.dkim.value,
             dmarc=event.authentication.dmarc.value,
             attachment_hashes=[a.sha256 for a in event.attachments],
+            # What the message says, so a later reuse of this Message-ID with
+            # different content is not mistaken for a re-delivery of this one.
+            content_hash=content_fingerprint(event),
             risk_score=assessment.score if assessment else 0,
             source_ref=event.source_ref,
         )
