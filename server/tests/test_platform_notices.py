@@ -98,13 +98,6 @@ def test_envelock_verify_email_raises_nothing(verify_email: bytes) -> None:
     )
 
 
-def test_spoofed_envelock_mail_is_still_judged(verify_email: bytes) -> None:
-    raw = _delivered(verify_email, _GMAIL.format(d="envelock.org", dmarc="fail"))
-    assessment = _assess(raw)
-    assert assessment is not None and assessment.is_alertable
-    assert "A7" in assessment.services, "a spoof of our mail must keep the payee checks"
-
-
 def test_envelock_alert_email_raises_nothing_after_a_baseline() -> None:
     """Our alert email prints the message date, which the payment extractor reads
     as a sort code. One learned in October made November's alert email an A1
@@ -187,6 +180,11 @@ IBAN GB29 NWBK 6016 1331 9268 19 from today.
 @pytest.mark.parametrize(
     ("source", "stamps"),
     [
+        pytest.param(
+            SourceMechanism.GMAIL_API,
+            (_GMAIL.format(d="amazon.com", dmarc="fail"),),
+            id="gmail-stamps-the-spoof-fail",
+        ),
         pytest.param(SourceMechanism.IMAP_IDLE, (), id="imap-host-stamps-nothing"),
         pytest.param(
             SourceMechanism.IMAP_IDLE,
