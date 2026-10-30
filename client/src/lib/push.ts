@@ -5,7 +5,7 @@
  * an unsupported browser or an unconfigured server just yields a state the UI can
  * show, never a thrown crash on load.
  */
-import { api } from "./api";
+import { api, API_BASE } from "./api";
 
 export type PushState =
   | "unsupported" // browser lacks service worker / push / notifications
@@ -22,6 +22,22 @@ export function pushSupported(): boolean {
     "PushManager" in window &&
     "Notification" in window
   );
+}
+
+/** An iPhone or iPad browser tab. Web push exists there only for web apps added
+ *  to the Home Screen (iOS 16.4+): in a Safari tab there is no PushManager at
+ *  all, so the toggle was simply hidden and nobody was told how to get alerts. */
+export function needsHomeScreenForPush(): boolean {
+  if (typeof navigator === "undefined" || typeof window === "undefined") return false;
+  const ua = navigator.userAgent || "";
+  // iPadOS reports itself as a Mac; touch is what gives it away.
+  const iOS =
+    /iPhone|iPad|iPod/.test(ua) ||
+    (/Macintosh/.test(ua) && (navigator.maxTouchPoints ?? 0) > 1);
+  const standalone =
+    window.matchMedia?.("(display-mode: standalone)").matches === true ||
+    (navigator as Navigator & { standalone?: boolean }).standalone === true;
+  return iOS && !standalone && !pushSupported();
 }
 
 // VAPID keys travel as base64url; PushManager wants an ArrayBuffer-backed view.
@@ -65,6 +81,37 @@ function setOptedOut(off: boolean): void {
   }
 }
 
+/* What the service worker needs when the push service replaces this browser's
+ * subscription (`pushsubscriptionchange`): it holds no session — the bearer
+ * token lives in this page's storage — so it proves the change to the server
+ * with the old subscription's auth secret, and resubscribes under the stored
+ * key when the browser does not hand it the old subscription. Cache Storage,
+ * because both the page and the worker can read it. Keep in step with sw.js. */
+const SW_STORE = "envelock-push";
+const SW_RECORD = "/__envelock/push-subscription";
+
+async function shareWithWorker(sub: PushSubscription, vapidKey: string): Promise<void> {
+  try {
+    if (typeof caches === "undefined") return;
+    const { endpoint, auth } = keysOf(sub);
+    const cache = await caches.open(SW_STORE);
+    await cache.put(
+      SW_RECORD,
+      new Response(JSON.stringify({ endpoint, auth, key: vapidKey, api: API_BASE })),
+    );
+  } catch {
+    /* best effort: without it a rotated subscription waits for the next visit */
+  }
+}
+
+async function forgetForWorker(): Promise<void> {
+  try {
+    if (typeof caches !== "undefined") await caches.delete(SW_STORE);
+  } catch {
+    /* nothing stored, or storage blocked */
+  }
+}
+
 /** This browser's subscription under the deployment's current VAPID key. One
  *  made under any other key is undeliverable — the push service rejects every
  *  send for it — so it is replaced rather than reused. */
@@ -104,9 +151,11 @@ export async function getPushState(): Promise<PushState> {
   if (Notification.permission === "denied") return "denied";
   if (Notification.permission !== "granted" || optedOut()) return "off";
   try {
-    const body = keysOf(await currentSubscription(await registration(), vapidKey));
+    const sub = await currentSubscription(await registration(), vapidKey);
+    const body = keysOf(sub);
     if (!body.p256dh || !body.auth) return "off";
     await api.pushSubscribe(body);
+    await shareWithWorker(sub, vapidKey);
     return "on";
   } catch {
     return "off";
@@ -149,6 +198,7 @@ export async function enablePush(): Promise<PushState> {
     }
     throw e;
   }
+  await shareWithWorker(sub, cfg.vapid_public_key);
   return "on";
 }
 
@@ -157,6 +207,8 @@ export async function enablePush(): Promise<PushState> {
  *  the next visit. Sign-out passes nothing — alerts resume at the next sign-in. */
 export async function disablePush(optOut = false): Promise<PushState> {
   if (optOut) setOptedOut(true);
+  // A subscription deliberately dropped must not be revived by the worker.
+  await forgetForWorker();
   if (!pushSupported()) return "unsupported";
   try {
     const reg = await navigator.serviceWorker.getRegistration();

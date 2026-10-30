@@ -611,6 +611,18 @@ function AppLayout() {
     };
   }, [signedIn, isAdmin, pathname]);
 
+  /* Browser alerts resume wherever a signed-in session lands. Re-registering
+     this browser's push subscription used to happen only inside the Setup
+     tab's toggle, while the console opens on Alerts — so after a sign-out
+     (which drops the server's copy) nobody got a browser alert again until
+     they happened to open Setup. Without permission it does nothing. */
+  useEffect(() => {
+    if (!signedIn) return;
+    void import("./lib/push")
+      .then(({ getPushState }) => getPushState())
+      .catch(() => {});
+  }, [signedIn]);
+
   async function signOut() {
     try {
       const { disablePush } = await import("./lib/push");

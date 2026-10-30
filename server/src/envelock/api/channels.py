@@ -875,41 +875,107 @@ async def push_subscribe(
     req: PushSubscribeRequest, principal: ActiveUser, session: Session
 ) -> dict:
     """Register this browser for L1 Web Push. Without this write path the free push
-    rung can never fire — the sender has no one to send to (PRD §8.1)."""
-    existing = (
-        await session.execute(
-            select(PushSubscription).where(PushSubscription.endpoint == req.endpoint)
-        )
-    ).scalar_one_or_none()
-    if existing is not None:
-        # Reassigning a row that belongs to someone else on endpoint match alone
-        # was a takeover: submit a victim's endpoint URL and their push alerts go
-        # dark while your keys are installed. The endpoint URL can leak (logs,
-        # provider dashboards); the p256dh/auth keys are generated inside the
-        # subscriber's browser and cannot. So a different user may claim the row
-        # only by proving they hold the same browser subscription — same keys.
-        same_user = existing.user_id == principal.user_id
-        same_browser = existing.p256dh == req.p256dh and existing.auth == req.auth
-        if not (same_user or same_browser):
-            raise HTTPException(
-                409, "this push endpoint is already registered to another account"
+    rung can never fire — the sender has no one to send to (PRD §8.1).
+
+    The endpoint is looked up across tenants. It is unique platform-wide, so a
+    browser last registered by someone in another workspace (a consultant, a
+    second workspace, a shared machine) was invisible under the caller's tenant
+    scope: the insert hit the unique index, the browser read "off", and pressing
+    Enable then unsubscribed it — silently ending the other person's alerts too.
+    """
+    from envelock.db_rls import system_scope_on
+
+    async with system_scope_on(session, "push: which account holds this browser"):
+        existing = (
+            await session.execute(
+                select(PushSubscription).where(PushSubscription.endpoint == req.endpoint)
             )
-        existing.user_id = principal.user_id
-        existing.tenant_id = principal.tenant_id
-        existing.p256dh = req.p256dh
-        existing.auth = req.auth
-    else:
-        session.add(
-            PushSubscription(
-                tenant_id=principal.tenant_id,
-                user_id=principal.user_id,
-                endpoint=req.endpoint,
-                p256dh=req.p256dh,
-                auth=req.auth,
+        ).scalar_one_or_none()
+        if existing is not None:
+            # Reassigning a row that belongs to someone else on endpoint match
+            # alone was a takeover: submit a victim's endpoint URL and their push
+            # alerts go dark while your keys are installed. The endpoint URL can
+            # leak (logs, provider dashboards); the p256dh/auth keys are
+            # generated inside the subscriber's browser and cannot. So a
+            # different user may claim the row only by proving they hold the same
+            # browser subscription — same keys.
+            same_user = existing.user_id == principal.user_id
+            same_browser = existing.p256dh == req.p256dh and existing.auth == req.auth
+            if not (same_user or same_browser):
+                raise HTTPException(
+                    409, "this push endpoint is already registered to another account"
+                )
+            existing.user_id = principal.user_id
+            existing.tenant_id = principal.tenant_id
+            existing.p256dh = req.p256dh
+            existing.auth = req.auth
+        else:
+            session.add(
+                PushSubscription(
+                    tenant_id=principal.tenant_id,
+                    user_id=principal.user_id,
+                    endpoint=req.endpoint,
+                    p256dh=req.p256dh,
+                    auth=req.auth,
+                )
             )
-        )
+        # Inside the scope: moving a row out of another tenant is an UPDATE the
+        # caller's own scope may not make.
+        await session.flush()
     await session.commit()
     return {"subscribed": True}
+
+
+class PushRotateRequest(BaseModel):
+    old_endpoint: str = Field(min_length=8, max_length=2000)
+    old_auth: str = Field(min_length=8, max_length=255)
+    endpoint: str = Field(min_length=8, max_length=2000)
+    p256dh: str = Field(min_length=8, max_length=255)
+    auth: str = Field(min_length=8, max_length=255)
+
+
+@router.post("/push/rotate")
+async def push_rotate(req: PushRotateRequest, session: Session) -> dict:
+    """The browser replaced its push subscription; move the row to the new one.
+
+    Called by the service worker on `pushsubscriptionchange`, which holds no
+    session — the bearer token lives in the page's storage. Until this existed
+    the new subscription reached us only when someone next opened the app, and
+    meanwhile the old endpoint answered 410 and was deleted: no browser alerts
+    at all in between.
+
+    Possession of the old subscription's `auth` secret is the proof. It is
+    generated inside that browser and known only to it and to us; the endpoint
+    URL alone can leak and proves nothing.
+    """
+    import hmac
+
+    from envelock.db_rls import system_scope_on
+
+    async with system_scope_on(session, "push: rotate a browser subscription"):
+        row = (
+            await session.execute(
+                select(PushSubscription).where(PushSubscription.endpoint == req.old_endpoint)
+            )
+        ).scalar_one_or_none()
+        if row is None or not hmac.compare_digest(row.auth.encode(), req.old_auth.encode()):
+            raise HTTPException(404, "no such push subscription")
+        taken = (
+            await session.execute(
+                select(PushSubscription).where(PushSubscription.endpoint == req.endpoint)
+            )
+        ).scalar_one_or_none()
+        if taken is not None and taken.id != row.id:
+            # The page registered the new subscription first; the old row only
+            # points at a dead endpoint now.
+            await session.delete(row)
+        else:
+            row.endpoint = req.endpoint
+            row.p256dh = req.p256dh
+            row.auth = req.auth
+        await session.flush()
+    await session.commit()
+    return {"rotated": True}
 
 
 @router.post("/push/unsubscribe")
