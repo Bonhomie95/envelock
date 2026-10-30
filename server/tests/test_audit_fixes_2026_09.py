@@ -129,6 +129,8 @@ def test_smtp_ingest_refuses_to_run_open_in_production(monkeypatch) -> None:
     # Isolate the ingest guard from the other production boot gates.
     monkeypatch.setenv("ENVELOCK_ALLOW_RLS_DISABLED", "true")
     monkeypatch.setenv("ENVELOCK_ALLOW_UNVERIFIED_SIGNUPS", "true")
+    monkeypatch.setenv("ENVELOCK_REDIRECT_BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("ENVELOCK_PUBLIC_BASE_URL", "https://app.example.com")
     get_settings.cache_clear()
     try:
         with pytest.raises(RuntimeError, match="INGEST_ALLOWED_IPS"):
@@ -146,6 +148,8 @@ def test_smtp_ingest_starts_when_sources_are_pinned(monkeypatch) -> None:
     # Same isolation as the test above: these are about the ingest guard only.
     monkeypatch.setenv("ENVELOCK_ALLOW_RLS_DISABLED", "true")
     monkeypatch.setenv("ENVELOCK_ALLOW_UNVERIFIED_SIGNUPS", "true")
+    monkeypatch.setenv("ENVELOCK_REDIRECT_BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("ENVELOCK_PUBLIC_BASE_URL", "https://app.example.com")
     get_settings.cache_clear()
     try:
         smtp_ingest._assert_ingest_is_pinned()  # must not raise

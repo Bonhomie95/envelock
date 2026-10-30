@@ -251,6 +251,8 @@ os.environ["ENVELOCK_POSTGRES_DSN"] = "postgresql+asyncpg://u:p@localhost:5432/d
 os.environ["ENVELOCK_RLS_ENABLED"] = "true"
 os.environ["ENVELOCK_REQUIRE_EMAIL_VERIFICATION"] = "true"
 os.environ["ENVELOCK_SMTP_HOST"] = "smtp.example.com"
+os.environ["ENVELOCK_REDIRECT_BASE_URL"] = "https://api.example.com"
+os.environ["ENVELOCK_PUBLIC_BASE_URL"] = "https://app.example.com"
 # Low enough that a re-entrant validator blows up immediately rather than
 # spending a minute building a 1000-frame traceback.
 sys.setrecursionlimit(200)

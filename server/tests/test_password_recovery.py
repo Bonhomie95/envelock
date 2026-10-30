@@ -387,6 +387,8 @@ def test_the_reset_link_is_never_returned_outside_development(
     # registered above is deliberately unverified.
     monkeypatch.setenv("ENVELOCK_ALLOW_RLS_DISABLED", "true")
     monkeypatch.setenv("ENVELOCK_ALLOW_UNVERIFIED_SIGNUPS", "true")
+    monkeypatch.setenv("ENVELOCK_REDIRECT_BASE_URL", "https://api.example.com")
+    monkeypatch.setenv("ENVELOCK_PUBLIC_BASE_URL", "https://app.example.com")
 
     for env in ("production", "staging"):
         monkeypatch.setenv("ENVELOCK_ENV", env)
