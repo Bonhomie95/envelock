@@ -14,8 +14,9 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from envelock.core.capabilities import Capability
-from envelock.core.enums import AlertTier
+from envelock.core.enums import AlertTier, AuthResult
 from envelock.core.events import Event, IdentityEvent, MailEvent
+from envelock.util.domains import is_platform_domain
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,8 +218,41 @@ def plan_locked_detections(capabilities: frozenset[Capability], plan: str) -> li
     )
 
 
+#: Detections that judge the sender as a counterparty: a payee or correspondent
+#: whose history (bank details on file, first contact, writing style, sending
+#: setup, invoices, domain age) is the evidence. A platform notice has no such
+#: history. Running them anyway alerted on Envelock's own confirm-your-email
+#: message (A7: "first email from envelock.org, and it's about payment", from
+#: the word "account") and on Google's trial mail (A2: "no verified phone number
+#: on file for google.com"). Our alert emails print the message date, which the
+#: payment extractor reads as a sort code (2026-10 -> 202610), so A2 fired on
+#: payment alerts and A1 would have called next month's a bank-details change.
+#:
+#: Content and spoofing checks still run on platform mail: links, attachments,
+#: reply-to, display name, known fraud accounts. Docs, Forms and Drive put
+#: attacker-written text on google.com's DKIM, and those checks are what catch it.
+_COUNTERPARTY_SERVICES = frozenset({"A1", "A2", "A7", "A9", "A10", "A11", "A13", "B9"})
+
+
+def is_platform_notice(mail: MailEvent | None) -> bool:
+    """Mail its mailbox provider vouches came from Envelock or a big provider.
+
+    `provider_dmarc`, not the From header or `dmarc`: a spoofed alerts@envelock.org
+    or google.com fails it, and a pass the sender wrote into the message is never
+    read. Only Gmail and Graph guarantee that stamp, so on IMAP and forwarding the
+    skip does not apply and the full suite runs.
+    """
+    return (
+        mail is not None
+        and mail.authentication.provider_dmarc is AuthResult.PASS
+        and is_platform_domain(mail.sender.domain)
+    )
+
+
 def run_all(ctx: DetectionContext) -> list[FindingResult]:
+    skip = _COUNTERPARTY_SERVICES if is_platform_notice(ctx.mail) else frozenset()
     findings: list[FindingResult] = []
     for detection in active_for(ctx.capabilities, ctx.plan):
-        findings.extend(detection.evaluate(ctx))
+        if detection.service not in skip:
+            findings.extend(detection.evaluate(ctx))
     return findings

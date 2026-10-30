@@ -53,6 +53,14 @@ _FREE_MAIL = frozenset(
     }
 )
 
+#: Envelock's own sending domain (`ENVELOCK_SMTP_FROM`) and the providers every
+#: business gets account, billing and product mail from. Their authenticated
+#: mail is a notice, never a counterparty: see `detections.base.run_all`. Kept
+#: short on purpose, because anything listed here stops being judged as a payee.
+_PLATFORM_DOMAINS = frozenset(
+    {"envelock.org", "google.com", "microsoft.com", "apple.com", "amazon.com"}
+)
+
 
 @lru_cache(maxsize=100_000)
 def registrable_domain(domain: str) -> str:
@@ -85,6 +93,11 @@ def is_free_mail(domain: str) -> bool:
     """Free-mail domains must be excluded from the trial ledger — locking
     `gmail.com` would block every subsequent Gmail signup (PRD §12.7)."""
     return registrable_domain(domain) in _FREE_MAIL
+
+
+def is_platform_domain(domain: str) -> bool:
+    """Envelock itself or a big provider: its mail is a notice, not a payee."""
+    return registrable_domain(domain) in _PLATFORM_DOMAINS
 
 
 def skeleton(domain: str) -> str:

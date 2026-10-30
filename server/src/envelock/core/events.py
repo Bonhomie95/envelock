@@ -96,6 +96,11 @@ class AuthenticationResults(_Base):
     dmarc: AuthResult = AuthResult.NONE
     dkim_domain: str | None = None
     """A counterparty whose DKIM signing domain suddenly changes is a signal (A10)."""
+    provider_dmarc: AuthResult = AuthResult.NONE
+    """DMARC as the mailbox provider itself stamped it, on a channel where it always
+    stamps above anything the sender wrote (see the parser). `dmarc` is the first
+    result in any header, so it can be the sender's own words; this cannot. NONE
+    wherever no provider stamp is guaranteed."""
 
 
 class NetworkContext(_Base):
