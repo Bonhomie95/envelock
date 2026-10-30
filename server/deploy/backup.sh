@@ -31,6 +31,15 @@
 # encrypted copy leaves this machine. The server holds the public half alone,
 # so neither a leaked bucket nor a compromised server can read past backups;
 # the private key stays offline and is needed only to restore (restore.sh).
+#
+# With a recipient set, each dump also gets an encrypted copy of `.env` and
+# `.env.worker` beside it (…dump.env.age). The database alone does not restore
+# into a working product: ENVELOCK_SECRET_KEY seals every authenticator seed and
+# webhook secret and keys the fraud-account hashes, the protected-mail stamps and
+# push authentication, and the worker's private key opens every stored mailbox
+# credential. Those live only in the env files on this box, so a lost disk used
+# to mean a restored database nobody could use. They are never written anywhere
+# unencrypted.
 set -euo pipefail
 
 BACKUP_DIR="${ENVELOCK_BACKUP_DIR:-/var/backups/envelock}"
@@ -172,16 +181,45 @@ elif [ -n "$REMOTE" ]; then
   public key in .env as ENVELOCK_BACKUP_AGE_RECIPIENT=age1..."
 fi
 
+# ---- The keys that make the dump usable ----
+ENV_DIR="$(dirname "$ENV_FILE")"
+KEYS=""
+KEYS_FAILED=""
+if [ -n "$RECIPIENT" ]; then
+  env_files=".env"
+  [ -e "$ENV_DIR/.env.worker" ] && env_files=".env .env.worker"
+  log "encrypting the settings files ($env_files) for off-box storage"
+  # A stream straight into age: the plaintext never touches the disk. Word
+  # splitting of $env_files is intended (two fixed names, no spaces).
+  # shellcheck disable=SC2086
+  if tar -cf - -C "$ENV_DIR" $env_files | age -r "$RECIPIENT" -o "$OUT.env.age"; then
+    ( cd "$BACKUP_DIR" && sha256sum "$(basename "$OUT").env.age" > "$(basename "$OUT").env.age.sha256" )
+    KEYS="$OUT.env.age"
+  else
+    rm -f "$OUT.env.age"
+    KEYS_FAILED="could not read or encrypt $env_files in $ENV_DIR"
+  fi
+else
+  warn "ENVELOCK_BACKUP_AGE_RECIPIENT is unset, so .env and .env.worker are NOT backed up
+  (they are never stored unencrypted). Without them a restored database cannot be
+  used: SECRET_KEY seals every authenticator seed, the private key every mailbox
+  password."
+fi
+
 # ---- Off-box copy ----
-if [ -n "$REMOTE" ]; then
-  log "copying off-box to $REMOTE"
+ship() {                                # $1 = file
   if command -v rclone >/dev/null 2>&1 && [[ "$REMOTE" != s3://* ]]; then
-    rclone copy "$SHIP" "$REMOTE" && rclone copy "$SHIP.sha256" "$REMOTE"
+    rclone copy "$1" "$REMOTE" && rclone copy "$1.sha256" "$REMOTE"
   elif command -v aws >/dev/null 2>&1; then
-    aws s3 cp "$SHIP" "$REMOTE/" && aws s3 cp "$SHIP.sha256" "$REMOTE/"
+    aws s3 cp "$1" "$REMOTE/" && aws s3 cp "$1.sha256" "$REMOTE/"
   else
     fail "ENVELOCK_BACKUP_REMOTE is set but neither rclone nor aws is installed"
   fi
+}
+if [ -n "$REMOTE" ]; then
+  log "copying off-box to $REMOTE"
+  ship "$SHIP"
+  if [ -n "$KEYS" ]; then ship "$KEYS"; fi
 else
   warn "ENVELOCK_BACKUP_REMOTE is unset — this backup exists ONLY on the machine
   it is meant to protect. Set it to an off-box destination."
@@ -192,6 +230,13 @@ fi
 # a compromised server cannot delete history.
 log "pruning local backups older than $RETAIN_DAYS days"
 find "$BACKUP_DIR" -name 'envelock-*.dump*' -mtime "+$RETAIN_DAYS" -print -delete || true
+
+# Last, so the database backup above is complete and shipped either way — but a
+# backup whose keys are missing still fails, loudly.
+if [ -n "$KEYS_FAILED" ]; then
+  fail "the database backup is complete, but the settings files were NOT backed up:
+  $KEYS_FAILED. Without them this dump cannot be restored into a working system."
+fi
 
 log "backup complete"
 ls -1t "$BACKUP_DIR"/envelock-*.dump | head -5

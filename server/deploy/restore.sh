@@ -23,13 +23,26 @@ fail() { printf '\n\033[1;31m!!  %s\033[0m\n' "$*" >&2; exit 1; }
 
 ENV_FILE="${ENVELOCK_ENV_FILE:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.env}"
 [ -f "$ENV_FILE" ] || fail "no .env at $ENV_FILE — set ENVELOCK_ENV_FILE"
-# Prefer the OWNER's DSN. Under row-level security the application connects as a
-# restricted role that can SELECT but owns nothing, and a dump taken with it is
-# quietly incomplete — the worst possible property for a backup. Falls back to
-# the app DSN, which is correct in development where they are the same.
-DSN="$(grep -E '^ENVELOCK_DB_OWNER_DSN=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"'"'"' ')"
-[ -n "$DSN" ] || DSN="$(grep -E '^ENVELOCK_POSTGRES_DSN=' "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"'"'"' ')"
+# `|| true`: under `set -e -o pipefail` a missing key failed the assignment and
+# ended the script silently, before the fallbacks below could run (backup.sh
+# had the same bug).
+read_dsn() { grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '"'"'"' ' || true; }
+# The OWNER restores: it has to drop and recreate the tables. Falls back to the
+# app DSN, which is correct in development where they are the same.
+DSN="$(read_dsn ENVELOCK_DB_OWNER_DSN)"
+[ -n "$DSN" ] || DSN="$(read_dsn ENVELOCK_POSTGRES_DSN)"
+[ -n "$DSN" ] || fail "no database DSN found in $ENV_FILE"
 PG_URL="${DSN/postgresql+asyncpg:/postgresql:}"
+# But the owner cannot DUMP: FORCE ROW LEVEL SECURITY applies to it too, and
+# pg_dump refuses rather than write a partial dump. Dumps use the backup role
+# (BYPASSRLS, read-only), exactly as backup.sh does.
+DUMP_DSN="$(read_dsn ENVELOCK_DB_BACKUP_DSN)"
+[ -n "$DUMP_DSN" ] || DUMP_DSN="$DSN"
+DUMP_URL="${DUMP_DSN/postgresql+asyncpg:/postgresql:}"
+# Row counts are read as the owner, which FORCE RLS shows nothing without a
+# tenant — so they opt into the platform-wide scope the policies allow
+# (db_rls.GUC_SYSTEM). Without this every count read 0 and the drill passed.
+SYSTEM_SCOPE="SET envelock.system = 'on';"
 # Everything but the database name, so we can address a different database on
 # the same server without a second set of credentials in a second place.
 SERVER_URL="${PG_URL%/*}"
@@ -86,14 +99,21 @@ case "${1:-}" in
     log "checking the restored data"
     # Not just "did it restore" — does it contain the things that matter? An
     # empty-but-valid restore is the failure this catches.
-    psql "$SERVER_URL/$DRILL_DB" -qtc "
+    counts="$(psql "$SERVER_URL/$DRILL_DB" -qtA -F ' ' -c "$SYSTEM_SCOPE
       SELECT
-        (SELECT count(*) FROM tenants)             AS tenants,
-        (SELECT count(*) FROM users)               AS users,
-        (SELECT count(*) FROM mailboxes)           AS mailboxes,
-        (SELECT count(*) FROM mailbox_credentials) AS credentials,
-        (SELECT count(*) FROM alerts)              AS alerts;
-    " || fail "the restored database is missing core tables"
+        (SELECT count(*) FROM tenants),
+        (SELECT count(*) FROM users),
+        (SELECT count(*) FROM mailboxes),
+        (SELECT count(*) FROM mailbox_credentials),
+        (SELECT count(*) FROM alerts);
+    ")" || fail "the restored database is missing core tables"
+    read -r r_tenants r_users r_mailboxes r_credentials r_alerts <<<"$counts"
+    echo "    tenants=$r_tenants users=$r_users mailboxes=$r_mailboxes credentials=$r_credentials alerts=$r_alerts"
+    # An empty restore of a database that has customers is a backup of nothing.
+    live="$(psql "$PG_URL" -qtA -c "$SYSTEM_SCOPE SELECT count(*) FROM tenants" 2>/dev/null || true)"
+    if [ "${live:-0}" -gt 0 ] 2>/dev/null && [ "${r_tenants:-0}" -eq 0 ]; then
+      fail "the restored copy has no tenants, while the live database has $live — THIS BACKUP IS EMPTY"
+    fi
 
     tables="$(psql "$SERVER_URL/$DRILL_DB" -qtAc \
       "SELECT count(*) FROM information_schema.tables WHERE table_schema='public'")"
@@ -119,10 +139,17 @@ case "${1:-}" in
   --PRODUCTION)
     FILE="${2:?--PRODUCTION needs an explicit backup file}"
     [ -f "$FILE" ] || fail "no such file: $FILE"
+    # Both services write to the database — the worker more than the API: every
+    # poll, every alert. Restoring under a running worker interleaves its writes
+    # with the restore. Refuse rather than warn.
+    if command -v systemctl >/dev/null 2>&1 \
+       && systemctl is-active --quiet envelock-api envelock-worker; then
+      fail "envelock-api or envelock-worker is running. Stop both first:
+    sudo systemctl stop envelock-api envelock-worker envelock-backup.timer"
+    fi
     decrypt_if_needed
     warn "This OVERWRITES the live database '$PROD_DB'."
     warn "Everything written since $(basename "$FILE") will be lost."
-    warn "Stop the API first:  sudo systemctl stop envelock-api"
     # Typed confirmation, not y/N: this is the one command in the repo that can
     # destroy customer data on purpose, and it should be impossible to reach by
     # holding down return.
@@ -132,14 +159,19 @@ case "${1:-}" in
 
     SAFETY="$BACKUP_DIR/pre-restore-$(date -u +%Y%m%dT%H%M%SZ).dump"
     log "taking a safety dump of the CURRENT database first → $SAFETY"
-    # If the restore turns out to be the wrong call, this is the way back.
-    pg_dump --format=custom --no-owner --no-privileges --file="$SAFETY" "$PG_URL" \
-      || warn "safety dump failed — continuing only because you asked explicitly"
+    # If the restore turns out to be the wrong call, this is the way back — so no
+    # safety dump, no restore. (It used to be taken with the owner DSN, which
+    # FORCE RLS always refuses, and the failure was only a warning.)
+    ( umask 077 && pg_dump --format=custom --no-owner --no-privileges \
+                           --file="$SAFETY" "$DUMP_URL" ) \
+      || fail "safety dump failed — NOT restoring. Without it there is no way back"
 
     log "restoring into $PROD_DB"
-    pg_restore --clean --if-exists --no-owner --no-privileges \
+    # One transaction: an error part-way leaves the database exactly as it was,
+    # not half old and half restored.
+    pg_restore --single-transaction --clean --if-exists --no-owner --no-privileges \
                --dbname="$PG_URL" "$FILE"
-    log "restored. Start the API:  sudo systemctl start envelock-api"
+    log "restored. Start Envelock:  sudo systemctl start envelock-api envelock-worker envelock-backup.timer"
     exit 0
     ;;
 
