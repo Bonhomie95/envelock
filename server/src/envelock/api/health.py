@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Request, Response, status
 from pydantic import BaseModel
@@ -36,6 +37,53 @@ router = APIRouter()
 #: A readiness probe must fail fast. Hanging until the client gives up looks
 #: identical to "healthy but slow" to most orchestrators.
 _PROBE_TIMEOUT_SECONDS = 3.0
+
+#: How old the freshest mailbox sync may be before the operator console calls
+#: syncing stalled. The worker syncs every connected mailbox about once a minute
+#: (the IMAP poll and the OAuth fallback poll are both 60 s), so this is several
+#: missed cycles rather than one slow one.
+WORKER_STALE_AFTER = timedelta(minutes=10)
+
+
+async def running_leaders_now() -> set[str]:
+    """Which background loops are running in any process, per Postgres.
+
+    The status pages are served by the API, and under split custody the API
+    runs no poller and no scheduler — so its own memory cannot tell a healthy
+    worker from a dead one. The loops' advisory locks can (workers/leader.py).
+    """
+    from envelock.db import get_engine
+    from envelock.workers.leader import running_leaders
+
+    async with get_engine().connect() as conn:
+        return await running_leaders(conn)
+
+
+async def newest_mailbox_sync() -> datetime | None:
+    """When the worker last completed a sync of any connected mailbox.
+
+    The stamp the worker writes on every successful sync (`last_sync_at`), read
+    across tenants — the same answer for whichever process asks.
+    """
+    from sqlalchemy import func, select
+
+    from envelock.db import get_sessionmaker
+    from envelock.db_rls import system_scope
+    from envelock.models import Mailbox
+
+    with system_scope("status: freshest mailbox sync"):
+        async with get_sessionmaker()() as session:
+            newest = (
+                await session.execute(
+                    select(func.max(Mailbox.last_sync_at)).where(
+                        Mailbox.is_active.is_(True),
+                        Mailbox.needs_reconnect.is_(False),
+                    )
+                )
+            ).scalar()
+    if newest is not None and newest.tzinfo is None:
+        newest = newest.replace(tzinfo=UTC)
+    return newest
 
 
 class HealthResponse(BaseModel):
@@ -159,8 +207,6 @@ async def public_status() -> PublicStatusResponse:
     can mail be analysed, and do alerts still go out — rather than the names of
     our internal services.
     """
-    from datetime import UTC, datetime
-
     components: list[StatusComponent] = []
 
     try:
@@ -178,29 +224,66 @@ async def public_status() -> PublicStatusResponse:
         logger.warning("status: redis check failed: %s", exc)
         redis_state = "degraded"
 
+    # Mail is read and alerts escalated by the worker process, not by this one,
+    # so "the database answers" said nothing about either: a dead worker showed
+    # green. Postgres knows which loops hold their leader lock right now; a
+    # crashed or crash-looping worker holds none. `None` = could not tell.
+    leaders: set[str] | None = None
+    if db_ok:
+        try:
+            async with asyncio.timeout(_PROBE_TIMEOUT_SECONDS):
+                leaders = await running_leaders_now()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("status: worker check failed: %s", exc)
+
+    unknown = "We cannot confirm right now that new messages are being checked."
+    if not db_ok:
+        analysis_state, analysis_detail = (
+            "down",
+            "Analysis is interrupted. Your mail is unaffected — Envelock is "
+            "never in the delivery path — but new messages are not being checked.",
+        )
+    elif leaders is None:
+        analysis_state, analysis_detail = "degraded", unknown
+    elif not leaders & {"imap poller", "oauth jobs"}:
+        analysis_state, analysis_detail = (
+            "down",
+            "New messages are not being checked right now. Your mail is "
+            "unaffected — Envelock is never in the delivery path — and messages "
+            "that arrive meanwhile are checked once analysis resumes.",
+        )
+    else:
+        analysis_state, analysis_detail = (
+            "operational",
+            "Messages are being analysed as they arrive.",
+        )
+
+    if analysis_state == "down":
+        alerts_state, alerts_detail = (
+            "down",
+            "New alerts cannot be raised while analysis is interrupted.",
+        )
+    elif leaders is None:
+        alerts_state, alerts_detail = "degraded", unknown
+    elif "scheduler" not in leaders:
+        alerts_state, alerts_detail = (
+            "degraded",
+            "Alerts are being raised, but escalating unacknowledged ones is delayed.",
+        )
+    else:
+        alerts_state, alerts_detail = (
+            "operational",
+            "Alerts are being raised and escalated normally.",
+        )
+
     components.append(
         StatusComponent(
-            id="analysis",
-            name="Mail analysis",
-            state="operational" if db_ok else "down",
-            detail=(
-                "Messages are being analysed as they arrive."
-                if db_ok
-                else "Analysis is interrupted. Your mail is unaffected — Envelock is "
-                "never in the delivery path — but new messages are not being checked."
-            ),
+            id="analysis", name="Mail analysis", state=analysis_state, detail=analysis_detail
         )
     )
     components.append(
         StatusComponent(
-            id="alerts",
-            name="Alerts and escalation",
-            state="operational" if db_ok else "down",
-            detail=(
-                "Alerts are being raised and escalated normally."
-                if db_ok
-                else "New alerts cannot be raised while analysis is interrupted."
-            ),
+            id="alerts", name="Alerts and escalation", state=alerts_state, detail=alerts_detail
         )
     )
     components.append(

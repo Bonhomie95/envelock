@@ -657,6 +657,38 @@ async def _check_redis() -> tuple[bool, str]:
         await client.aclose()
 
 
+async def _check_worker() -> tuple[bool, str]:
+    """The background loops, as Postgres sees them — not as this process does.
+
+    This page is served by the API, which under split custody runs no poller
+    and no scheduler: its own memory reported both "disabled in config" (green)
+    whatever the worker was doing, including not running at all.
+    """
+    from envelock.api.health import running_leaders_now
+    from envelock.workers.leader import LEADER_LOCKS
+
+    leaders = await running_leaders_now()
+    missing = sorted(set(LEADER_LOCKS) - leaders)
+    if missing:
+        return False, "not running in any process: " + ", ".join(missing)
+    return True, "running: " + ", ".join(sorted(leaders))
+
+
+async def _check_mail_sync() -> tuple[bool, str]:
+    from datetime import UTC, datetime
+
+    from envelock.api.health import WORKER_STALE_AFTER, newest_mailbox_sync
+
+    newest = await newest_mailbox_sync()
+    if newest is None:
+        return True, "no connected mailbox has synced yet"
+    age = int((datetime.now(UTC) - newest).total_seconds())
+    stale = age > WORKER_STALE_AFTER.total_seconds()
+    return not stale, f"freshest mailbox sync {age}s ago" + (
+        " — syncing has stalled (or every entitled mailbox is failing)" if stale else ""
+    )
+
+
 @router.get("/status/system")
 async def system_status(actor: PlatformReader) -> dict:
     """Aggregated health of every part of Envelock, for the ops status page.
@@ -692,13 +724,19 @@ async def system_status(actor: PlatformReader) -> dict:
     ok, detail = await _timed_check(_check_redis())
     add("redis", ok, critical=False, detail=detail)
 
+    # 1b. The worker, wherever it runs, and whether it is getting through mail.
+    ok, detail = await _timed_check(_check_worker())
+    add("worker", ok, critical=True, detail=detail)
+    ok, detail = await _timed_check(_check_mail_sync())
+    add("mail_sync", ok, critical=False, detail=detail)
+
     # 2. IMAP poll worker — up if it ran recently and isn't overrunning its
     #    cadence. Cycle duration approaching the interval is the scale-up signal.
     wh = worker_health()
     interval = settings.imap_poll_worker_seconds
     dur = float(wh.get("duration_seconds") or 0.0)
     if not settings.imap_poll_worker_enabled:
-        add("imap_poll_worker", True, critical=False, detail="disabled in config")
+        add("imap_poll_worker", True, critical=False, detail="not run by this process — see worker")
     elif wh.get("ran_at") is None:
         add("imap_poll_worker", False, critical=False, detail="no cycle recorded yet")
     else:
@@ -717,7 +755,7 @@ async def system_status(actor: PlatformReader) -> dict:
     # 3. Scheduler jobs — each job's last run; any failed job is degraded.
     sh = scheduler_health()
     if not settings.scheduler_enabled:
-        add("scheduler", True, critical=False, detail="disabled in config")
+        add("scheduler", True, critical=False, detail="not run by this process — see worker")
     elif not sh:
         add("scheduler", False, critical=False, detail="no job has run yet")
     else:
@@ -780,6 +818,15 @@ async def system_status(actor: PlatformReader) -> dict:
         True,
         critical=False,
         detail=", ".join(provs) if provs else "none configured (IMAP still works)",
+    )
+
+    # 8. Allowed-but-dangerous production settings (Stripe test keys, …).
+    warnings = settings.production_warnings()
+    add(
+        "configuration",
+        not warnings,
+        critical=False,
+        detail=" | ".join(warnings) if warnings else "no production warnings",
     )
 
     down = any(c["state"] == "down" for c in checks)
