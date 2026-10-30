@@ -138,6 +138,16 @@ class Settings(BaseSettings):
     """MEASURE this per provider before launch — it is the dominant Tier 3 cost
     driver and it is set by provider policy, not by our efficiency."""
 
+    #: IDLE connections held per mail server, across every customer on it. Unset,
+    #: it is `imap_max_connections_per_egress_ip`. Protected mailboxes past it
+    #: stay on the poll (counted as `idle_capped` and logged). imap.gmail.com and
+    #: imap.zoho.com are shared by everyone, so raise this once the provider's
+    #: per-IP limit has been measured.
+    imap_idle_max_per_host: int | None = None
+    #: IDLE-triggered syncs running at once, on top of `imap_poll_concurrency`.
+    #: Each holds a database connection across its IMAP round trips, so poll +
+    #: IDLE + `oauth_sync_concurrency` + the scheduler must fit the worker's pool.
+    imap_idle_sync_concurrency: int = 4
     imap_idle_refresh_seconds: int = 1500
     imap_reconnect_jitter_seconds: int = 120
     imap_egress_ips: str = ""
@@ -342,6 +352,11 @@ class Settings(BaseSettings):
     #: How often the worker picks up mailboxes a push notification (or "Sync
     #: now") flagged. This is the real-time path's latency.
     oauth_push_drain_seconds: int = 5
+    #: Gmail/Graph mailboxes synced at once — by the fallback poll, and again
+    #: separately by the push drain, so a push never queues behind the poll. One
+    #: at a time, a push for one mailbox waited behind every other mailbox's
+    #: sync, and the "60 s" fallback took the sum of them all.
+    oauth_sync_concurrency: int = 2
     #: How often push subscriptions (Graph) and watches (Gmail) are checked and
     #: renewed. Both expire within days; each is renewed once under a day is left.
     #: A pass with nothing due makes no provider call, so this is also how soon a
