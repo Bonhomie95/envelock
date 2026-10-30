@@ -22,7 +22,7 @@ import { cn } from "../components/primitives";
 const COMPANY = "Envelock, Inc.";
 const CONTACT = "legal@envelock.org";
 const SECURITY_CONTACT = "security@envelock.org";
-const UPDATED = "20 September 2026";
+const UPDATED = "30 October 2026";
 
 function H2({ children }: { children: React.ReactNode }) {
   return (
@@ -303,6 +303,46 @@ function Privacy() {
           "Shared threat reports contain domain-level information, not your message contents, mailbox addresses, or your organization’s identity.",
         ]}
       />
+
+      <H2>Google user data</H2>
+      <P>
+        Connecting a Google Workspace mailbox grants Envelock two Gmail
+        permissions, used only to protect that mailbox:
+      </P>
+      <UL
+        items={[
+          <>
+            <code className="font-mono text-[13px]">gmail.modify</code> — to
+            read incoming and sent mail for fraud and account-takeover signals,
+            to replace a suspicious message with a copy that carries a warning
+            and click-time link checks (the original goes to Trash), and to move
+            confirmed-malicious mail to a quarantine label. Envelock never sends
+            email from your mailbox.
+          </>,
+          <>
+            <code className="font-mono text-[13px]">gmail.settings.basic</code>{" "}
+            — to read the mailbox’s filters and forwarding, so we can alert you
+            when a rule appears that forwards or hides your mail. We never
+            change them.
+          </>,
+        ]}
+      />
+      <P>
+        Envelock’s use and transfer to any other app of information received
+        from Google APIs will adhere to the{" "}
+        <a
+          href="https://developers.google.com/terms/api-services-user-data-policy"
+          className="accent underline underline-offset-4"
+        >
+          Google API Services User Data Policy
+        </a>
+        , including the Limited Use requirements. We do not use Google user data
+        for advertising, we do not sell it, and we do not use it to develop,
+        improve or train generalized AI or machine-learning models. People at
+        Envelock do not read it except to investigate an alert or a request
+        you raise, for security, or when the law requires it, and it goes only
+        to the sub-processors these features need.
+      </P>
 
       <H2>Who else sees it</H2>
       <P>
