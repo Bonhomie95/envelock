@@ -80,12 +80,14 @@ WORKER_ONLY = {
     "ENVELOCK_CREDENTIAL_CAN_DECRYPT": "true",
     "ENVELOCK_SCHEDULER_ENABLED": "true",
     "ENVELOCK_IMAP_POLL_WORKER_ENABLED": "true",
-    # Sized for a 4-core / 8 GB server: sixteen mailboxes checked at a time,
-    # with the pool comfortably above that for the scheduler's own queries.
-    # API (10 + 10) plus worker (20 + 10) stays well under Postgres's 100.
+    # Sized for a 4-core / 8 GB server: sixteen mailboxes checked at a time.
+    # The pool must cover the worker's peak, about 31 connections: poll 16 +
+    # IDLE wakes 4 + OAuth sync and push drain 2 + 2 + the scheduler + the
+    # three leader locks. API (10 + 10) plus worker (20 + 15) stays well under
+    # Postgres's 100.
     "ENVELOCK_IMAP_POLL_CONCURRENCY": "16",
     "ENVELOCK_DB_POOL_SIZE": "20",
-    "ENVELOCK_DB_MAX_OVERFLOW": "10",
+    "ENVELOCK_DB_MAX_OVERFLOW": "15",
 }
 
 #: Production refuses to start without these, so say so now rather than at boot.
