@@ -53,7 +53,9 @@ ALERTING = (AlertTier.HIGH, AlertTier.CRITICAL)
 #: a single regression fails the build while leaving room for a corpus that
 #: grows faster than the detector.
 MIN_RECALL = 0.80
-MIN_PRECISION = 0.80
+#: Raised from 0.80 when the dated-invoice and link-token false alarms were
+#: fixed, so either one coming back fails the build.
+MIN_PRECISION = 0.90
 
 
 @dataclass

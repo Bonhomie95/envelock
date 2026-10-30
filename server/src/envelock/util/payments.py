@@ -78,17 +78,35 @@ _SWIFT_RE = re.compile(
     r"\b(?:SWIFT|BIC|SWIFT[\s/-]*BIC)\b\s*(?:CODE)?\s*[:\-]?\s*"
     r"([A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)\b"
 )
-_SORTCODE_RE = re.compile(r"\b(\d{2}[-\s]?\d{2}[-\s]?\d{2})\b")
+#: Three pairs with ONE separator: 60-16-13, 60 16 13 or 601613. Letting each
+#: separator vary on its own read the "2026-10" of an ISO date as sort code
+#: 202610 (and the "10-2026" of 23-10-2026 as 102026). Learned as a vendor's
+#: account, it made the next month's dated invoice an A1 "bank details changed"
+#: Critical. Never straight after "#" either: that is a CSS colour (#333333) or
+#: an HTML entity (&#128073;), and A2 reads raw HTML.
+_SORTCODE_RE = re.compile(r"(?<!#)\b(\d{2}([-\s]?)\d{2}\2\d{2})\b")
 _ACH_RE = re.compile(r"\b(\d{9})\b")
 _ACCOUNT_RE = re.compile(r"\b(\d{8,17})\b")
 _BTC_RE = re.compile(r"\b(bc1[a-z0-9]{25,62}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b")
 _ETH_RE = re.compile(r"\b(0x[a-fA-F0-9]{40})\b")
+#: A link, ending where HTML ends it as well as at whitespace. Link tokens are
+#: long random runs, and an uppercased JWT or tracking id can hold one that
+#: passes the IBAN checksum (1 in 300 of our own verify emails did). A2 passes
+#: raw HTML, where `\S+` would run on from the href through `">View</a><br>IBAN:`
+#: and swallow the real IBAN printed beside the link.
+_URL_IN_TEXT = re.compile(r"https?://[^\s\"<>]+", re.I)
 
 #: Presence of these near an identifier is what makes it a *payment instruction*
 #: rather than an incidental number. Drives A1 precision.
 PAYMENT_CONTEXT = re.compile(
-    r"\b(bank|account|acct|iban|swift|bic|routing|sort\s?code|beneficiary|"
+    r"\b(bank|acct|iban|swift|bic|routing|sort\s?code|beneficiary|"
     r"remit|remittance|wire|transfer|payment|invoice|payable|deposit|"
+    # Not "account" alone: that is how every sign-up and security email talks
+    # about a login, so "confirm your account" made any first-contact notice an
+    # A7 payment alert and opened the AI gate. Only an account NUMBER counts,
+    # named or given ("Account: 31926819"). Each optional part starts with a
+    # character that is not a space, so a run of spaces cannot backtrack.
+    r"account\s*numbers?|account\s*(?:(?:no\.?|#)\s*)?(?::\s*)?\d+|"
     # The gift-card BEC ("buy iTunes cards, urgent, tell no one") carries no
     # bank identifier at all — without this vocabulary, A2/A7/A14 all gated on
     # has_payment_context and the entire scam class fired NOTHING.
@@ -198,7 +216,7 @@ def extract_bank_identifiers(text: str) -> list[BankIdentifier]:
     if not text:
         return []
 
-    text = normalise_text(text)
+    text = _URL_IN_TEXT.sub(" ", normalise_text(text))
     upper = text.upper()
     found: dict[str, BankIdentifier] = {}
 
@@ -270,9 +288,6 @@ _AMOUNT_CCY_RE = re.compile(
 _CCY_CANON = {
     "$": "USD", "€": "EUR", "£": "GBP", "₦": "NGN",
 }
-
-
-_URL_IN_TEXT = re.compile(r"https?://\S+", re.I)
 
 
 def extract_invoice_numbers(text: str) -> set[str]:
