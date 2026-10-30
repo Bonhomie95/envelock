@@ -81,23 +81,37 @@ def _normalise_dsn(dsn: str) -> str:
     )
 
 
+def _engine_kwargs(settings) -> dict:  # noqa: ANN001
+    """Options for every engine this process opens.
+
+    `hide_parameters` matters more than it looks. SQLAlchemy writes a failed
+    statement's bound values into the exception message, and the message is what
+    `logger.exception` puts in the journal — so one malformed email that tripped
+    a column limit logged its sender, subject, links or extracted bank details.
+    Production keeps the statement and hides the values; development keeps both,
+    because there they are what you debug with.
+    """
+    kwargs: dict = {
+        "pool_pre_ping": True,
+        "pool_size": settings.db_pool_size,
+        "max_overflow": settings.db_max_overflow,
+    }
+    if settings.db_nullpool:
+        from sqlalchemy.pool import NullPool
+
+        # No pooled connection outlives the loop that opened it — required for
+        # the test suite, which spins up many short-lived event loops.
+        kwargs = {"poolclass": NullPool}
+    kwargs["hide_parameters"] = settings.is_production
+    return kwargs
+
+
 def get_engine() -> AsyncEngine:
     global _engine
     if _engine is None:
         settings = get_settings()
         dsn = _normalise_dsn(settings.postgres_dsn)
-        kwargs: dict = {
-            "pool_pre_ping": True,
-            "pool_size": settings.db_pool_size,
-            "max_overflow": settings.db_max_overflow,
-        }
-        if settings.db_nullpool:
-            from sqlalchemy.pool import NullPool
-
-            # No pooled connection outlives the loop that opened it — required for
-            # the test suite, which spins up many short-lived event loops.
-            kwargs = {"poolclass": NullPool}
-        _engine = create_async_engine(dsn, **kwargs)
+        _engine = create_async_engine(dsn, **_engine_kwargs(settings))
         if settings.rls_enabled:
             _install_rls_guc(_engine)
     return _engine
@@ -312,7 +326,9 @@ async def create_all() -> None:
         from sqlalchemy.pool import NullPool
 
         owner_engine = create_async_engine(
-            _normalise_dsn(settings.db_owner_dsn), poolclass=NullPool
+            _normalise_dsn(settings.db_owner_dsn),
+            poolclass=NullPool,
+            hide_parameters=settings.is_production,
         )
     try:
         await _apply_schema(owner_engine or get_engine(), settings, logger)

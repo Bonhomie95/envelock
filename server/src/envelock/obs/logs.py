@@ -17,6 +17,7 @@ chain rather than asking 118 modules to change how they log.
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from typing import Any
 
@@ -47,6 +48,30 @@ def _drop_color_message(
     formatter. In JSON output that is the same text twice on every access line."""
     event_dict.pop("color_message", None)
     return event_dict
+
+
+#: A query-string value: everything after `=` up to the next `&` or the end.
+_QUERY_VALUE = re.compile(r"=[^&]*")
+
+
+class RedactQueryValues(logging.Filter):
+    """Blank every query-string value in uvicorn's access lines.
+
+    The access line is the full request target, and some targets carry secrets
+    by necessity: Gmail Pub/Sub can only authenticate to us with a `?token=`
+    baked into the push URL, so every push wrote that bearer into the journal;
+    an OAuth callback carries its one-time `code`. Names are kept — they say
+    which endpoint and which shape of call — and values never are.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path, sep, query = args[2].partition("?")
+            if sep:
+                redacted = f"{path}?{_QUERY_VALUE.sub('=…', query)}"
+                record.args = (*args[:2], redacted, *args[3:])
+        return True
 
 
 #: Shared by both the structlog path and the stdlib bridge, so a line written
@@ -114,6 +139,9 @@ def configure_logging(*, level: str = "INFO", json_output: bool = True) -> None:
         uv = logging.getLogger(name)
         uv.handlers.clear()
         uv.propagate = True
+    access = logging.getLogger("uvicorn.access")
+    if not any(isinstance(f, RedactQueryValues) for f in access.filters):
+        access.addFilter(RedactQueryValues())
 
     # httpx logs every outbound request at INFO *including the full URL*. Two
     # problems: it is one line per reputation/RDAP/LLM call (the bulk of our log
