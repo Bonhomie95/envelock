@@ -13,6 +13,7 @@ import re
 from datetime import UTC, datetime
 from email import message_from_bytes, policy
 from email.header import decode_header, make_header
+from email.headerregistry import BaseHeader, HeaderRegistry
 from email.message import EmailMessage
 from email.utils import getaddresses, parsedate_to_datetime
 from uuid import UUID
@@ -32,6 +33,30 @@ _URL_RE = re.compile(r"https?://[^\s<>\"')]+", re.IGNORECASE)
 #: collect from an attribute is one the rewriter can find again.
 HREF_RE = re.compile(r"""\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'<>`=]+))""", re.IGNORECASE)
 _ARCHIVE_EXT = (".zip", ".rar", ".7z", ".tar", ".gz", ".iso", ".cab")
+
+
+class _TolerantHeaders(HeaderRegistry):
+    """The stdlib's header registry, except that a header it cannot parse is text.
+
+    policy.default parses a structured header (From, To, Reply-To, Message-ID,
+    Content-Type) when it is read, and on some malformed values its parser raises
+    instead of recording a defect: `Reply-To: "` is an IndexError from inside the
+    stdlib, on 3.12 and 3.13 alike. That ended parse_message, so one such message
+    failed a mailbox's whole history scan, failed every live sync that listed it,
+    and kept itself out of analysis. It is read as unstructured text instead,
+    which is all any caller here uses: addresses and parameters are parsed from
+    the string.
+    """
+
+    def __call__(self, name: str, value: str) -> BaseHeader:
+        try:
+            return super().__call__(name, value)
+        except Exception:  # noqa: BLE001 — the stdlib parser's own bugs
+            return type("_UnparsedHeader", (self.default_class, self.base_class), {})(name, value)
+
+
+#: policy.default with `_TolerantHeaders`, for reading and re-writing hostile mail.
+POLICY = policy.default.clone(header_factory=_TolerantHeaders())
 
 _AUTH_MAP = {
     "pass": AuthResult.PASS,
@@ -426,7 +451,7 @@ def parse_message(
     remediable: bool = False,
     source_ref: str | None = None,
 ) -> MailEvent:
-    msg: EmailMessage = message_from_bytes(raw, policy=policy.default)  # type: ignore[assignment]
+    msg: EmailMessage = message_from_bytes(raw, policy=POLICY)  # type: ignore[assignment]
 
     sender = _sender(msg) or EmailAddress(address="unknown@invalid")
     text, html = _bodies(msg)

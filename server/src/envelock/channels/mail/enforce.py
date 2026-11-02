@@ -25,7 +25,7 @@ from dataclasses import dataclass, field
 from email import message_from_bytes, policy
 from email.message import EmailMessage
 
-from envelock.channels.mail.parser import HREF_RE, normalise_href
+from envelock.channels.mail.parser import HREF_RE, POLICY, normalise_href
 
 logger = logging.getLogger("envelock.enforce")
 
@@ -167,7 +167,9 @@ def build_protected_copy(
     Headers (Message-ID, Date, threading) are preserved so the copy keeps its
     thread position and reply/forward keep quoting correctly.
     """
-    msg = message_from_bytes(raw, policy=policy.default)
+    # The parser's policy: a header the stdlib cannot parse must not stop the
+    # copy, nor its re-folding on the way out (as_bytes below).
+    msg = message_from_bytes(raw, policy=POLICY)
 
     banner_done_html = False
     banner_done_text = False
@@ -227,7 +229,7 @@ def build_protected_copy(
     if isinstance(msg, EmailMessage):
         del msg[PROCESSED_HEADER]
         msg[PROCESSED_HEADER] = _stamp_for(msg.get("Message-ID"), mailbox_id)
-    return msg.as_bytes(policy=policy.SMTP)
+    return msg.as_bytes(policy=POLICY.clone(linesep="\r\n"))
 
 
 def _header_block(raw: bytes) -> bytes:

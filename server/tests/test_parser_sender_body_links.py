@@ -185,3 +185,37 @@ def test_literal_unsubscribe_host_is_still_never_rewritten() -> None:
     urls = ["https://acme.us1.list-manage.com/unsubscribe?u=1", "https://evil.example/pay"]
     out = rewritable_urls(urls, owned_domains=OWNED, redirect_base="https://app.envelock.org")
     assert out == ["https://evil.example/pay"]
+
+
+# ── Headers the stdlib cannot parse ──────────────────────────────────────────
+# policy.default raised IndexError from inside the stdlib on each of these, which
+# failed the whole message: a Microsoft 365 history scan stopped at the first
+# one ("History scan failed — IndexError: list index out of range").
+_UNPARSABLE = (
+    b'From: "Billing" <billing@gemini.com>\r\n'
+    b'Reply-To: "\r\n'
+    b"To: ,\r\n :'\xc3\xa9,);\\[\r\n"
+    b"Message-ID: <broken-headers@gemini.com>\r\n"
+    b"Content-Type: multipart/mixed; boundary=B\r\n\r\n"
+    b"--B\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
+    b'<a href="https://evil.example/pay">Pay now</a>\r\n'
+    b"--B\r\n"
+    b"Content-Type: >x.example<@>=?utf-8?q?a?=[=?;.*\r\n"
+    b'Content-Disposition: attachment; filename="invoice.pdf"\r\n\r\n'
+    b"%PDF-1.4\r\n"
+    b"--B--\r\n"
+)
+
+
+def test_headers_the_stdlib_cannot_parse_are_read_as_text() -> None:
+    event = _event(_UNPARSABLE)
+    assert event.sender.address == "billing@gemini.com"
+    assert event.rfc_message_id == "<broken-headers@gemini.com>"
+    assert "https://evil.example/pay" in event.urls
+    assert [a.filename for a in event.attachments] == ["invoice.pdf"]
+
+    out = build_protected_copy(
+        _UNPARSABLE, link_map={"https://evil.example/pay": "TOK"},
+        redirect_base="https://app.envelock.org", mailbox_id=_MBX,
+    )
+    assert b"https://app.envelock.org/r/TOK" in out.replace(b"=\r\n", b"")
