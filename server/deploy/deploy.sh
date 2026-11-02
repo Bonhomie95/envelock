@@ -427,11 +427,14 @@ for unit in envelock-api.service envelock-worker.service envelock-backup.service
     drift="$drift $unit"
   fi
 done
+# The command is printed with this deploy's home and user already filled in:
+# left as $HOME and $(id -un), pasting it into a root shell would write /root
+# paths and User=root into the units, and neither service would start.
 if [ -n "$drift" ]; then
   warn "these systemd units differ from the repository's:$drift
   Review the change, then install them (docs/LAUNCH-GUIDE.md, \"Updating the systemd units\"):
       cd $APPS/server/deploy && for u in$drift; do
-        sed \"s#/home/ubuntu#\$HOME#g; s#^User=ubuntu#User=\$(id -un)#\" \"\$u\" | sudo tee $SYSTEMD_DIR/\"\$u\" >/dev/null
+        sed \"s#/home/ubuntu#$HOME#g; s#^User=ubuntu#User=$(id -un)#\" \"\$u\" | sudo tee $SYSTEMD_DIR/\"\$u\" >/dev/null
       done && sudo systemctl daemon-reload && sudo systemctl restart $API_UNIT $WORKER_UNIT"
 fi
 

@@ -846,7 +846,9 @@ poller's or the scheduler's lock, i.e. when the worker is dead or crash-looping.
 
 `deploy.sh` does not install unit files itself (a sandboxing change to a live
 service deserves someone watching it restart); it tells you when the installed
-ones differ from the repo's, and prints this:
+ones differ from the repo's, and prints the command to install them with this
+server's home and user already filled in, so it is safe to paste from any shell,
+root's included. Typed by hand as `ubuntu`, it is:
 
 ```bash
 cd ~/apps/server/deploy
@@ -886,6 +888,13 @@ Once, in this order, as `ubuntu` on the live server:
 
    (`make_prod_env.py` has always written the two origins. A half-set Turnstile
    pair used to boot and refuse every sign-in; it now refuses to boot.)
+
+   Then give the worker the database pool its realtime peak needs (about 31
+   connections; new servers get this from `make_prod_env.py`):
+
+   ```bash
+   sed -i 's/^ENVELOCK_DB_MAX_OVERFLOW=.*/ENVELOCK_DB_MAX_OVERFLOW=15/' ~/apps/server/.env.worker
+   ```
 2. **Adopt the new deploy tool before deploying with it**, so its rollback and
    worker checks protect this deploy too:
 
@@ -910,10 +919,24 @@ Once, in this order, as `ubuntu` on the live server:
    `…dump.env.age`. Save `.env` and `.env.worker` in your password manager too.
 6. **Run the drill** (`~/apps/server/deploy/restore.sh --drill`); it now prints
    real row counts and fails a backup with no tenants.
-7. **The apex headers.** The installed `envelock-root.conf` is certbot's copy,
-   so add `include snippets/headers-app.conf;` by hand to each `server` block for
-   `envelock.org` (port 80 and the 443 block certbot added) and to its
-   `location /assets/`, then `sudo nginx -t && sudo systemctl reload nginx`.
+7. **The apex site.** The installed `envelock-root.conf` is certbot's copy, so
+   it is edited in place, never copied over: `include snippets/headers-app.conf;`
+   goes into each `server` block for `envelock.org` (port 80 and 443) and its
+   `location /assets/`, and the legal pages' `try_files $uri /index.html;`
+   becomes `try_files /index.html =404;` — without that, `/privacy` and the
+   other legal pages 301 to `app.`. This does all of it, keeps a copy, and puts
+   the copy back if nginx refuses the result:
+
+   ```bash
+   f=/etc/nginx/sites-available/envelock-root.conf
+   sudo cp -a "$f" /var/backups/envelock-root.conf.bak
+   grep -q 'snippets/headers-app.conf' "$f" || sudo perl -pi -e 's{^([ \t]*)server_name envelock\.org www\.envelock\.org;.*$}{$&\n$1include snippets/headers-app.conf;}; s{^([ \t]*)add_header Cache-Control "public, immutable";}{$1include snippets/headers-app.conf;\n$&}' "$f"
+   sudo perl -pi -e 's{try_files \$uri /index\.html;}{try_files /index.html =404;}' "$f"
+   sudo nginx -t && sudo systemctl reload nginx || sudo cp -a /var/backups/envelock-root.conf.bak "$f"
+   ```
+
+   `curl -sI https://envelock.org/privacy` then answers `200`, with a
+   `strict-transport-security` header.
 8. **Uptime:** add the status-page keyword monitor (see "Uptime alerts").
 9. **If you have a standby:** copy the certificates and add channel binding —
    step 22.

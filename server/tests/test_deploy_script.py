@@ -375,6 +375,10 @@ def test_units_that_differ_from_the_repository_are_reported(box: Box) -> None:
     assert result.returncode == 0, result.stderr
     assert "differ from the repository's: envelock-api.service" in result.stderr
     assert "daemon-reload" in result.stderr
+    # Filled in, not left for the shell that pastes it: from root, $HOME and
+    # $(id -un) would write /root paths and User=root into the units.
+    assert f"s#/home/ubuntu#{box.home}#g" in result.stderr
+    assert "$(id -un)" not in result.stderr
 
 
 def test_installed_units_matching_the_repository_raise_nothing(box: Box) -> None:

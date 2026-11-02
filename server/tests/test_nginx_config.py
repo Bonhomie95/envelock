@@ -54,6 +54,15 @@ def test_every_static_site_sends_its_security_headers(site: Path) -> None:
             )
 
 
+def test_the_apex_never_falls_back_into_its_redirect() -> None:
+    # A URI as try_files' last argument is an internal redirect: it lands in the
+    # apex's `location / { return 301 … }`, which keeps $request_uri — so
+    # envelock.org/privacy, the URL given to Google, 301'd to app.envelock.org.
+    text = _without_comments(NGINX_DIR / "envelock-root.conf")
+    for args in re.findall(r"\btry_files\s+([^;]+);", text):
+        assert args.split()[-1].startswith("="), f"try_files {args}"
+
+
 @pytest.mark.skipif(shutil.which("nginx") is None, reason="nginx is not installed")
 def test_the_sites_and_snippets_pass_nginx_t(tmp_path: Path) -> None:
     (tmp_path / "snippets").mkdir()
