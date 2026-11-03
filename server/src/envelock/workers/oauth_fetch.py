@@ -99,6 +99,8 @@ async def _write_back(
             raw, link_map=mapping, redirect_base=settings.redirect_base,
             mailbox_id=mailbox.id, banner=banner,
         )
+        if new_raw is None:
+            return False
         return await api_enforce.gmail_replace(
             access_token=access_token, message_id=ref, new_raw=new_raw, transport=transport
         )

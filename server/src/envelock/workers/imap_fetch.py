@@ -139,6 +139,8 @@ async def _enforce_copy(
         raw, link_map=mapping, redirect_base=settings.redirect_base,
         mailbox_id=event.mailbox_id, banner=banner,
     )
+    if new_raw is None:
+        return False
     return await asyncio.to_thread(
         imap_sync.replace_message,
         host=host,

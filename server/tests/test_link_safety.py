@@ -288,6 +288,37 @@ async def test_worker_skips_our_own_copies(session):
     assert client.appended == []  # nothing re-written, no APPEND loop
 
 
+# A message the stdlib cannot write back: `boundary=""` makes it re-write the
+# Content-Type from its parameters, then refuse the form feed in one. The copy
+# raised out of the poll on every cycle, and the UID never advanced, so no mail
+# after it was analysed again.
+_UNWRITABLE = (
+    b"From: jane@partner.com\r\n"
+    b"To: pay@acme.com\r\n"
+    b"Message-ID: <unwritable@partner.com>\r\n"
+    b'Content-Type: multipart/mixed; boundary=""; x="a\x0cb"\r\n\r\n'
+    b"--\r\nContent-Type: text/plain\r\n\r\nSee https://docs.partner.com/other\r\n----\r\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_copy_that_cannot_be_written_never_stalls_the_poll(session):
+    mailbox = await _protected_mailbox(session)
+    client = FakeImap({11: _UNWRITABLE, 12: _CLEAN_WITH_LINK})
+
+    summary = await sync_mailbox(session, mailbox, client_factory=_factory(client))
+
+    assert summary["ok"] is True
+    copies = [raw.decode("utf-8", "replace").replace("=\r\n", "") for _, raw, _ in client.appended]
+    assert any("<clean1@partner.com>" in c and "/r/" in c for c in copies)
+    cred = (
+        await session.execute(
+            select(MailboxCredential).where(MailboxCredential.mailbox_id == mailbox.id)
+        )
+    ).scalar_one()
+    assert cred.imap_last_uid == 12
+
+
 # ── Feature 2 end-to-end: the changed-bank-detail attack through the worker ──
 _BANK_CHANGE = (
     b"From: accounts@partner.com\r\n"

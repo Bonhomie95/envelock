@@ -12,10 +12,12 @@ the From address, the body parts, and the links.
 
 from __future__ import annotations
 
+import email.utils
+from email import message_from_bytes
 from uuid import uuid4
 
 from envelock.channels.mail.enforce import build_protected_copy
-from envelock.channels.mail.parser import href_urls, normalise_href, parse_message
+from envelock.channels.mail.parser import POLICY, href_urls, normalise_href, parse_message
 from envelock.core.capabilities import capabilities_for
 from envelock.core.enums import AlertTier, SourceMechanism
 from envelock.detections.base import CounterpartyState, DetectionContext, run_all
@@ -218,4 +220,76 @@ def test_headers_the_stdlib_cannot_parse_are_read_as_text() -> None:
         _UNPARSABLE, link_map={"https://evil.example/pay": "TOK"},
         redirect_base="https://app.envelock.org", mailbox_id=_MBX,
     )
+    assert out is not None
     assert b"https://app.envelock.org/r/TOK" in out.replace(b"=\r\n", b"")
+
+
+def _rewritten_html(copy: bytes | None) -> bytes:
+    assert copy is not None
+    part = next(p for p in message_from_bytes(copy, policy=POLICY).walk()
+                if p.get_content_type() == "text/html")
+    payload = part.get_payload(decode=True)
+    assert isinstance(payload, bytes)
+    return payload
+
+
+# ── Headers the stdlib cannot write back ─────────────────────────────────────
+# The protected copy re-folded each delivered header on the way out and raised:
+# UnicodeEncodeError, HeaderWriteError, IndexError. The copy failed, and the
+# Gmail or IMAP sync holding the message failed with it on every poll. The utf-7
+# part decodes to a lone surrogate, which set_content could not write either.
+_UNFOLDABLE = (
+    b"From: billing@gemini.com\r\n"
+    b"MIME-Version: [filename*0*=[)charset=a\xc3\xa9=?utf-8?q?a?=)x.example?%=?utf-8?q?a?=\r\n"
+    b"Reply-To: \xc3\xa9,filename*0*=\xc3\xa9*'filename*0*=\r\n"
+    b"Message-ID: =?utf-8?b?\xc3\xa9\\,]filename*0*=);@>?=\r\n"
+    b'To: bobboundary=x.example\xc3\xa9\\=?utf-8?b?\\;filename*0*=<@>""=?utf-8?q?a?="\r\n'
+    b"Content-Type: multipart/mixed; boundary=B\r\n\r\n"
+    b"--B\r\nContent-Type: text/html; charset=utf-7\r\n\r\n"
+    b'+2AA-<a href="https://evil.example/pay">Pay now</a>\r\n'
+    b"--B--\r\n"
+)
+
+
+def test_the_copy_writes_delivered_headers_back_as_they_arrived() -> None:
+    out = build_protected_copy(
+        _UNFOLDABLE, link_map={"https://evil.example/pay": "TOK"},
+        redirect_base="https://app.envelock.org", mailbox_id=_MBX,
+    )
+    assert out is not None
+    assert out.startswith(_UNFOLDABLE.split(b"\r\n\r\n", 1)[0] + b"\r\n")
+    assert b"https://app.envelock.org/r/TOK" in _rewritten_html(out)
+
+
+# ── RFC 2231 parameters the stdlib trips on ──────────────────────────────────
+# Each in a header its structured parser gives up on, so it is kept as text. The
+# part's `charset*=` reached the codec as a tuple: a TypeError that failed the
+# message on any Python. The bare `boundary*` beside `boundary*0` is a TypeError
+# on 3.12, the VPS's Python, from inside the parser; CI runs 3.13, so 3.12's
+# decode_params is stood in for below.
+_RFC2231 = (
+    b"From: billing@gemini.com\r\n"
+    b"Message-ID: <rfc2231@gemini.com>\r\n"
+    b"Content-Type: multipart/mixed; boundary*=B; boundary*0=B;"
+    b" >x.example<@>=?utf-8?q?a?=[=?;.*\r\n\r\n"
+    b"--B\r\nContent-Type: text/html; charset*=utf-8''utf-8; y*\r\n\r\n"
+    b'<a href="https://evil.example/pay">Pay now</a>\r\n'
+    b"--B--\r\n"
+)
+
+
+def test_rfc2231_parameters_the_stdlib_trips_on_still_parse(monkeypatch) -> None:  # noqa: ANN001
+    real = email.utils.decode_params
+
+    def as_on_312(params):  # noqa: ANN001, ANN202 — sorts `boundary*` (None) against `boundary*0`
+        if {"boundary*", "boundary*0"} <= {name for name, _ in params}:
+            raise TypeError("'<' not supported between instances of 'int' and 'NoneType'")
+        return real(params)
+
+    monkeypatch.setattr(email.utils, "decode_params", as_on_312)
+    assert "https://evil.example/pay" in _event(_RFC2231).urls
+    out = build_protected_copy(
+        _RFC2231, link_map={"https://evil.example/pay": "TOK"},
+        redirect_base="https://app.envelock.org", mailbox_id=_MBX,
+    )
+    assert b"https://app.envelock.org/r/TOK" in _rewritten_html(out)

@@ -14,8 +14,8 @@ from datetime import UTC, datetime
 from email import message_from_bytes, policy
 from email.header import decode_header, make_header
 from email.headerregistry import BaseHeader, HeaderRegistry
-from email.message import EmailMessage
-from email.utils import getaddresses, parsedate_to_datetime
+from email.message import EmailMessage, _parseparam  # type: ignore[attr-defined]
+from email.utils import decode_params, getaddresses, parsedate_to_datetime
 from uuid import UUID
 
 from envelock.channels.mail.attachments import extract as extract_attachment
@@ -55,8 +55,40 @@ class _TolerantHeaders(HeaderRegistry):
             return type("_UnparsedHeader", (self.default_class, self.base_class), {})(name, value)
 
 
-#: policy.default with `_TolerantHeaders`, for reading and re-writing hostile mail.
-POLICY = policy.default.clone(header_factory=_TolerantHeaders())
+class _TolerantMessage(EmailMessage):
+    """EmailMessage, except a parameter sent both whole and in RFC 2231 sections
+    does not stop the parse.
+
+    On 3.12, the VPS's Python, `utils.decode_params` sorts a bare `boundary*`
+    against `boundary*0` (None against int) and raises TypeError from inside the
+    parser's own get_boundary, so the message did not parse at all; 3.13 fixed it.
+    The structured Content-Type parser joins the sections first, so only a header
+    `_TolerantHeaders` kept as text gets that far. The bare one is dropped, as
+    3.13 drops it beside a section 0.
+    """
+
+    def _get_params_preserve(self, failobj: object, header: str) -> object:
+        try:
+            return super()._get_params_preserve(failobj, header)  # type: ignore[misc]
+        except TypeError:
+            params = [
+                (name.strip(), value.strip())
+                for name, _, value in (p.partition("=") for p in _parseparam(self[header]))
+            ]
+            sectioned = {
+                name.partition("*")[0]
+                for name, _ in params[1:]
+                if re.fullmatch(r"\w+\*\d+\*?", name, re.ASCII)
+            }
+            kept = [(n, v) for n, v in params[1:] if not (n.endswith("*") and n[:-1] in sectioned)]
+            return decode_params([params[0], *kept])
+
+
+#: policy.default with `_TolerantHeaders` and `_TolerantMessage`, for reading and
+#: re-writing hostile mail.
+POLICY = policy.default.clone(
+    header_factory=_TolerantHeaders(), message_factory=_TolerantMessage
+)
 
 _AUTH_MAP = {
     "pass": AuthResult.PASS,
@@ -315,11 +347,13 @@ def decode_text(part: EmailMessage) -> str:
 
     `charset="x-nonexistent"` raised LookupError and the part was dropped: no body,
     no URLs, links left unrewritten — while every mail client still showed the
-    ASCII underneath. Undecodable bytes become U+FFFD instead.
+    ASCII underneath. Undecodable bytes become U+FFFD instead. An RFC 2231
+    `charset*=` beside a malformed parameter reaches the codec as a tuple, a
+    TypeError that failed the whole message (and a history scan with it).
     """
     try:
         return part.get_content()
-    except (LookupError, ValueError):
+    except (LookupError, TypeError, ValueError):
         payload = part.get_payload(decode=True)
         return payload.decode("utf-8", errors="replace") if isinstance(payload, bytes) else ""
 

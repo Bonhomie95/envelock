@@ -24,6 +24,7 @@ import re
 from dataclasses import dataclass, field
 from email import message_from_bytes, policy
 from email.message import EmailMessage
+from email.policy import EmailPolicy
 
 from envelock.channels.mail.parser import HREF_RE, POLICY, normalise_href
 
@@ -154,6 +155,31 @@ def _rewrite_hrefs(html: str, link_map: dict[str, str], redirect_base: str) -> s
     return HREF_RE.sub(swap, html)
 
 
+class _AsDelivered(EmailPolicy):
+    """The parser's policy for writing the copy, except a delivered header goes
+    out exactly as it came in.
+
+    On the way out the stdlib re-parses and re-folds every delivered header that
+    has a non-ASCII byte or a long line (3.12 to 3.14 alike), and on hostile
+    values that raised: UnicodeEncodeError, HeaderWriteError, IndexError, in about
+    1% of fuzzed mail. The copy failed, and with it the Gmail or IMAP sync that
+    held the message, on every poll. Nothing here changes those headers, so they
+    are written back byte for byte; only a header we set is folded.
+    """
+
+    def fold_binary(self, name: str, value: str) -> bytes:
+        if hasattr(value, "name"):  # a header object: one we (or set_content) set
+            return super().fold_binary(name, value)
+        # Split only where the parser split it, so each line is the delivered one.
+        lines = re.split(r"\r\n|\r|\n", value)
+        return f"{name}: {self.linesep.join(lines)}{self.linesep}".encode(
+            "ascii", "surrogateescape"
+        )
+
+
+_WRITE_POLICY = _AsDelivered(header_factory=POLICY.header_factory, linesep="\r\n")
+
+
 def build_protected_copy(
     raw: bytes,
     *,
@@ -161,14 +187,14 @@ def build_protected_copy(
     redirect_base: str,
     mailbox_id: object,
     banner: Banner | None = None,
-) -> bytes:
-    """The delivered message, with links rewritten and the banner injected.
+) -> bytes | None:
+    """The delivered message, with links rewritten and the banner injected, or
+    None when the stdlib cannot write it back: the caller leaves it as delivered.
 
     Headers (Message-ID, Date, threading) are preserved so the copy keeps its
     thread position and reply/forward keep quoting correctly.
     """
-    # The parser's policy: a header the stdlib cannot parse must not stop the
-    # copy, nor its re-folding on the way out (as_bytes below).
+    # The parser's policy: a header the stdlib cannot parse must not stop the copy.
     msg = message_from_bytes(raw, policy=POLICY)
 
     banner_done_html = False
@@ -184,10 +210,15 @@ def build_protected_copy(
         raw_bytes = False
         try:
             content = part.get_content()
-        except (LookupError, ValueError):
-            # An unknown charset. Skipping the part left its links unrewritten
-            # while every client still rendered them. surrogateescape gives each
-            # byte back untouched on the way out, so only the links change.
+            # set_content writes UTF-8, and a charset Python decodes into lone
+            # surrogates (utf-7, unicode_escape) has none: that raised.
+            content.encode("utf-8")
+        except (LookupError, TypeError, ValueError):
+            # An unknown charset, one of those, or an RFC 2231 one the stdlib
+            # hands the codec as a tuple (see parser.decode_text). Skipping the
+            # part left its links unrewritten while every client still rendered them.
+            # surrogateescape gives each byte back untouched on the way out, so
+            # only the links change.
             payload = part.get_payload(decode=True)
             if not isinstance(payload, bytes):
                 continue
@@ -229,7 +260,18 @@ def build_protected_copy(
     if isinstance(msg, EmailMessage):
         del msg[PROCESSED_HEADER]
         msg[PROCESSED_HEADER] = _stamp_for(msg.get("Message-ID"), mailbox_id)
-    return msg.as_bytes(policy=POLICY.clone(linesep="\r\n"))
+    try:
+        return msg.as_bytes(policy=_WRITE_POLICY)
+    except Exception:  # noqa: BLE001 — the stdlib's own bugs on hostile mail
+        # Left as delivered, never raised: raised, it failed the sync that held
+        # the message on every poll, and no mail after it was analysed. One such
+        # message: `boundary=""`, which makes the stdlib re-write Content-Type
+        # from parameters it then refuses.
+        logger.warning(
+            "protected copy for mailbox %s cannot be written; left as delivered",
+            mailbox_id, exc_info=True,
+        )
+        return None
 
 
 def _header_block(raw: bytes) -> bytes:
