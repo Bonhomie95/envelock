@@ -22,7 +22,7 @@ import hmac
 import logging
 import re
 from dataclasses import dataclass, field
-from email import message_from_bytes, policy
+from email import message_from_bytes
 from email.message import EmailMessage
 from email.policy import EmailPolicy
 
@@ -289,10 +289,16 @@ def is_processed(raw: bytes, mailbox_id: object) -> bool:
     Headers only (never the body), and the signature must verify against the
     message's own Message-ID in THIS mailbox. A forged, copied or unsigned stamp
     reads as "not ours", so the message is analysed like any other.
+
+    Read with the policy the stamp is written with. Under compat32 a Message-ID
+    with a non-ASCII byte is a Header object, not a string, and `.strip()` on it
+    raised: any stamp at all, forged included, beside such a Message-ID failed
+    every sync of the mailbox. And a folded Message-ID read differently on each
+    side, so our own copy did not verify as ours.
     """
     from email.parser import BytesHeaderParser
 
-    headers = BytesHeaderParser(policy=policy.compat32).parsebytes(_header_block(raw))
+    headers = BytesHeaderParser(policy=POLICY).parsebytes(_header_block(raw))
     stamps = headers.get_all(PROCESSED_HEADER) or []
     if not stamps:
         return False

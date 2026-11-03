@@ -341,7 +341,7 @@ async def _sync_oauth_mailbox(
     write_transport=None,  # noqa: ANN001 — api_enforce.WriteTransport
 ) -> dict:
     from envelock.db import set_current_tenant
-    from envelock.workers.imap_fetch import clear_sync_request
+    from envelock.workers.imap_fetch import clear_sync_request, retry_failed_message
 
     set_current_tenant(mailbox.tenant_id)  # scope RLS to this mailbox's tenant
     # The push/"Sync now" flag this sync answers. Read before the fetch, so one
@@ -396,13 +396,34 @@ async def _sync_oauth_mailbox(
         return {"ok": False, "reason": str(exc), "fetched": 0}
 
     alerted = quarantined = rewritten = 0
+    # The sync's own bookkeeping stands before any message can fail.
+    await session.commit()
     for item in fetched:
-        outcome = await _handle_inbound(
-            session, mailbox, item,
-            provider=provider, access_token=access_token, source=source,
-            owned=owned, recipients=recipients, protected=protected,
-            write_transport=write_transport,
-        )
+        try:
+            outcome = await _handle_inbound(
+                session, mailbox, item,
+                provider=provider, access_token=access_token, source=source,
+                owned=owned, recipients=recipients, protected=protected,
+                write_transport=write_transport,
+            )
+            # Each message is its own transaction, so one that fails takes only
+            # its own work with it.
+            await session.commit()
+        except Exception:  # noqa: BLE001 — one message must never stall the mailbox
+            # Raised out of the sync, a message that failed every time failed
+            # every sync that listed it, and the read, rule and Sent-folder
+            # watches after this loop never ran. Not remembered, it is
+            # downloaded and tried again next sync, until it is given up on.
+            await session.rollback()
+            await session.refresh(mailbox)
+            retry = retry_failed_message(mailbox.id, item.ref)
+            if not retry:
+                _remember(mailbox.id, item.ref)
+            logger.exception(
+                "oauth: message %s in mailbox %s failed; %s", item.ref, mailbox.id,
+                "retried next sync" if retry else "given up",
+            )
+            continue
         # Only once it went through: a message that failed is retried.
         _remember(mailbox.id, item.ref)
         alerted += outcome["alerted"]
@@ -725,35 +746,49 @@ async def backfill_oauth_mailbox(
 
     owned = await _owned_domains(session, mailbox.tenant_id)
     recipients = await _recipients(session, mailbox.tenant_id, mailbox.address)
-    analysed = 0
+    analysed = skipped = 0
+    # Nothing pending may ride on the first message: a failure rolls it back.
+    await session.commit()
     for item in fetched:
-        if enforce.is_processed(item.raw, mailbox.id):
-            continue
-        event = await parse_message_async(
-            item.raw,
-            tenant_id=mailbox.tenant_id,
-            mailbox_id=mailbox.id,
-            source=(
-                SourceMechanism.GMAIL_API if provider == "google"
-                else SourceMechanism.GRAPH_API
-            ),
-            owned_domains=owned,
-            remediable=False,  # never quarantine historical mail
-            source_ref=item.ref,
-        )
-        pr_hist = await analyse_event(
-            session, event, tenant_id=mailbox.tenant_id,
-            owned_domains=owned, recipients=recipients,
-        )
-        # Commit per message — see imap_fetch.backfill_mailbox for why one
-        # transaction for the whole scan stalled live mail.
-        await session.commit()
-        # A backfill can surface a live fraud sitting in recent mail — deliver now.
-        if pr_hist.alert_id is not None:
-            await deliver_pending(session, alert_id=pr_hist.alert_id)
+        try:
+            if enforce.is_processed(item.raw, mailbox.id):
+                continue
+            event = await parse_message_async(
+                item.raw,
+                tenant_id=mailbox.tenant_id,
+                mailbox_id=mailbox.id,
+                source=(
+                    SourceMechanism.GMAIL_API if provider == "google"
+                    else SourceMechanism.GRAPH_API
+                ),
+                owned_domains=owned,
+                remediable=False,  # never quarantine historical mail
+                source_ref=item.ref,
+            )
+            pr_hist = await analyse_event(
+                session, event, tenant_id=mailbox.tenant_id,
+                owned_domains=owned, recipients=recipients,
+            )
+            # Commit per message — see imap_fetch.backfill_mailbox for why one
+            # transaction for the whole scan stalled live mail.
             await session.commit()
+            # A backfill can surface a live fraud sitting in recent mail — deliver now.
+            if pr_hist.alert_id is not None:
+                await deliver_pending(session, alert_id=pr_hist.alert_id)
+                await session.commit()
+        except Exception:  # noqa: BLE001 — one message must never end the scan
+            # It used to: one message the stdlib could not parse failed the whole
+            # scan ("History scan failed — IndexError: list index out of range"),
+            # and every re-run stopped at the same message.
+            await session.rollback()
+            await session.refresh(mailbox)
+            skipped += 1
+            logger.exception(
+                "oauth backfill: message %s in mailbox %s skipped", item.ref, mailbox.id
+            )
+            continue
         analysed += 1
 
     mailbox.backfilled_at = datetime.now(UTC)
     await session.commit()
-    return {"ok": True, "analysed": analysed, "days": days}
+    return {"ok": True, "analysed": analysed, "skipped": skipped, "days": days}

@@ -915,7 +915,7 @@ function BackfillLine({ state }: { state: NonNullable<MailboxRecord["backfill_st
       : state.status === "running"
         ? "History scan running…"
         : state.status === "done"
-          ? `History scan complete — ${state.analysed ?? 0} message${state.analysed === 1 ? "" : "s"} learned from`
+          ? `History scan complete — ${state.analysed ?? 0} message${state.analysed === 1 ? "" : "s"} learned from${state.skipped ? `, ${state.skipped} skipped` : ""}`
           : `History scan failed${state.reason ? ` — ${state.reason}` : ""}`;
   return (
     <p

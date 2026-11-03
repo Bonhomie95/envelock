@@ -83,6 +83,21 @@ def test_build_protected_copy_rewrites_links_and_injects_banner():
     assert not is_processed(out, "another-mailbox")
 
 
+def test_a_stamp_beside_an_unusual_message_id_is_checked_not_raised():
+    # compat32 handed a non-ASCII Message-ID over as a Header object, and
+    # `.strip()` raised: two headers, a forged stamp beside such an id, failed
+    # every sync of the mailbox. A folded id read differently on each side.
+    for message_id in (b"<\xc3\xa9@partner.com>", b"\r\n <folded@partner.com>"):
+        raw = (
+            b"From: jane@partner.com\r\nX-Envelock-Protected: v2; sig=forged\r\n"
+            b"Message-ID: " + message_id + b"\r\nContent-Type: text/plain\r\n\r\nhi\r\n"
+        )
+        assert not is_processed(raw, _MBX)
+        copy = build_protected_copy(raw, link_map={}, redirect_base=BASE, mailbox_id=_MBX)
+        assert copy is not None
+        assert is_processed(copy, _MBX)
+
+
 def test_build_protected_copy_without_banner_only_rewrites():
     out = build_protected_copy(
         _RAW_MULTIPART,
@@ -317,6 +332,46 @@ async def test_a_copy_that_cannot_be_written_never_stalls_the_poll(session):
         )
     ).scalar_one()
     assert cred.imap_last_uid == 12
+
+
+_FAILS = (
+    b"From: jane@partner.com\r\nTo: pay@acme.com\r\nSubject: hi\r\n"
+    b"Message-ID: <fails@partner.com>\r\nContent-Type: text/plain\r\n\r\nhello\r\n"
+)
+
+
+@pytest.mark.asyncio
+async def test_a_message_that_keeps_failing_is_retried_then_given_up(session, monkeypatch):
+    # Whatever the reason a message fails, the mail after it is analysed in the
+    # same poll; the cursor waits below it for two more tries, then moves on.
+    from envelock.workers import imap_fetch
+
+    real = imap_fetch.parse_message_async
+
+    async def failing(raw, **kw):  # noqa: ANN001, ANN003, ANN202
+        if b"<fails@partner.com>" in raw:
+            raise IndexError("list index out of range")
+        return await real(raw, **kw)
+
+    monkeypatch.setattr(imap_fetch, "parse_message_async", failing)
+    mailbox = await _protected_mailbox(session)
+    client = FakeImap({11: _FAILS, 12: _CLEAN_WITH_LINK})
+
+    async def poll() -> int | None:
+        summary = await sync_mailbox(session, mailbox, client_factory=_factory(client))
+        assert summary["ok"] is True
+        cred = (
+            await session.execute(
+                select(MailboxCredential).where(MailboxCredential.mailbox_id == mailbox.id)
+            )
+        ).scalar_one()
+        return cred.imap_last_uid
+
+    assert await poll() == 10
+    copies = [raw.decode("utf-8", "replace").replace("=\r\n", "") for _, raw, _ in client.appended]
+    assert any("<clean1@partner.com>" in c and "/r/" in c for c in copies)
+    assert await poll() == 10
+    assert await poll() > 12  # given up after its third try
 
 
 # ── Feature 2 end-to-end: the changed-bank-detail attack through the worker ──

@@ -117,6 +117,32 @@ async def test_a_sync_downloads_only_mail_it_has_not_analysed(client) -> None:  
     assert graph.downloads == ["m-new"]
 
 
+async def test_a_message_that_keeps_failing_never_stalls_the_sync(client, monkeypatch) -> None:  # noqa: ANN001, ARG001
+    # It raised out of the sync, so every sync that listed it failed. Now the
+    # mail after it goes through, and it is downloaded again for two more tries.
+    from envelock.workers import oauth_fetch
+
+    real = oauth_fetch.parse_message_async
+
+    async def failing(raw, **kw):  # noqa: ANN001, ANN003, ANN202
+        if b"<weekly-1@" in raw:
+            raise IndexError("list index out of range")
+        return await real(raw, **kw)
+
+    monkeypatch.setattr(oauth_fetch, "parse_message_async", failing)
+    _, mailbox_id = await _oauth_mailbox()
+    graph = _Graph({"bad": _mail(1), "good": _mail(2)})
+
+    assert (await _sync(mailbox_id, graph))["ok"]
+    for _ in range(2):
+        graph.downloads.clear()
+        assert (await _sync(mailbox_id, graph))["ok"]
+        assert graph.downloads == ["bad"]
+    graph.downloads.clear()
+    assert (await _sync(mailbox_id, graph))["ok"]
+    assert graph.downloads == [], "given up after its third try"
+
+
 async def test_one_sync_uses_one_http_client(client, monkeypatch) -> None:  # noqa: ANN001, ARG001
     """Each provider call built its own client — a fresh TLS handshake and CA
     bundle load, dozens of times per sync."""

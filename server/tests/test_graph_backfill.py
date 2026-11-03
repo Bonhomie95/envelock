@@ -100,3 +100,34 @@ async def test_graph_backfill_analyses_history_and_marks_done(graph_mailbox) -> 
         async with get_sessionmaker()() as session:
             mailbox = await session.get(Mailbox, mid)
             assert mailbox.backfilled_at is not None, "backfill did not mark the mailbox done"
+
+
+async def test_a_message_that_fails_is_skipped_not_the_whole_scan(  # noqa: ANN001
+    graph_mailbox, monkeypatch
+) -> None:
+    # "History scan failed — IndexError: list index out of range": one message
+    # the stdlib could not parse ended the scan, and every re-run with it.
+    from envelock.db import get_sessionmaker
+    from envelock.db_rls import system_scope
+    from envelock.models import Mailbox
+    from envelock.workers import oauth_fetch
+
+    real, calls = oauth_fetch.parse_message_async, []
+
+    async def first_fails(raw, **kw):  # noqa: ANN001, ANN003, ANN202
+        calls.append(raw)
+        if len(calls) == 1:
+            raise IndexError("list index out of range")
+        return await real(raw, **kw)
+
+    monkeypatch.setattr(oauth_fetch, "parse_message_async", first_fails)
+    _tid, mid = graph_mailbox
+    with system_scope("test"):
+        async with get_sessionmaker()() as session:
+            mailbox = await session.get(Mailbox, mid)
+            result = await oauth_fetch.backfill_oauth_mailbox(
+                session, mailbox, days=90, transport=_HistoryTransport(["h1", "h2"])
+            )
+
+    assert result["ok"] is True, result
+    assert (result["analysed"], result["skipped"]) == (1, 1), result

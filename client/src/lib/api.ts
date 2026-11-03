@@ -320,6 +320,8 @@ export interface MailboxRecord {
     status: "queued" | "running" | "done" | "failed";
     days?: number;
     analysed?: number;
+    /** Messages the scan could not read and left out (logged on the worker). */
+    skipped?: number;
     reason?: string | null;
     queued_at?: string;
     started_at?: string;

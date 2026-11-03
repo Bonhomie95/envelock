@@ -295,6 +295,25 @@ async def clear_sync_request(
     )
 
 
+#: Polls a live message that keeps failing gets before it is given up on: a
+#: transient failure (a deadlock, a timeout) is tried again, and one the message
+#: itself causes cannot hold up the mail after it for good.
+MESSAGE_ATTEMPTS = 3
+_MESSAGE_FAILURES: dict[tuple[UUID, str], int] = {}
+
+
+def retry_failed_message(mailbox_id: UUID, ref: str) -> bool:
+    """Count one failure of this message: True while it gets another poll."""
+    # ponytail: a count goes only when its message is given up on. One that failed
+    # once and then went through keeps it until a restart; it is never fetched again.
+    key = (mailbox_id, ref)
+    tries = _MESSAGE_FAILURES.pop(key, 0) + 1
+    if tries < MESSAGE_ATTEMPTS:
+        _MESSAGE_FAILURES[key] = tries
+        return True
+    return False
+
+
 async def sync_mailbox(
     session: AsyncSession,
     mailbox: Mailbox,
@@ -397,105 +416,124 @@ async def sync_mailbox(
     alerts: list[dict] = []
     quarantined = 0
     rewritten = 0
+    # The lowest UID that failed and gets another poll: the cursor stops below it.
+    retry_uid: int | None = None
+    # The poll's own bookkeeping stands before any message can fail.
+    await session.commit()
     for msg in result.messages:
-        # A copy we already wrote back (banner/rewritten links). Never re-analyse
-        # or re-rewrite our own work — that way lies an APPEND loop.
-        if enforce.is_processed(msg.raw, mailbox.id):
-            continue
-        event = await parse_message_async(
-            msg.raw,
-            tenant_id=mailbox.tenant_id,
-            mailbox_id=mailbox.id,
-            source=SourceMechanism.IMAP_IDLE if protected else SourceMechanism.IMAP_POLL,
-            owned_domains=owned,
-            remediable=protected,  # only an IDLE/Protected mailbox can quarantine
-            source_ref=str(msg.uid),
-        )
-        pr = await analyse_event(
-            session,
-            event,
-            tenant_id=mailbox.tenant_id,
-            owned_domains=owned,
-            recipients=recipients,
-        )
-        if pr.duplicate:
-            continue
-        if pr.alert_id is not None:
-            alerts.append(
-                {
-                    "uid": msg.uid,
-                    "alert_id": str(pr.alert_id),
-                    "tier": pr.assessment.tier.value if pr.assessment else None,
-                    "title": pr.assessment.title if pr.assessment else None,
-                }
+        try:
+            # A copy we already wrote back (banner/rewritten links). Never re-analyse
+            # or re-rewrite our own work — that way lies an APPEND loop.
+            if enforce.is_processed(msg.raw, mailbox.id):
+                continue
+            event = await parse_message_async(
+                msg.raw,
+                tenant_id=mailbox.tenant_id,
+                mailbox_id=mailbox.id,
+                source=SourceMechanism.IMAP_IDLE if protected else SourceMechanism.IMAP_POLL,
+                owned_domains=owned,
+                remediable=protected,  # only an IDLE/Protected mailbox can quarantine
+                source_ref=str(msg.uid),
             )
-            # Notify first, enforce after. The push lands within a second and
-            # whoever opens it must find the alert — not wait behind a
-            # quarantine MOVE or a protected-copy APPEND, each a fresh login and
-            # the second a full upload of the message. Nothing in a notification
-            # depends on the outcome: the report states what the tier does.
-            await session.commit()
-            await deliver_pending(session, alert_id=pr.alert_id)
-            # At once, not at the end of the sync: `deliver_pending` holds the
-            # rows it claimed until a commit, and a later rollback in this sync
-            # would put them back to pending for the scheduler to send again.
-            await session.commit()
-            # What we do to the message itself is decided by tier, because the
-            # tiers are *defined* by required action (PRD §8):
-            #
-            #   Critical → money or access at risk now. Auto-quarantine.
-            #   High     → probable attack. Flag it in place, do not move it.
-            #   Medium   → suspicious, needs a human glance. Leave it alone.
-            #   Low      → logged for context only.
-            #
-            # This used to quarantine on *any* alert, which pulled Medium
-            # findings out of the inbox — and Medium's own example in the PRD is
-            # "first contact discussing payment", i.e. every new supplier a
-            # company ever emails. Quarantining those trains people to distrust
-            # the product, and the calibration rule (P5) exists precisely
-            # because an alert nobody believes protects nobody.
-            tier = pr.assessment.tier if pr.assessment else None
-            if protected and tier is AlertTier.CRITICAL:
-                moved = await asyncio.to_thread(
-                    imap_sync.quarantine_message,
-                    host=host,
-                    port=port,
-                    security=security,
-                    username=username,
-                    password=password,
-                    access_token=access_token,
-                    uid=msg.uid,
-                    client_factory=client_factory,
-                    pin_sha256=pin,
+            pr = await analyse_event(
+                session,
+                event,
+                tenant_id=mailbox.tenant_id,
+                owned_domains=owned,
+                recipients=recipients,
+            )
+            if pr.duplicate:
+                continue
+            if pr.alert_id is not None:
+                alerts.append(
+                    {
+                        "uid": msg.uid,
+                        "alert_id": str(pr.alert_id),
+                        "tier": pr.assessment.tier.value if pr.assessment else None,
+                        "title": pr.assessment.title if pr.assessment else None,
+                    }
                 )
-                if moved:
-                    quarantined += 1
-                    if pr.message_id is not None:
-                        stored = await session.get(Message, pr.message_id)
-                        if stored is not None:
-                            stored.quarantined_at = datetime.now(UTC)
-                # Quarantine failed (folder rights, server quirk): fall back to
-                # the protected copy so the flagged message never sits in the
-                # inbox looking legitimate. Banner and link rewrite are gated
-                # INSIDE by their own flags — gating the whole call on
-                # banner_enabled used to switch off link rewriting for the most
-                # dangerous mail whenever banners alone were disabled.
-                elif await _enforce_copy(
-                    session, event, pr,
-                    raw=msg.raw, uid=msg.uid, owned=owned,
-                    host=host, port=port, security=security,
-                    username=username, password=password,
-                    access_token=access_token, client_factory=client_factory,
-                    pin_sha256=pin,
-                ):
-                    rewritten += 1
-            elif protected:
-                # HIGH — "flagged in place": banner + rewritten links.
-                # MEDIUM/LOW — protected links WITHOUT a banner: the rewrite
-                # branch used to be an elif on the no-alert case, so the one
-                # message we'd just flagged as suspicious was the only
-                # protected mail keeping its raw links — feature 1 switched
-                # off exactly where it mattered most.
+                # Notify first, enforce after. The push lands within a second and
+                # whoever opens it must find the alert — not wait behind a
+                # quarantine MOVE or a protected-copy APPEND, each a fresh login and
+                # the second a full upload of the message. Nothing in a notification
+                # depends on the outcome: the report states what the tier does.
+                await session.commit()
+                await deliver_pending(session, alert_id=pr.alert_id)
+                # At once, not at the end of the sync: `deliver_pending` holds the
+                # rows it claimed until a commit, and a later rollback in this sync
+                # would put them back to pending for the scheduler to send again.
+                await session.commit()
+                # What we do to the message itself is decided by tier, because the
+                # tiers are *defined* by required action (PRD §8):
+                #
+                #   Critical → money or access at risk now. Auto-quarantine.
+                #   High     → probable attack. Flag it in place, do not move it.
+                #   Medium   → suspicious, needs a human glance. Leave it alone.
+                #   Low      → logged for context only.
+                #
+                # This used to quarantine on *any* alert, which pulled Medium
+                # findings out of the inbox — and Medium's own example in the PRD is
+                # "first contact discussing payment", i.e. every new supplier a
+                # company ever emails. Quarantining those trains people to distrust
+                # the product, and the calibration rule (P5) exists precisely
+                # because an alert nobody believes protects nobody.
+                tier = pr.assessment.tier if pr.assessment else None
+                if protected and tier is AlertTier.CRITICAL:
+                    moved = await asyncio.to_thread(
+                        imap_sync.quarantine_message,
+                        host=host,
+                        port=port,
+                        security=security,
+                        username=username,
+                        password=password,
+                        access_token=access_token,
+                        uid=msg.uid,
+                        client_factory=client_factory,
+                        pin_sha256=pin,
+                    )
+                    if moved:
+                        quarantined += 1
+                        if pr.message_id is not None:
+                            stored = await session.get(Message, pr.message_id)
+                            if stored is not None:
+                                stored.quarantined_at = datetime.now(UTC)
+                    # Quarantine failed (folder rights, server quirk): fall back to
+                    # the protected copy so the flagged message never sits in the
+                    # inbox looking legitimate. Banner and link rewrite are gated
+                    # INSIDE by their own flags — gating the whole call on
+                    # banner_enabled used to switch off link rewriting for the most
+                    # dangerous mail whenever banners alone were disabled.
+                    elif await _enforce_copy(
+                        session, event, pr,
+                        raw=msg.raw, uid=msg.uid, owned=owned,
+                        host=host, port=port, security=security,
+                        username=username, password=password,
+                        access_token=access_token, client_factory=client_factory,
+                        pin_sha256=pin,
+                    ):
+                        rewritten += 1
+                elif protected:
+                    # HIGH — "flagged in place": banner + rewritten links.
+                    # MEDIUM/LOW — protected links WITHOUT a banner: the rewrite
+                    # branch used to be an elif on the no-alert case, so the one
+                    # message we'd just flagged as suspicious was the only
+                    # protected mail keeping its raw links — feature 1 switched
+                    # off exactly where it mattered most.
+                    if await _enforce_copy(
+                        session, event, pr,
+                        raw=msg.raw, uid=msg.uid, owned=owned,
+                        host=host, port=port, security=security,
+                        username=username, password=password,
+                        access_token=access_token, client_factory=client_factory,
+                        pin_sha256=pin,
+                        banner_allowed=tier is AlertTier.HIGH,
+                    ):
+                        rewritten += 1
+            elif protected and settings.link_rewrite_enabled and event.urls:
+                # Feature 1's core: mail that looks clean NOW is exactly the mail
+                # whose links get weaponised later, so its links are rewritten to
+                # go through the click-time redirector.
                 if await _enforce_copy(
                     session, event, pr,
                     raw=msg.raw, uid=msg.uid, owned=owned,
@@ -503,22 +541,25 @@ async def sync_mailbox(
                     username=username, password=password,
                     access_token=access_token, client_factory=client_factory,
                     pin_sha256=pin,
-                    banner_allowed=tier is AlertTier.HIGH,
                 ):
                     rewritten += 1
-        elif protected and settings.link_rewrite_enabled and event.urls:
-            # Feature 1's core: mail that looks clean NOW is exactly the mail
-            # whose links get weaponised later, so its links are rewritten to
-            # go through the click-time redirector.
-            if await _enforce_copy(
-                session, event, pr,
-                raw=msg.raw, uid=msg.uid, owned=owned,
-                host=host, port=port, security=security,
-                username=username, password=password,
-                access_token=access_token, client_factory=client_factory,
-                pin_sha256=pin,
-            ):
-                rewritten += 1
+            # Each message is its own transaction, so one that fails takes only
+            # its own work with it.
+            await session.commit()
+        except Exception:  # noqa: BLE001 — one message must never stall the mailbox
+            # Raised out of the poll, a message that failed every time (hostile
+            # MIME the stdlib trips on, a bug of ours) failed it on every cycle:
+            # the UID never advanced, so no mail after it was analysed again.
+            await session.rollback()
+            await session.refresh(mailbox)
+            await session.refresh(cred)
+            retry = retry_failed_message(mailbox.id, str(msg.uid))
+            if retry:
+                retry_uid = msg.uid if retry_uid is None else min(retry_uid, msg.uid)
+            logger.exception(
+                "imap: message uid %s in mailbox %s failed; %s", msg.uid, mailbox.id,
+                "retried next poll" if retry else "given up",
+            )
 
     # A human pressed QUARANTINE while no process could act on it — do it now,
     # while we hold a decrypted credential anyway.
@@ -557,6 +598,10 @@ async def sync_mailbox(
         cred.imap_uidvalidity = result.uidvalidity
     if result.highest_uid is not None:
         cred.imap_last_uid = result.highest_uid
+        if retry_uid is not None:
+            # Just below the message to try again: the next poll fetches it, and
+            # the mail after it dedupes as already analysed.
+            cred.imap_last_uid = min(result.highest_uid, retry_uid - 1)
     mailbox.last_sync_at = datetime.now(UTC)
     # This poll answers any "Sync now" the API could not carry out itself — the
     # one it started from, not one pressed while it ran.
@@ -748,37 +793,50 @@ async def backfill_mailbox(
 
     owned = await _owned_domains(session, mailbox.tenant_id)
     recipients = await _recipients(session, mailbox.tenant_id, mailbox.address)
-    analysed = 0
+    analysed = skipped = 0
+    # Nothing pending may ride on the first message: a failure rolls it back.
+    await session.commit()
     for msg in result.messages:
-        event = await parse_message_async(
-            msg.raw,
-            tenant_id=mailbox.tenant_id,
-            mailbox_id=mailbox.id,
-            source=SourceMechanism.IMAP_POLL,
-            owned_domains=owned,
-            remediable=False,  # never quarantine historical mail
-            source_ref=str(msg.uid),
-        )
-        pr_hist = await analyse_event(
-            session, event, tenant_id=mailbox.tenant_id,
-            owned_domains=owned, recipients=recipients,
-        )
-        # A backfill can surface a live fraud sitting in last week's mail —
-        # deliver its notifications now, not on the next escalation sweep.
-        # Commit as we go. A scan runs for minutes to hours, and as one
-        # transaction it held the tenant's usage-meter and counterparty rows the
-        # whole time: the first live message for that tenant blocked on them,
-        # and the poll cycle waiting on it stalled every mailbox. Per message,
-        # it is also resumable — a re-run skips what is stored.
-        await session.commit()
-        if pr_hist.alert_id is not None:
-            await deliver_pending(session, alert_id=pr_hist.alert_id)
+        try:
+            event = await parse_message_async(
+                msg.raw,
+                tenant_id=mailbox.tenant_id,
+                mailbox_id=mailbox.id,
+                source=SourceMechanism.IMAP_POLL,
+                owned_domains=owned,
+                remediable=False,  # never quarantine historical mail
+                source_ref=str(msg.uid),
+            )
+            pr_hist = await analyse_event(
+                session, event, tenant_id=mailbox.tenant_id,
+                owned_domains=owned, recipients=recipients,
+            )
+            # A backfill can surface a live fraud sitting in last week's mail —
+            # deliver its notifications now, not on the next escalation sweep.
+            # Commit as we go. A scan runs for minutes to hours, and as one
+            # transaction it held the tenant's usage-meter and counterparty rows the
+            # whole time: the first live message for that tenant blocked on them,
+            # and the poll cycle waiting on it stalled every mailbox. Per message,
+            # it is also resumable — a re-run skips what is stored.
             await session.commit()
+            if pr_hist.alert_id is not None:
+                await deliver_pending(session, alert_id=pr_hist.alert_id)
+                await session.commit()
+        except Exception:  # noqa: BLE001 — one message must never end the scan
+            # It used to: one message the stdlib could not parse failed the whole
+            # scan, and every re-run stopped at the same message.
+            await session.rollback()
+            await session.refresh(mailbox)
+            skipped += 1
+            logger.exception(
+                "imap backfill: message uid %s in mailbox %s skipped", msg.uid, mailbox.id
+            )
+            continue
         analysed += 1
 
     mailbox.backfilled_at = datetime.now(UTC)
     await session.commit()
-    return {"ok": True, "analysed": analysed, "days": days}
+    return {"ok": True, "analysed": analysed, "skipped": skipped, "days": days}
 
 
 async def _imap_hosts(session: AsyncSession, mailbox_ids: list[UUID]) -> dict[UUID, str]:
@@ -962,6 +1020,7 @@ async def _run_queued_backfill(mailbox_id, days: int, *, client_factory=None) ->
                 "status": "done" if outcome.get("ok") else "failed",
                 "days": days,
                 "analysed": outcome.get("analysed", 0),
+                "skipped": outcome.get("skipped", 0),
                 "reason": None if outcome.get("ok") else outcome.get("reason"),
                 "finished_at": datetime.now(UTC).isoformat(),
             }

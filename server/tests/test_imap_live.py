@@ -381,6 +381,32 @@ async def test_backfill_analyses_recent_history(session):
     assert 9 in client.messages
 
 
+
+async def test_backfill_skips_a_message_that_fails(session, monkeypatch):
+    """One message that fails is left out; it used to end the whole scan."""
+    from envelock.channels.mail import parser
+    from envelock.workers.imap_fetch import backfill_mailbox
+
+    real, calls = parser.parse_message_async, []
+
+    async def first_fails(raw, **kw):  # noqa: ANN001, ANN003, ANN202
+        calls.append(raw)
+        if len(calls) == 1:
+            raise IndexError("list index out of range")
+        return await real(raw, **kw)
+
+    monkeypatch.setattr(parser, "parse_message_async", first_fails)
+    mailbox = await _connected_mailbox(
+        session, cls=MailboxClass.PROTECTED, source=SourceMechanism.IMAP_POLL
+    )
+    client = FakeImapClient(messages={5: _benign_raw(), 9: _phishing_raw("9")})
+
+    result = await backfill_mailbox(
+        session, mailbox, days=30, client_factory=_factory_for(client)
+    )
+    assert result["ok"] is True
+    assert (result["analysed"], result["skipped"]) == (1, 1)
+
 def _bank_change_raw(uid_hint: str = "500") -> bytes:
     """A known supplier announcing new payment details — A1, always Critical.
 
