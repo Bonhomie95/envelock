@@ -32,7 +32,7 @@ _MBX = uuid4()
 def _event(raw: bytes, source: SourceMechanism = SourceMechanism.IMAP_IDLE):
     return parse_message(
         raw, tenant_id=uuid4(), mailbox_id=_MBX, source=source,
-        owned_domains=OWNED, remediable=True,
+        remediable=True,
     )
 
 

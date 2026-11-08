@@ -482,7 +482,6 @@ async def analyse(req: AnalyseRequest, principal: OptionalUser) -> dict:
         tenant_id=tenant_id,
         mailbox_id=mailbox_id,
         source=req.source,
-        owned_domains=owned,
         remediable=Capability.MODIFY_MESSAGE in caps,
     )
 

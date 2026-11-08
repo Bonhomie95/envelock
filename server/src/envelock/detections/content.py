@@ -13,8 +13,8 @@ from datetime import UTC, datetime, timedelta
 
 from envelock.core.capabilities import Capability
 from envelock.core.enums import AlertTier, MailDirection
-from envelock.detections.base import DetectionContext, FindingResult, register
-from envelock.util.domains import display_skeleton, is_free_mail, registrable_domain
+from envelock.detections.base import DetectionContext, FindingResult, register, unproven_internal
+from envelock.util.domains import display_skeleton, is_free_mail, label, registrable_domain
 from envelock.util.payments import extract_bank_identifiers, has_payment_context
 
 _INBOUND = frozenset({Capability.READ_INBOUND})
@@ -37,6 +37,12 @@ def _external(ctx: DetectionContext) -> bool:
         and mail.direction is MailDirection.INBOUND
         and registrable_domain(mail.sender.domain) not in ctx.owned_domains
     )
+
+
+def _judged_on_content(ctx: DetectionContext) -> bool:
+    """Outside mail, or mail claiming our own domain unproven: a forged
+    it@<own domain> phish carries the same links and QR codes as any other."""
+    return _external(ctx) or unproven_internal(ctx.mail, ctx.owned_domains)
 
 
 def _sender_domain(ctx: DetectionContext) -> str:
@@ -432,6 +438,14 @@ _LOGIN_INTENT = re.compile(
 )
 
 
+def _dressed_as_brand(host: str) -> bool:
+    """A domain that wears a brand's name without being the brand's own:
+    microsoft-mailbox-verify.com, not microsoft.com or sharepoint.com."""
+    name = label(host)
+    hit = _BRAND_BAIT.search(name)
+    return hit is not None and hit.group(0).lower() != name
+
+
 #: Query parameters a redirector hides its real destination in. Covers Gmail's
 #: `google.com/url?q=`, Microsoft SafeLinks (`?url=`), Proofpoint and the generic
 #: open-redirect shapes (`?u=`, `?redirect=`, `?target=`, `?dest=`, `?r=`).
@@ -473,12 +487,18 @@ def score_url(url: str, *, sender: str, ctx: DetectionContext) -> list[str]:
     reputation set."""
     host = _host_of(url)
     reg = registrable_domain(host)
+    # Colleagues share short links and link to the brands the company runs on
+    # (SharePoint, Teams, DocuSign). On unproven own-domain mail, of the soft
+    # reasons only a domain dressed up as a brand counts.
+    internal = unproven_internal(ctx.mail, ctx.owned_domains)
     reasons: list[str] = []
-    if reg in _SHORTENERS:
+    if reg in _SHORTENERS and not internal:
         reasons.append("link shortener hides the destination")
-    if reg in ctx.malicious_domains:
+    # Other tenants confirming forgeries of this tenant's domain must not turn
+    # its own links, in every colleague's signature, into threat-feed hits.
+    if reg in ctx.malicious_domains and reg not in ctx.owned_domains:
         reasons.append("on a threat feed")
-    if _BRAND_BAIT.search(url) and reg != sender:
+    if _BRAND_BAIT.search(url) and reg != sender and (not internal or _dressed_as_brand(reg)):
         reasons.append("brand name in a URL not owned by that brand")
     if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host):
         reasons.append("bare IP address instead of a hostname")
@@ -507,7 +527,7 @@ class _B1PhishingUrls:
 
     def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
         mail = ctx.mail
-        if mail is None or not _external(ctx):
+        if mail is None or not _judged_on_content(ctx):
             return []
         # Consider body URLs *and* URLs decoded from QR codes in attachments — the
         # latter is exactly the quishing evasion gateways miss.
@@ -621,7 +641,7 @@ class _B3QrPhishing:
 
     def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
         mail = ctx.mail
-        if mail is None or not _external(ctx):
+        if mail is None or not _judged_on_content(ctx):
             return []
         images = [
             a
@@ -656,6 +676,10 @@ class _B3QrPhishing:
                     evidence={"decoded": decoded_bad[:5]},
                 )
             ]
+        # Colleagues send screenshots beside invoice or sign-in words all day, so
+        # on own-domain mail only a QR target that is itself suspicious counts.
+        if not _external(ctx):
+            return []
 
         # No decoder available (system zbar missing) or a clean-but-present QR
         # alongside payment/sign-in language is still worth a Medium glance.

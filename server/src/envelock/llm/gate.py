@@ -15,9 +15,10 @@ from envelock.risk.engine import RiskAssessment
 #: Services whose presence marks a message as "about money/identity" — mail
 #: where a BEC judge earns its cost. A9 (stylometry drift) belongs here: "the
 #: writing doesn't sound like them" is precisely the ambiguity a judge resolves.
-_PAYMENT_SIGNALS = frozenset(
-    {"A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A13", "A14", "A15"}
-)
+_PAYMENT_SIGNALS = frozenset({
+    "A1", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "A10", "A11", "A13", "A14", "A15",
+    "A16",
+})
 
 #: The URL/attachment-phishing family. These carried the OTHER half of the
 #: product promise ("from URLs to…") and could never reach the judge — a pure

@@ -75,7 +75,6 @@ async def test_same_message_is_not_processed_twice(session):
             tenant_id=mb.tenant_id,
             mailbox_id=mb.id,
             source=source,
-            owned_domains=OWNED,
             remediable=True,
         )
 
@@ -190,7 +189,6 @@ async def test_gmail_fetch_retries_transient_failure():
         access_token="t",  # noqa: S106 — test token
         tenant_id=uuid4(),
         mailbox_id=uuid4(),
-        owned_domains=OWNED,
         transport=Flaky(),
         backoff=0,
     )

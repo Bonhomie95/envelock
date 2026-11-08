@@ -230,7 +230,7 @@ def test_dnsbl_reputation_flags_listed_domain(monkeypatch) -> None:
 def _ctx(raw: str, counterparty=None, malicious=frozenset()) -> DetectionContext:
     event = parse_message(
         raw.encode(), tenant_id=uuid4(), mailbox_id=uuid4(),
-        source=SourceMechanism.IMAP_IDLE, owned_domains=OWNED, remediable=True,
+        source=SourceMechanism.IMAP_IDLE, remediable=True,
     )
     return DetectionContext(
         event=event, tenant_id="t",
@@ -327,7 +327,7 @@ def test_a1_detects_bank_change_inside_docx_attachment() -> None:
     docx = _docx_bytes("Please remit payment to our bank account IBAN GB33BUKB20201555555555")
     event = parse_message(
         _mime_with_docx(docx), tenant_id=uuid4(), mailbox_id=uuid4(),
-        source=SourceMechanism.IMAP_IDLE, owned_domains=OWNED, remediable=True,
+        source=SourceMechanism.IMAP_IDLE, remediable=True,
     )
     # Confirm the parser actually extracted the attachment text.
     assert any(a.extracted_text and "GB33BUKB" in a.extracted_text for a in event.attachments)
@@ -757,7 +757,7 @@ def _plain_ctx(raw: str, *, counterparty=None, known=frozenset(), internal=froze
                owned=frozenset({"acme.com"}), age=None):
     event = parse_message(
         raw.encode(), tenant_id=uuid4(), mailbox_id=uuid4(),
-        source=SourceMechanism.IMAP_IDLE, owned_domains=owned, remediable=True,
+        source=SourceMechanism.IMAP_IDLE, remediable=True,
     )
     return DetectionContext(
         event=event, tenant_id="t",

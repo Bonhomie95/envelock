@@ -38,7 +38,6 @@ async def _persisted_event(session):
         tenant_id=tid,
         mailbox_id=mb.id,
         source=SourceMechanism.IMAP_IDLE,
-        owned_domains=frozenset({"acme.com"}),
         remediable=True,
     )
     return tid, event

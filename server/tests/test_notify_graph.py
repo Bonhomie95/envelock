@@ -300,7 +300,7 @@ async def test_resolving_internal_mail_never_poisons_the_graph(session) -> None:
     )
     event = parse_message(
         raw.encode(), tenant_id=tenant.id, mailbox_id=mailbox.id,
-        source=SourceMechanism.IMAP_IDLE, owned_domains=frozenset({"acme.com"}),
+        source=SourceMechanism.IMAP_IDLE, 
         remediable=True,
     )
     result = await analyse_event(

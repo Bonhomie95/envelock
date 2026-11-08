@@ -65,7 +65,6 @@ async def test_gmail_fetch_normalises_raw_to_mailevents():
         access_token="tok",  # noqa: S106 — test token, not a secret
         tenant_id=uuid4(),
         mailbox_id=uuid4(),
-        owned_domains=OWNED,
         transport=FakeGmailTransport([_raw()]),
     )
     assert len(events) == 1
@@ -80,7 +79,6 @@ async def test_graph_fetch_normalises_mime_to_mailevents():
         access_token="tok",  # noqa: S106 — test token, not a secret
         tenant_id=uuid4(),
         mailbox_id=uuid4(),
-        owned_domains=OWNED,
         transport=FakeGraphTransport([_raw(), _raw("x@evil-invoices.com")]),
     )
     assert len(events) == 2

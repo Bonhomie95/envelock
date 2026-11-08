@@ -1096,7 +1096,6 @@ async def simulate(req: SimulationRequest, principal: AdminUser, session: Sessio
             tenant_id=principal.tenant_id,
             mailbox_id=mailbox.id if mailbox else uuid4(),
             source=SourceMechanism.IMAP_IDLE,
-            owned_domains=owned,
             remediable=True,
         )
         ctx = DetectionContext(
@@ -1248,7 +1247,6 @@ async def ingest_message(
         tenant_id=principal.tenant_id,
         mailbox_id=mailbox.id,
         source=source,
-        owned_domains=frozenset(domains),
         remediable=True,
     )
     recipients = await _tenant_recipients(session, principal.tenant_id, mailbox.address)

@@ -17,6 +17,7 @@ from envelock.detections.base import (
     DetectionContext,
     FindingResult,
     register,
+    unproven_internal,
 )
 from envelock.util.domains import (
     classify_lookalike,
@@ -506,6 +507,11 @@ class _A10InfrastructureChange:
         ]
 
 
+def _payment_pressure(text: str) -> bool:
+    """A payment request pushed with urgency or secrecy: A14's rule, which A16 shares."""
+    return urgency_score(text) >= 2 and has_payment_context(text)
+
+
 @dataclass(frozen=True)
 class _A14Urgency:
     service: str = "A14"
@@ -515,9 +521,9 @@ class _A14Urgency:
         if ctx.mail is None or not _is_external(ctx):
             return []
         text = _body(ctx)
-        score = urgency_score(text)
-        if score < 2 or not has_payment_context(text):
+        if not _payment_pressure(text):
             return []
+        score = urgency_score(text)
         return [
             FindingResult(
                 service="A14",
@@ -525,6 +531,64 @@ class _A14Urgency:
                 score=20 * score,
                 summary="Payment request uses urgency or secrecy pressure language.",
                 evidence={"urgency_markers": score},
+            )
+        ]
+
+
+@dataclass(frozen=True)
+class _A16SpoofedInternalSender:
+    """Mail claiming the tenant's own domain that its provider never vouched for,
+    sending replies elsewhere or pushing a payment.
+
+    From is the sender's to write. A forged `ceo@<own domain>` wire request was
+    filed as the tenant's own outgoing mail and scored 0, while the Detection lab,
+    analysing it for a tenant that does not own the domain, rated it HIGH. The
+    counterparty checks treat an own-domain sender as internal, so this is the one
+    that asks whether it is. `provider_dmarc` is the only proof: Gmail and Graph stamp
+    it above anything the sender wrote, while IMAP and forwarding never carry it,
+    so there an own-domain From is a claim. A claim alone stays quiet, because
+    colleagues mail each other all day. Paired with replies that leave the domain
+    or a payment pushed with urgency or secrecy, it is CEO fraud.
+    """
+
+    service: str = "A16"
+    requires: frozenset[Capability] = _INBOUND
+
+    def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
+        mail = ctx.mail
+        if mail is None or not unproven_internal(mail, ctx.owned_domains):
+            return []
+        reply_to = mail.reply_to.address if mail.reply_to else None
+        redirected = mail.reply_to is not None and (
+            registrable_domain(mail.reply_to.domain) not in ctx.owned_domains
+        )
+        pressured = _payment_pressure(_body(ctx))
+        if not (redirected or pressured):
+            return []
+        why = " and ".join(
+            reason
+            for reason, present in (
+                (f"replies go to {reply_to}", redirected),
+                ("it asks for an urgent or secret payment", pressured),
+            )
+            if present
+        )
+        return [
+            FindingResult(
+                service="A16",
+                tier=AlertTier.CRITICAL if redirected and pressured else AlertTier.HIGH,
+                score=95 if redirected and pressured else 80,
+                summary=(
+                    f"Someone may be posing as {mail.sender.address}: your mail system "
+                    f"did not confirm it came from your company, and {why}. "
+                    "Call them before acting."
+                ),
+                evidence={
+                    "claimed_sender": mail.sender.address,
+                    "reply_to": reply_to,
+                    "replies_leave_domain": redirected,
+                    "payment_pressure": pressured,
+                },
             )
         ]
 
@@ -565,13 +629,16 @@ class _B8AuthPosture:
 class _A15KnownFraudAccount:
     """A bank account that was already confirmed as fraud — by this customer or
     any other. Fraudsters reuse mule accounts across victims, so this fires
-    even when the sender, the domain and the wording are all new."""
+    even when the sender, the domain and the wording are all new, and when the
+    sender claims to be a colleague without proof."""
 
     service: str = "A15"
     requires: frozenset[Capability] = _INBOUND
 
     def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
-        if ctx.mail is None or not ctx.fraud_accounts or not _is_external(ctx):
+        if ctx.mail is None or not ctx.fraud_accounts:
+            return []
+        if not (_is_external(ctx) or unproven_internal(ctx.mail, ctx.owned_domains)):
             return []
         others = sum(v.get("other_tenants", 0) for v in ctx.fraud_accounts.values())
         own = any(v.get("own") for v in ctx.fraud_accounts.values())
@@ -609,4 +676,5 @@ A7 = register(_A7FirstContact())
 A8 = register(_A8ThreadHijack())
 A10 = register(_A10InfrastructureChange())
 A14 = register(_A14Urgency())
+A16 = register(_A16SpoofedInternalSender())
 B8 = register(_B8AuthPosture())

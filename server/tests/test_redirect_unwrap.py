@@ -14,6 +14,8 @@ from envelock.detections.content import score_url, unwrap_redirect
 
 class _Ctx:
     malicious_domains: frozenset[str] = frozenset()
+    owned_domains: frozenset[str] = frozenset()
+    mail = None  # no message, so never one claiming an owned domain
 
 
 def test_gmail_wrapped_bare_ip_is_caught() -> None:

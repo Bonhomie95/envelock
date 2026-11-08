@@ -22,7 +22,7 @@ OWNED = frozenset({"acme.com"})
 def _ctx(raw: str) -> DetectionContext:
     event = parse_message(
         raw.encode(), tenant_id=uuid4(), mailbox_id=uuid4(),
-        source=SourceMechanism.IMAP_IDLE, owned_domains=OWNED, remediable=True,
+        source=SourceMechanism.IMAP_IDLE, remediable=True,
     )
     return DetectionContext(
         event=event,

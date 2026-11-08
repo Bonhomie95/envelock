@@ -158,7 +158,7 @@ See the attached invoice for details.
 def _high_band_assessment():
     event = parse_message(
         _HIGH_BAND.encode(), tenant_id=uuid4(), mailbox_id=uuid4(),
-        source=SourceMechanism.IMAP_IDLE, owned_domains=OWNED, remediable=True,
+        source=SourceMechanism.IMAP_IDLE, remediable=True,
     )
     cp = CounterpartyState(registrable_domain="gemini-invoices.com", message_count=0,
                            known_bank_ids=frozenset(), verified_phone="+18030000000")

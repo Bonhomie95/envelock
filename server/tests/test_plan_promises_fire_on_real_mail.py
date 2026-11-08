@@ -44,7 +44,6 @@ async def _fire(raw: str, plan: str | None) -> set[str]:
         tenant_id=uuid4(),
         mailbox_id=uuid4(),
         source=SourceMechanism.IMAP_IDLE,
-        owned_domains=frozenset({PROTECTED}),
         remediable=True,
     )
     ctx = DetectionContext(
