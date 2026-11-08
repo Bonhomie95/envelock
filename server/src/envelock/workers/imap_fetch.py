@@ -431,7 +431,6 @@ async def sync_mailbox(
                 tenant_id=mailbox.tenant_id,
                 mailbox_id=mailbox.id,
                 source=SourceMechanism.IMAP_IDLE if protected else SourceMechanism.IMAP_POLL,
-                owned_domains=owned,
                 remediable=protected,  # only an IDLE/Protected mailbox can quarantine
                 source_ref=str(msg.uid),
             )
@@ -803,7 +802,6 @@ async def backfill_mailbox(
                 tenant_id=mailbox.tenant_id,
                 mailbox_id=mailbox.id,
                 source=SourceMechanism.IMAP_POLL,
-                owned_domains=owned,
                 remediable=False,  # never quarantine historical mail
                 source_ref=str(msg.uid),
             )

@@ -56,7 +56,7 @@ def test_tokenizer_keeps_quoted_semicolons_and_cfws_around_equals() -> None:
 def _event(raw: bytes, source: SourceMechanism):
     return parse_message(
         raw, tenant_id=uuid4(), mailbox_id=uuid4(), source=source,
-        owned_domains=OWNED, remediable=True,
+        remediable=True,
     )
 
 

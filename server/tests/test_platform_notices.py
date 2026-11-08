@@ -49,7 +49,7 @@ def _assess(
 ) -> RiskAssessment | None:
     event = parse_message(
         raw, tenant_id=uuid4(), mailbox_id=uuid4(), source=source,
-        owned_domains=OWNED, remediable=True,
+        remediable=True,
     )
     ctx = DetectionContext(
         event=event,

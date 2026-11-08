@@ -27,6 +27,7 @@ from envelock.channels.mail.parser import parse_message_async
 from envelock.core.enums import MailDirection, SourceMechanism
 from envelock.models import Mailbox
 from envelock.platform.pipeline import analyse_event
+from envelock.util.domains import registrable_domain
 from envelock.util.signature import extract_signature, signature_bank_ids
 
 logger = logging.getLogger("envelock.outbound")
@@ -56,13 +57,13 @@ async def process_outbound(
             tenant_id=mailbox.tenant_id,
             mailbox_id=mailbox.id,
             source=source,
-            owned_domains=owned,
+            direction=MailDirection.OUTBOUND,
             remediable=False,  # we never rewrite or quarantine the owner's sent mail
             source_ref=item.ref,
         )
         # Defence in depth: the Sent folder should only hold the owner's own mail,
         # but a mis-filed message must not masquerade as outbound and poison A12.
-        if event.direction is not MailDirection.OUTBOUND:
+        if registrable_domain(event.sender.domain) not in owned:
             continue
         if newest_body is None and event.body_text:
             newest_body = event.body_text

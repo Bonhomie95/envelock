@@ -174,7 +174,6 @@ async def run_forwarded_message(tenant_id: UUID, raw: bytes) -> dict:
             tenant_id=tenant_id,
             mailbox_id=mailbox.id,
             source=SourceMechanism.FORWARD_INGEST,
-            owned_domains=frozenset(owned),
             remediable=False,
         )
         recipients = await _recipients(session, tenant_id, mailbox.address)

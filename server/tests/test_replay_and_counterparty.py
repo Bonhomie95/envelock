@@ -54,7 +54,7 @@ async def test_reused_message_id_with_new_content_is_analysed(session) -> None:
     def event(raw):
         return parse_message(
             raw, tenant_id=mb.tenant_id, mailbox_id=mb.id,
-            source=SourceMechanism.IMAP_IDLE, owned_domains=OWNED, remediable=True,
+            source=SourceMechanism.IMAP_IDLE, remediable=True,
         )
 
     # A benign message, then the phish reusing its Message-ID.
@@ -82,7 +82,7 @@ async def test_genuine_redelivery_is_still_skipped(session) -> None:
     def event(source):
         return parse_message(
             raw, tenant_id=mb.tenant_id, mailbox_id=mb.id, source=source,
-            owned_domains=OWNED, remediable=True,
+            remediable=True,
         )
 
     first = await analyse_event(
@@ -123,7 +123,7 @@ async def test_our_own_protected_copy_is_skipped_on_every_source(session, source
     assert enforce.is_processed(copy, mb.id)
     event = parse_message(
         copy, tenant_id=mb.tenant_id, mailbox_id=mb.id, source=source,
-        owned_domains=OWNED, remediable=True,
+        remediable=True,
     )
     assert event.protected_copy is True
     result = await analyse_event(session, event, tenant_id=mb.tenant_id, owned_domains=OWNED)
@@ -147,7 +147,7 @@ async def test_free_mail_history_is_not_shared_between_senders(session) -> None:
     def run(raw):
         event = parse_message(
             raw, tenant_id=mb.tenant_id, mailbox_id=mb.id,
-            source=SourceMechanism.IMAP_IDLE, owned_domains=OWNED, remediable=True,
+            source=SourceMechanism.IMAP_IDLE, remediable=True,
         )
         return analyse_event(session, event, tenant_id=mb.tenant_id, owned_domains=OWNED)
 
@@ -188,7 +188,7 @@ async def test_platform_skip_no_longer_silences_payee_checks(session) -> None:
     mb = await _mailbox(session)
     event = parse_message(
         PLATFORM_SELLER, tenant_id=mb.tenant_id, mailbox_id=mb.id,
-        source=SourceMechanism.GMAIL_API, owned_domains=OWNED, remediable=True,
+        source=SourceMechanism.GMAIL_API, remediable=True,
     )
     result = await analyse_event(session, event, tenant_id=mb.tenant_id, owned_domains=OWNED)
     await session.commit()

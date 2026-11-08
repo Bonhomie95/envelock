@@ -16,7 +16,7 @@ from sqlalchemy import select
 
 from envelock.db import get_sessionmaker
 from envelock.db_rls import system_scope
-from envelock.models import Counterparty, Finding, Mailbox, Message, Tenant
+from envelock.models import Counterparty, Domain, Finding, Mailbox, Message, Tenant
 
 
 async def _msg(session, **kw):  # noqa: ANN001, ANN202
@@ -106,6 +106,26 @@ async def test_a_reply_prevents_the_stall_alert(stalled_thread) -> None:  # noqa
             await session.commit()
 
     assert (await _sweep())["stall_alerts"] == 0
+
+
+async def test_a_colleagues_reply_is_not_the_vendor_answering(stalled_thread) -> None:  # noqa: ANN001
+    """Own-domain mail is stored inbound (direction is the channel it came in on),
+    so a colleague's reply-all in the thread must not read as the vendor's answer."""
+    tid, mid = stalled_thread
+    now = datetime.now(UTC)
+    with system_scope("test"):
+        async with get_sessionmaker()() as session:
+            session.add(
+                Domain(tenant_id=tid, name="cyberlex.store", registrable_domain="cyberlex.store")
+            )
+            await _msg(
+                session, tenant_id=tid, mailbox_id=mid, thread_key="<t1@vendor.com>",
+                direction="inbound", sender_address="cfo@mail.cyberlex.store",
+                received_at=now - timedelta(hours=1), rfc_message_id="<t3@cyberlex.store>",
+            )
+            await session.commit()
+
+    assert (await _sweep())["stall_alerts"] == 1
 
 
 async def test_answered_threads_do_not_crowd_out_a_stalled_one(stalled_thread, monkeypatch) -> None:  # noqa: ANN001

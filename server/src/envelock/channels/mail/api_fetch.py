@@ -1,9 +1,8 @@
 """Live message pull for the OAuth providers (Tier 1: Gmail, Microsoft 365).
 
-The provider adapters normalise a raw RFC822 message into a `MailEvent`
-(`GmailProvider.to_event` / `GraphProvider.to_event`); this module is the part
-that actually *gets* the bytes from the provider's REST API. Both return raw MIME,
-so the same downstream parser handles them.
+This module is the part that actually *gets* the bytes from the provider's REST
+API. Both return raw MIME, so the same parser (`parser.parse_message`) turns them
+into a `MailEvent`.
 
 Network access sits behind an injectable `HttpTransport` (mirroring
 `oauth.Transport`) so the fetch + normalisation is unit-tested against a fake and
@@ -393,7 +392,6 @@ async def gmail_fetch(
     access_token: str,
     tenant_id: UUID,
     mailbox_id: UUID,
-    owned_domains: frozenset[str],
     query: str = "in:inbox newer_than:2d",
     limit: int = 50,
     transport: HttpTransport | None = None,
@@ -410,7 +408,6 @@ async def gmail_fetch(
             tenant_id=tenant_id,
             mailbox_id=mailbox_id,
             source=SourceMechanism.GMAIL_API,
-            owned_domains=owned_domains,
             remediable=True,
             source_ref=m.ref,
         )
@@ -584,7 +581,6 @@ async def graph_fetch(
     access_token: str,
     tenant_id: UUID,
     mailbox_id: UUID,
-    owned_domains: frozenset[str],
     mailbox_address: str | None = None,
     limit: int = 50,
     transport: HttpTransport | None = None,
@@ -601,7 +597,6 @@ async def graph_fetch(
             tenant_id=tenant_id,
             mailbox_id=mailbox_id,
             source=SourceMechanism.GRAPH_API,
-            owned_domains=owned_domains,
             remediable=True,
             source_ref=m.ref,
         )

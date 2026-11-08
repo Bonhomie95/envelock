@@ -59,7 +59,7 @@ def test_the_detection_catalogue_is_the_size_we_think_it_is() -> None:
     by_family: dict[str, int] = {}
     for service in registry():
         by_family[service[0]] = by_family.get(service[0], 0) + 1
-    assert by_family == {"A": 15, "B": 9, "C": 15}, by_family
+    assert by_family == {"A": 16, "B": 9, "C": 15}, by_family
 
 
 # ── Guard: "Free · Domain monitoring" ────────────────────────────────────────
@@ -103,7 +103,7 @@ def test_essential_delivers_payment_fraud_and_supplier_alerts() -> None:
         ("A15", "a bank account already confirmed as fraud"),
     ):
         assert service in a, f"Essential does not detect {what} ({service})"
-    assert len(a) == 15, f"Essential is missing payment detections: {sorted(a)}"
+    assert len(a) == 16, f"Essential is missing payment detections: {sorted(a)}"
 
 
 def test_essential_delivers_impersonation_detection() -> None:

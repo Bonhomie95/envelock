@@ -18,14 +18,14 @@ from __future__ import annotations
 import logging
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import exists, select
+from sqlalchemy import ColumnElement, exists, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
 from envelock.core.enums import MailDirection
 from envelock.db import get_sessionmaker
 from envelock.detections.content import a12_finding, stall_overdue
-from envelock.models import Counterparty, Finding, Mailbox, Message
+from envelock.models import Counterparty, Domain, Finding, Mailbox, Message
 from envelock.risk.engine import assess
 from envelock.util.domains import registrable_domain
 
@@ -36,6 +36,19 @@ logger = logging.getLogger("envelock.stallsweep")
 LOOKBACK_DAYS = 30
 #: Cap per cycle so one busy tenant cannot monopolise a sweep.
 MAX_PER_CYCLE = 500
+
+
+def _internal(message) -> ColumnElement[bool]:  # noqa: ANN001 — Message or an alias of it
+    """`message` was sent from one of its own tenant's domains.
+
+    A colleague's mail in the thread is stored inbound (direction is the channel it
+    arrived on, not its From), and it is neither the counterparty nor their answer.
+    """
+    host = func.split_part(message.sender_address, "@", 2)
+    return exists().where(
+        Domain.tenant_id == message.tenant_id,
+        or_(host == Domain.registrable_domain, host.like("%." + Domain.registrable_domain)),
+    )
 
 
 async def sweep_stalled_payment_threads(
@@ -70,6 +83,7 @@ async def sweep_stalled_payment_threads(
                         reply.thread_key == Message.thread_key,
                         reply.direction == MailDirection.INBOUND.value,
                         reply.received_at > Message.sent_at,
+                        ~_internal(reply),
                     ),
                 )
                 .order_by(Message.sent_at.asc())
@@ -143,6 +157,7 @@ async def _thread_counterparty(session: AsyncSession, msg: Message) -> str | Non
                     Message.tenant_id == msg.tenant_id,
                     Message.thread_key == msg.thread_key,
                     Message.direction == MailDirection.INBOUND.value,
+                    ~_internal(Message),
                 )
             )
         )

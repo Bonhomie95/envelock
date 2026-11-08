@@ -61,7 +61,6 @@ async def test_ordinary_first_message_learns_without_alerting(session, tenant_id
         tenant_id=tenant_id,
         mailbox_id=mailbox.id,
         source=SourceMechanism.IMAP_IDLE,
-        owned_domains=OWNED,
         remediable=True,
     )
     result = await analyse_event(
@@ -92,7 +91,6 @@ async def test_bank_change_after_learning_raises_critical_alert(session, tenant_
             tenant_id=tenant_id,
             mailbox_id=mailbox.id,
             source=SourceMechanism.IMAP_IDLE,
-            owned_domains=OWNED,
             remediable=True,
         )
         await analyse_event(session, event, tenant_id=tenant_id, owned_domains=OWNED)
@@ -111,7 +109,6 @@ async def test_bank_change_after_learning_raises_critical_alert(session, tenant_
         tenant_id=tenant_id,
         mailbox_id=mailbox.id,
         source=SourceMechanism.IMAP_IDLE,
-        owned_domains=OWNED,
         remediable=True,
     )
     result = await analyse_event(session, fraud, tenant_id=tenant_id, owned_domains=OWNED)
@@ -156,7 +153,6 @@ async def test_alert_and_findings_and_audit_all_persist(session, tenant_id):
         tenant_id=tenant_id,
         mailbox_id=mailbox.id,
         source=SourceMechanism.IMAP_IDLE,
-        owned_domains=OWNED,
         remediable=True,
     )
     await analyse_event(session, event, tenant_id=tenant_id, owned_domains=OWNED)
@@ -180,7 +176,6 @@ async def test_stylometry_baseline_accumulates(session, tenant_id):
             tenant_id=tenant_id,
             mailbox_id=mailbox.id,
             source=SourceMechanism.IMAP_IDLE,
-            owned_domains=OWNED,
         )
         await analyse_event(session, event, tenant_id=tenant_id, owned_domains=OWNED)
     await session.commit()
@@ -201,7 +196,6 @@ async def test_forwarding_mailbox_cannot_quarantine(session, tenant_id):
         tenant_id=tenant_id,
         mailbox_id=mailbox.id,
         source=SourceMechanism.FORWARD_INGEST,
-        owned_domains=OWNED,
     )
     result = await analyse_event(session, event, tenant_id=tenant_id, owned_domains=OWNED)
     await session.commit()
@@ -291,7 +285,6 @@ async def test_learning_happens_after_detection(session, tenant_id):
         tenant_id=tenant_id,
         mailbox_id=mailbox.id,
         source=SourceMechanism.IMAP_IDLE,
-        owned_domains=OWNED,
     )
     await analyse_event(session, fraud, tenant_id=tenant_id, owned_domains=OWNED)
     await session.commit()

@@ -1,7 +1,8 @@
 """Provider adapters for Channel 1.
 
-Every adapter normalises into `MailEvent` — nothing downstream branches on which
-provider mail came from (PRD §10). Adapters report `configured` honestly: an
+Consent, subscription and status only. Every source's raw mail goes through
+`parser.parse_message`, so nothing downstream branches on which provider mail
+came from (PRD §10). Adapters report `configured` honestly: an
 unset credential disables that path and downgrades the mailbox's protection
 level rather than failing at call time (PRD P4).
 """
@@ -10,11 +11,9 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from datetime import UTC, datetime, timedelta
-from uuid import UUID
 
 from envelock.config import get_settings
-from envelock.core.enums import MailDirection, SourceMechanism
-from envelock.core.events import EmailAddress, MailEvent
+from envelock.core.enums import SourceMechanism
 
 
 class MailProvider(ABC):
@@ -102,70 +101,6 @@ class GraphProvider(MailProvider):
         }
 
 
-
-    @staticmethod
-    def to_event(
-        payload: dict, *, tenant_id: UUID, mailbox_id: UUID, owned: frozenset[str]
-    ) -> MailEvent:
-        """Graph JSON → the same `MailEvent` every other source emits."""
-        from envelock.util.domains import registrable_domain
-
-        sender = (payload.get("from") or {}).get("emailAddress") or {}
-        address = (sender.get("address") or "unknown@invalid").lower()
-        reply_to = payload.get("replyTo") or []
-        now = datetime.now(UTC)
-
-        return MailEvent(
-            tenant_id=tenant_id,
-            mailbox_id=mailbox_id,
-            occurred_at=_iso(payload.get("receivedDateTime")) or now,
-            ingested_at=now,
-            source=SourceMechanism.GRAPH_API,
-            source_ref=payload.get("id"),
-            direction=(
-                MailDirection.OUTBOUND
-                if registrable_domain(address.rpartition("@")[2]) in owned
-                else MailDirection.INBOUND
-            ),
-            rfc_message_id=payload.get("internetMessageId"),
-            sender=EmailAddress(address=address, display=sender.get("name")),
-            reply_to=(
-                EmailAddress(
-                    address=(reply_to[0].get("emailAddress") or {})
-                    .get("address", "")
-                    .lower()
-                )
-                if reply_to
-                else None
-            ),
-            recipients_to=tuple(
-                EmailAddress(
-                    address=(r.get("emailAddress") or {}).get("address", "").lower()
-                )
-                for r in payload.get("toRecipients", [])
-                if (r.get("emailAddress") or {}).get("address")
-            ),
-            subject=payload.get("subject"),
-            sent_at=_iso(payload.get("sentDateTime")),
-            body_text=(payload.get("body") or {}).get("content")
-            if (payload.get("body") or {}).get("contentType") == "text"
-            else None,
-            body_html=(payload.get("body") or {}).get("content")
-            if (payload.get("body") or {}).get("contentType") == "html"
-            else None,
-            remediable=True,
-        )
-
-
-def _iso(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-
-
 # ── Tier 1: Google Workspace ─────────────────────────────────────────────────
 class GmailProvider(MailProvider):
     source = SourceMechanism.GMAIL_API
@@ -214,24 +149,6 @@ class GmailProvider(MailProvider):
         return f"{base_url.rstrip('/')}/api/v1/webhooks/gmail?token={push_token()}"
 
 
-
-    @staticmethod
-    def to_event(
-        raw_rfc822: bytes, *, tenant_id: UUID, mailbox_id: UUID, owned: frozenset[str]
-    ) -> MailEvent:
-        """Gmail returns raw RFC822, so the shared parser handles it."""
-        from envelock.channels.mail.parser import parse_message
-
-        return parse_message(
-            raw_rfc822,
-            tenant_id=tenant_id,
-            mailbox_id=mailbox_id,
-            source=SourceMechanism.GMAIL_API,
-            owned_domains=owned,
-            remediable=True,
-        )
-
-
 # ── Tier 3: IMAP ─────────────────────────────────────────────────────────────
 class ImapProvider(MailProvider):
     """Works on any IMAP server. Credentials come from the encrypted store and
@@ -255,28 +172,6 @@ class ImapProvider(MailProvider):
         return bool(self.host and self._username and self._password)
 
 
-
-    @staticmethod
-    def to_event(
-        raw_rfc822: bytes,
-        *,
-        tenant_id: UUID,
-        mailbox_id: UUID,
-        owned: frozenset[str],
-        polled: bool = False,
-    ) -> MailEvent:
-        from envelock.channels.mail.parser import parse_message
-
-        return parse_message(
-            raw_rfc822,
-            tenant_id=tenant_id,
-            mailbox_id=mailbox_id,
-            source=SourceMechanism.IMAP_POLL if polled else SourceMechanism.IMAP_IDLE,
-            owned_domains=owned,
-            remediable=not polled,
-        )
-
-
 # ── Tier 4: forwarding ───────────────────────────────────────────────────────
 class ForwardingProvider(MailProvider):
     """The universal fallback: every mail system ever built supports forwarding.
@@ -287,7 +182,6 @@ class ForwardingProvider(MailProvider):
     @property
     def configured(self) -> bool:
         return True  # needs no credentials at all
-
 
 
 def provider_status() -> list[dict]:

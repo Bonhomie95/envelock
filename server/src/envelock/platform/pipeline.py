@@ -57,7 +57,7 @@ from envelock.util.payments import (
 #: phishing-link alert may also arrive in a mail quoting a sum, and counting
 #: that as "money we stopped leaving" would inflate the one number the customer
 #: is most likely to check against their own records.
-_MONEY_SERVICES = frozenset({"A1", "A2", "A3", "A4", "A5", "A13", "A14", "A15"})
+_MONEY_SERVICES = frozenset({"A1", "A2", "A3", "A4", "A5", "A13", "A14", "A15", "A16"})
 
 
 def content_fingerprint(event: MailEvent) -> str:
@@ -236,7 +236,13 @@ async def build_context(
     #: The cross-tenant graph plus anything the free reputation feeds flag on this
     #: message's sender domain (user requirement #3).
     malicious_domains: set[str] = set(GRAPH.known_bad())
-    if isinstance(event, MailEvent) and event.direction is MailDirection.INBOUND:
+    # Inbound mail from outside. An own-domain From is inbound too, but it is not
+    # a counterparty, and only external-sender checks read what loads here.
+    if (
+        isinstance(event, MailEvent)
+        and event.direction is MailDirection.INBOUND
+        and registrable_domain(event.sender.domain) not in owned_domains
+    ):
         sender_domain = registrable_domain(event.sender.domain)
         # Identity is keyed per address on free mail (so one gmail.com stranger's
         # history is not every gmail.com sender's), but per domain for a real
@@ -459,6 +465,7 @@ async def learn(
     event: MailEvent,
     *,
     tenant_id: UUID,
+    owned_domains: frozenset[str],
     flagged: bool = False,
 ) -> None:
     """Update counterparty state and the stylometric baseline.
@@ -473,6 +480,10 @@ async def learn(
     baseline: not its DKIM domain, not its bank details, not its writing style.
     """
     if event.direction is not MailDirection.INBOUND:
+        return
+    # The tenant's own domain is never a counterparty. Learning it would list it
+    # as a supplier and take baselines from mail whose From anyone can forge.
+    if registrable_domain(event.sender.domain) in owned_domains:
         return
     # The same key `build_context` loads by: per address on free mail, per domain
     # otherwise. Learning and lookup must agree, or every message looks like first
@@ -1017,7 +1028,9 @@ async def analyse_event(
             AlertTier.HIGH,
             AlertTier.CRITICAL,
         )
-        await learn(session, event, tenant_id=tenant_id, flagged=flagged)
+        await learn(
+            session, event, tenant_id=tenant_id, owned_domains=owned_domains, flagged=flagged
+        )
 
     latency = (datetime.now(UTC) - event.ingested_at).total_seconds()
 

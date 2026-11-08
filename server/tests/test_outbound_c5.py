@@ -133,7 +133,7 @@ async def test_reply_latency_is_learned_from_a_matched_thread(mailbox) -> None: 
         async with get_sessionmaker()() as session:
             event = parse_message(
                 reply.encode(), tenant_id=tid, mailbox_id=mid,
-                source=SourceMechanism.IMAP_IDLE, owned_domains=OWNED, remediable=True,
+                source=SourceMechanism.IMAP_IDLE, remediable=True,
             )
             await analyse_event(session, event, tenant_id=tid, owned_domains=OWNED)
             await session.commit()

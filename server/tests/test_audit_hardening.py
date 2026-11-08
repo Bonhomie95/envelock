@@ -390,7 +390,6 @@ async def test_a_flagged_message_never_becomes_the_vendor_baseline(session) -> N
         tenant_id=tenant_id,
         mailbox_id=mailbox.id,
         source=SourceMechanism.IMAP_IDLE,
-        owned_domains=owned,
         remediable=True,
     )
     result = await analyse_event(session, event, tenant_id=tenant_id, owned_domains=owned)

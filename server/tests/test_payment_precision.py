@@ -38,7 +38,7 @@ def _assess(content_type: str, body: str) -> RiskAssessment | None:
     source = SourceMechanism.IMAP_IDLE
     event = parse_message(
         raw, tenant_id=uuid4(), mailbox_id=uuid4(), source=source,
-        owned_domains=frozenset({"acme.com"}), remediable=True,
+        remediable=True,
     )
     ctx = DetectionContext(
         event=event, tenant_id="t", capabilities=capabilities_for(frozenset({source})),

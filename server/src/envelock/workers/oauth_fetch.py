@@ -517,7 +517,6 @@ async def _handle_inbound(
         tenant_id=mailbox.tenant_id,
         mailbox_id=mailbox.id,
         source=source,
-        owned_domains=owned,
         remediable=protected,
         source_ref=item.ref,
     )
@@ -761,7 +760,6 @@ async def backfill_oauth_mailbox(
                     SourceMechanism.GMAIL_API if provider == "google"
                     else SourceMechanism.GRAPH_API
                 ),
-                owned_domains=owned,
                 remediable=False,  # never quarantine historical mail
                 source_ref=item.ref,
             )

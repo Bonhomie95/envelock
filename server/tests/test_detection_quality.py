@@ -97,7 +97,6 @@ async def _run_case(session, case: Case) -> Outcome:
             tenant_id=tenant_id,
             mailbox_id=mailbox.id,
             source=SourceMechanism.IMAP_IDLE,
-            owned_domains=OWNED,
             remediable=True,
         )
         result = await analyse_event(

@@ -481,10 +481,19 @@ def parse_message(
     tenant_id: UUID,
     mailbox_id: UUID,
     source: SourceMechanism,
-    owned_domains: frozenset[str] = frozenset(),
+    direction: MailDirection = MailDirection.INBOUND,
     remediable: bool = False,
     source_ref: str | None = None,
 ) -> MailEvent:
+    """`direction` is where the caller read the message, never what From says.
+
+    It used to be OUTBOUND whenever From was one of the tenant's domains. From is
+    written by the sender, so a forged `ceo@<own domain>` asking for a wire was
+    filed as the tenant's own outgoing mail: every inbound check skipped it and it
+    scored 0. Inbox, forwarded and history mail is inbound whoever it claims to
+    be from (A16 judges an own-domain From); only the Sent-folder reader passes
+    OUTBOUND.
+    """
     msg: EmailMessage = message_from_bytes(raw, policy=POLICY)  # type: ignore[assignment]
 
     sender = _sender(msg) or EmailAddress(address="unknown@invalid")
@@ -500,11 +509,6 @@ def parse_message(
         # aware timestamps everywhere else, it raised TypeError mid-sync.
         if sent_at is not None and sent_at.tzinfo is None:
             sent_at = sent_at.replace(tzinfo=UTC)
-
-    sender_domain = registrable_domain(sender.domain)
-    direction = (
-        MailDirection.OUTBOUND if sender_domain in owned_domains else MailDirection.INBOUND
-    )
 
     references = tuple(
         r[:_MAX_MESSAGE_ID] for r in (msg.get("References") or "").split()

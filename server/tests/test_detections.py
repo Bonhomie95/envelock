@@ -26,7 +26,6 @@ def build(raw: str, source=SourceMechanism.IMAP_IDLE, counterparty=None):
         tenant_id=uuid4(),
         mailbox_id=uuid4(),
         source=source,
-        owned_domains=OWNED,
         remediable=True,
     )
     return DetectionContext(
