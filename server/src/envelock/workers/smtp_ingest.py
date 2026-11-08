@@ -65,18 +65,6 @@ class ForwardingSMTPHandler:
         return last
 
 
-def build_controller(*, host: str | None = None, port: int | None = None):  # noqa: ANN201
-    """Construct (but do not start) the aiosmtpd Controller."""
-    from aiosmtpd.controller import Controller
-
-    settings = get_settings()
-    return Controller(
-        ForwardingSMTPHandler(),
-        hostname=host or settings.ingest_smtp_host,
-        port=port or settings.ingest_smtp_port,
-    )
-
-
 def _assert_ingest_is_pinned() -> None:
     """Refuse to run the forwarding listener wide open in production.
 
@@ -101,20 +89,32 @@ def _assert_ingest_is_pinned() -> None:
 
 
 async def run_forever(stop: asyncio.Event | None = None) -> None:
+    from aiosmtpd.smtp import SMTP
+
     _assert_ingest_is_pinned()
-    controller = build_controller()
-    controller.start()
+    settings = get_settings()
+    handler = ForwardingSMTPHandler()
+    # On the caller's own loop. aiosmtpd's Controller serves from a loop of its
+    # own in a thread, and the handler's database work then ran on a pool bound
+    # to the API's loop: in the API process (ENVELOCK_INGEST_SMTP_IN_APP, the
+    # shape the launch guide sets up) every RCPT failed "attached to a different
+    # loop", so no forwarded mail was ever accepted.
+    server = await asyncio.get_running_loop().create_server(
+        lambda: SMTP(handler, enable_SMTPUTF8=True),
+        host=settings.ingest_smtp_host,
+        port=settings.ingest_smtp_port,
+    )
     logger.info(
         "smtp ingest listening on %s:%s (domain %s)",
-        controller.hostname,
-        controller.port,
-        get_settings().ingest_domain,
+        settings.ingest_smtp_host,
+        settings.ingest_smtp_port,
+        settings.ingest_domain,
     )
     stop = stop or asyncio.Event()
     try:
         await stop.wait()  # run until asked to stop
     finally:
-        controller.stop()
+        server.close()
         logger.info("smtp ingest stopped")
 
 

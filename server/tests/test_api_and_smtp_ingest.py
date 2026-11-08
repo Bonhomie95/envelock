@@ -141,3 +141,72 @@ async def test_smtp_handler_runs_data_through_ingest():
     assert reply.startswith("250")
     assert ingest.datas and ingest.datas[0][0] == "t-abc12345@in.envelock.org"
     assert ingest.datas[0][1] == _raw()
+
+
+async def test_the_listener_takes_forwarded_mail_on_the_apis_own_loop(session, monkeypatch):  # noqa: ANN001
+    # In the API process (ENVELOCK_INGEST_SMTP_IN_APP) the listener ran on
+    # aiosmtpd's own thread and loop while the database pool was the API's:
+    # every RCPT failed "attached to a different loop", so no forwarded mail was
+    # ever accepted. As in the API, the pool here is a real one (the suite runs
+    # on NullPool, which hid it) and already holds a connection from this loop.
+    import asyncio
+    import smtplib
+    import socket
+
+    from sqlalchemy import func, select, text
+
+    from envelock.channels.mail.ingest import ingest_address
+    from envelock.config import get_settings
+    from envelock.db import dispose, get_sessionmaker
+    from envelock.models import Domain, Mailbox, Message, Tenant
+    from envelock.workers import smtp_ingest
+
+    tenant = Tenant(name="Acme", plan="complete", payment_method_ok=True)
+    session.add(tenant)
+    await session.flush()
+    session.add(Domain(tenant_id=tenant.id, name="acme.com", registrable_domain="acme.com"))
+    mailbox = Mailbox(
+        tenant_id=tenant.id, address="pay@acme.com", mailbox_class="protected",
+        sources=[SourceMechanism.FORWARD_INGEST.value],
+    )
+    session.add(mailbox)
+    await session.commit()
+
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    monkeypatch.setenv("ENVELOCK_INGEST_SMTP_HOST", "127.0.0.1")
+    monkeypatch.setenv("ENVELOCK_INGEST_SMTP_PORT", str(port))
+    monkeypatch.setenv("ENVELOCK_DB_NULLPOOL", "false")
+    get_settings.cache_clear()
+    await dispose()
+    async with get_sessionmaker()() as warm:
+        await warm.execute(text("SELECT 1"))
+    stop = asyncio.Event()
+    listener = asyncio.create_task(smtp_ingest.run_forever(stop))
+    try:
+        for _ in range(100):
+            try:
+                _, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.close()
+                break
+            except OSError:
+                await asyncio.sleep(0.05)
+
+        address = ingest_address(tenant.ingest_token)
+
+        def forward() -> dict:
+            with smtplib.SMTP("127.0.0.1", port, timeout=10) as smtp:
+                return smtp.sendmail("forwarder@acme.com", [address], _raw())
+
+        assert await asyncio.to_thread(forward) == {}
+        stored = await session.scalar(
+            select(func.count()).select_from(Message).where(Message.mailbox_id == mailbox.id)
+        )
+        assert stored == 1
+    finally:
+        stop.set()
+        await listener
+        monkeypatch.setenv("ENVELOCK_DB_NULLPOOL", "true")
+        get_settings.cache_clear()
+        await dispose()
