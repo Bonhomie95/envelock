@@ -17,6 +17,7 @@ from envelock.detections.base import (
     DetectionContext,
     FindingResult,
     register,
+    unproven_internal,
 )
 from envelock.util.domains import (
     classify_lookalike,
@@ -541,9 +542,9 @@ class _A16SpoofedInternalSender:
 
     From is the sender's to write. A forged `ceo@<own domain>` wire request was
     filed as the tenant's own outgoing mail and scored 0, while the Detection lab,
-    analysing it for a tenant that does not own the domain, rated it HIGH. Every
-    other A-check treats an own-domain sender as internal, so this is the one that
-    asks whether it is. `provider_dmarc` is the only proof: Gmail and Graph stamp
+    analysing it for a tenant that does not own the domain, rated it HIGH. The
+    counterparty checks treat an own-domain sender as internal, so this is the one
+    that asks whether it is. `provider_dmarc` is the only proof: Gmail and Graph stamp
     it above anything the sender wrote, while IMAP and forwarding never carry it,
     so there an own-domain From is a claim. A claim alone stays quiet, because
     colleagues mail each other all day. Paired with replies that leave the domain
@@ -555,12 +556,7 @@ class _A16SpoofedInternalSender:
 
     def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
         mail = ctx.mail
-        if (
-            mail is None
-            or mail.direction is not MailDirection.INBOUND
-            or registrable_domain(mail.sender.domain) not in ctx.owned_domains
-            or mail.authentication.provider_dmarc is AuthResult.PASS
-        ):
+        if mail is None or not unproven_internal(mail, ctx.owned_domains):
             return []
         reply_to = mail.reply_to.address if mail.reply_to else None
         redirected = mail.reply_to is not None and (
@@ -633,13 +629,16 @@ class _B8AuthPosture:
 class _A15KnownFraudAccount:
     """A bank account that was already confirmed as fraud — by this customer or
     any other. Fraudsters reuse mule accounts across victims, so this fires
-    even when the sender, the domain and the wording are all new."""
+    even when the sender, the domain and the wording are all new, and when the
+    sender claims to be a colleague without proof."""
 
     service: str = "A15"
     requires: frozenset[Capability] = _INBOUND
 
     def evaluate(self, ctx: DetectionContext) -> list[FindingResult]:
-        if ctx.mail is None or not ctx.fraud_accounts or not _is_external(ctx):
+        if ctx.mail is None or not ctx.fraud_accounts:
+            return []
+        if not (_is_external(ctx) or unproven_internal(ctx.mail, ctx.owned_domains)):
             return []
         others = sum(v.get("other_tenants", 0) for v in ctx.fraud_accounts.values())
         own = any(v.get("own") for v in ctx.fraud_accounts.values())

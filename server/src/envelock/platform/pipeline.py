@@ -26,6 +26,7 @@ from envelock.detections.base import (
     PreviousSession,
     inactive_for,
     run_all,
+    unproven_internal,
 )
 from envelock.models import (
     BankRecord,
@@ -237,7 +238,7 @@ async def build_context(
     #: message's sender domain (user requirement #3).
     malicious_domains: set[str] = set(GRAPH.known_bad())
     # Inbound mail from outside. An own-domain From is inbound too, but it is not
-    # a counterparty, and only external-sender checks read what loads here.
+    # a counterparty, so none of this loads for it.
     if (
         isinstance(event, MailEvent)
         and event.direction is MailDirection.INBOUND
@@ -326,50 +327,6 @@ async def build_context(
                     except Exception:  # noqa: BLE001, S110 — enrichment, never blocking
                         pass
 
-        # Feature 1, delivery-time rung: run the message's LINK domains through
-        # the same free blocklists, and the full URLs through Safe Browsing when
-        # a key is configured. A hit lands in malicious_domains so B1 fires on
-        # the URL itself. Capped per message; every lookup is cached; the click
-        # redirector re-checks live regardless of what happens here.
-        if event.urls:
-            from envelock.config import get_settings as _settings
-            from envelock.detections.cascade import Verdict, get_url_cascade
-            from envelock.platform.links import url_host
-
-            cfg = _settings()
-            cap = max(cfg.url_check_max_per_message, 0)
-            link_regs: list[str] = []
-            for url in event.urls:
-                reg = registrable_domain(url_host(url))
-                if reg and reg not in owned_domains and reg not in link_regs:
-                    link_regs.append(reg)
-            # Spend the per-message budget on the domains most worth a lookup, not
-            # the first few in document order — five padding links to a big
-            # provider otherwise pushed the one unusual link past the cap. A known
-            # platform (google.com, microsoft.com, …) goes last.
-            link_regs.sort(key=is_platform_domain)
-            if cfg.domain_reputation_enabled:
-                from envelock.channels.external.reputation import check_sender_domain
-
-                for reg in link_regs[:cap]:
-                    if reg in malicious_domains:
-                        continue
-                    rep = await check_sender_domain(reg)
-                    if rep.listed:
-                        malicious_domains.add(reg)
-            cascade = get_url_cascade()
-            if cascade.safebrowsing:
-                # Same priority order as the reputation pass above.
-                ranked = sorted(
-                    event.urls, key=lambda u: is_platform_domain(url_host(u))
-                )
-                for url in ranked[:cap]:
-                    reg = registrable_domain(url_host(url))
-                    if not reg or reg in owned_domains or reg in malicious_domains:
-                        continue
-                    verdict = await cascade.check(url)
-                    if verdict.verdict is Verdict.MALICIOUS:
-                        malicious_domains.add(reg)
         profile = (
             await session.execute(
                 select(SenderProfile).where(
@@ -380,6 +337,61 @@ async def build_context(
         ).scalar_one_or_none()
         if profile is not None:
             baseline = profile.features or {}
+
+    # Feature 1, delivery-time rung: run the message's LINK domains through the
+    # same free blocklists, and the full URLs through Safe Browsing when a key is
+    # configured. A hit lands in malicious_domains so B1 fires on the URL itself.
+    # Capped per message; every lookup is cached; the click redirector re-checks
+    # live regardless of what happens here. Outside mail, and mail claiming our own
+    # domain that its provider never vouched for: a forged it@<own domain> phish
+    # links out too.
+    if (
+        isinstance(event, MailEvent)
+        and event.direction is MailDirection.INBOUND
+        and (
+            registrable_domain(event.sender.domain) not in owned_domains
+            or unproven_internal(event, owned_domains)
+        )
+        and event.urls
+    ):
+        from envelock.config import get_settings as _settings
+        from envelock.detections.cascade import Verdict, get_url_cascade
+        from envelock.platform.links import url_host
+
+        cfg = _settings()
+        cap = max(cfg.url_check_max_per_message, 0)
+        link_regs: list[str] = []
+        for url in event.urls:
+            reg = registrable_domain(url_host(url))
+            if reg and reg not in owned_domains and reg not in link_regs:
+                link_regs.append(reg)
+        # Spend the per-message budget on the domains most worth a lookup, not
+        # the first few in document order — five padding links to a big
+        # provider otherwise pushed the one unusual link past the cap. A known
+        # platform (google.com, microsoft.com, …) goes last.
+        link_regs.sort(key=is_platform_domain)
+        if cfg.domain_reputation_enabled:
+            from envelock.channels.external.reputation import check_sender_domain
+
+            for reg in link_regs[:cap]:
+                if reg in malicious_domains:
+                    continue
+                rep = await check_sender_domain(reg)
+                if rep.listed:
+                    malicious_domains.add(reg)
+        cascade = get_url_cascade()
+        if cascade.safebrowsing:
+            # Same priority order as the reputation pass above.
+            ranked = sorted(
+                event.urls, key=lambda u: is_platform_domain(url_host(u))
+            )
+            for url in ranked[:cap]:
+                reg = registrable_domain(url_host(url))
+                if not reg or reg in owned_domains or reg in malicious_domains:
+                    continue
+                verdict = await cascade.check(url)
+                if verdict.verdict is Verdict.MALICIOUS:
+                    malicious_domains.add(reg)
 
     known = {
         row

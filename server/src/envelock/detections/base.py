@@ -14,9 +14,9 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from envelock.core.capabilities import Capability
-from envelock.core.enums import AlertTier, AuthResult
+from envelock.core.enums import AlertTier, AuthResult, MailDirection
 from envelock.core.events import Event, IdentityEvent, MailEvent
-from envelock.util.domains import is_platform_domain
+from envelock.util.domains import is_platform_domain, registrable_domain
 
 
 @dataclass(frozen=True, slots=True)
@@ -245,6 +245,23 @@ def is_platform_notice(mail: MailEvent | None) -> bool:
         mail is not None
         and mail.authentication.provider_dmarc is AuthResult.PASS
         and is_platform_domain(mail.sender.domain)
+    )
+
+
+def unproven_internal(mail: MailEvent | None, owned_domains: frozenset[str]) -> bool:
+    """Inbound mail claiming the tenant's own domain that its provider never vouched for.
+
+    From is the sender's to write, and only Gmail and Graph stamp `provider_dmarc`,
+    so on IMAP and forwarding this is every colleague's mail, and every forger's.
+    It is never a counterparty. A16 asks whether it is CEO fraud, and the checks
+    that judge the message itself (links, QR codes, a known fraud account) run on
+    it as on outside mail.
+    """
+    return (
+        mail is not None
+        and mail.direction is MailDirection.INBOUND
+        and registrable_domain(mail.sender.domain) in owned_domains
+        and mail.authentication.provider_dmarc is not AuthResult.PASS
     )
 
 

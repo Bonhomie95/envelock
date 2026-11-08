@@ -19,8 +19,10 @@ from envelock.channels.mail.api_fetch import FetchedMessage
 from envelock.channels.mail.parser import parse_message
 from envelock.core.capabilities import capabilities_for
 from envelock.core.enums import AlertTier, MailDirection, SourceMechanism
+from envelock.core.events import AttachmentRef
 from envelock.detections.base import DetectionContext, FindingResult, run_all
 from envelock.models import Alert, Counterparty, Message, SenderProfile
+from envelock.platform import fraud_accounts
 from envelock.platform.pipeline import analyse_event
 from envelock.risk.engine import assess
 from envelock.workers.imap_fetch import sync_mailbox
@@ -67,15 +69,26 @@ def _graph(dmarc: str) -> str:
     )
 
 
-def _findings(raw: bytes, source: SourceMechanism) -> list[FindingResult]:
+def _findings(
+    raw: bytes,
+    source: SourceMechanism,
+    *,
+    malicious: frozenset[str] = frozenset(),
+    fraud: dict[str, dict] | None = None,
+    attachments: tuple[AttachmentRef, ...] = (),
+) -> list[FindingResult]:
     event = parse_message(raw, tenant_id=uuid4(), mailbox_id=uuid4(), source=source)
     assert event.direction is MailDirection.INBOUND
+    if attachments:
+        event = event.model_copy(update={"attachments": attachments})
     return run_all(
         DetectionContext(
             event=event,
             tenant_id="t",
             capabilities=capabilities_for(frozenset({source})),
             owned_domains=OWNED,
+            malicious_domains=malicious,
+            fraud_accounts=fraud or {},
         )
     )
 
@@ -124,6 +137,111 @@ def test_an_unproven_own_domain_claim_alone_stays_quiet() -> None:
     there is an unproven claim. With no redirect and no payment push, nothing."""
     raw = _ceo(reply_to="assistant@acme.com", body="Notes attached. Can we move the review to 3pm?")
     assert _findings(raw, SourceMechanism.IMAP_IDLE) == []
+
+
+# ── Links, QR codes and known fraud accounts on a forged colleague ────────────
+_LISTED = "mailbox-quota-check.net"
+_DRESSED = "microsoft-mailbox-verify.com"
+_MULE = "GB82WEST12345698765432"
+
+
+def _it_desk(lure: str, *, stamp: str | None = None) -> bytes:
+    """A credential phish "from" Acme's IT desk. No Reply-To and no payment, so
+    A16 has nothing to go on: only the link gives it away."""
+    headers = [
+        *([f"Authentication-Results: {stamp}"] if stamp else []),
+        'From: "IT Service Desk" <it@acme.com>',
+        "To: finance@acme.com",
+        "Subject: Mailbox storage limit reached",
+        f"Message-ID: <{uuid4().hex}@acme.com>",
+        "Content-Type: text/plain",
+    ]
+    body = (
+        "Your mailbox is over its storage limit and will stop receiving mail. "
+        f"Sign in within 24 hours to keep it: {lure}"
+    )
+    return ("\n".join(headers) + "\n\n" + body + "\n").encode()
+
+
+def _image(*qr_urls: str) -> AttachmentRef:
+    return AttachmentRef(
+        filename="scan.png", sha256="0" * 64, size_bytes=4096,
+        declared_mime="image/png", detected_mime="image/png", qr_urls=qr_urls,
+    )
+
+
+@pytest.mark.parametrize("source", [SourceMechanism.IMAP_IDLE, SourceMechanism.FORWARD_INGEST])
+@pytest.mark.parametrize(
+    ("domain", "tier"), [(_LISTED, AlertTier.HIGH), (_DRESSED, AlertTier.MEDIUM)]
+)
+def test_a_forged_it_desk_phish_raises_b1(
+    source: SourceMechanism, domain: str, tier: AlertTier
+) -> None:
+    """A blocklisted link alerts on its own; a domain dressed as Microsoft with "sign in"."""
+    raw = _it_desk(f"https://{domain}/owa/login")
+    assessment = assess(_findings(raw, source, malicious=frozenset({_LISTED})))
+    assert assessment is not None, "the forged IT-desk phish raised nothing"
+    assert assessment.services == ("B1",)
+    assert assessment.tier is tier
+
+
+@pytest.mark.parametrize(
+    ("source", "stamp"),
+    [(SourceMechanism.GMAIL_API, _gmail("pass")), (SourceMechanism.GRAPH_API, _graph("pass"))],
+)
+def test_the_same_links_from_a_colleague_the_provider_vouches_for_stay_quiet(
+    source: SourceMechanism, stamp: str
+) -> None:
+    for domain in (_LISTED, _DRESSED):
+        raw = _it_desk(f"https://{domain}/owa/login", stamp=stamp)
+        assert _findings(raw, source, malicious=frozenset({_LISTED})) == []
+
+
+def test_a_forged_qr_code_raises_b3_but_a_colleagues_screenshot_does_not() -> None:
+    quishing = _it_desk("scan the attached code with your phone.")
+    assessment = assess(
+        _findings(
+            quishing, SourceMechanism.IMAP_IDLE,
+            malicious=frozenset({_LISTED}), attachments=(_image(f"https://{_LISTED}/owa"),),
+        )
+    )
+    assert assessment is not None and "B3" in assessment.services
+    assert assessment.tier is AlertTier.HIGH
+    # Unproven too, with an image and payment words, which is ordinary between colleagues.
+    screenshot = _ceo(reply_to=None, body="Screenshot of the supplier invoice. Can you pay it?")
+    assert _findings(screenshot, SourceMechanism.IMAP_IDLE, attachments=(_image(),)) == []
+
+
+_NEWSLETTER = (
+    b'From: "Acme People Team" <people@acme.com>\n'
+    b"To: all@acme.com\n"
+    b"Subject: October at Acme\n"
+    b"Message-ID: <october@acme.com>\n"
+    b"Content-Type: text/plain\n\n"
+    b"Expense invoices over $500 now need two approvers: https://acme.com/policies/expenses\n"
+    b"Sign in to the policy library: https://acme.sharepoint.com/sites/policies\n"
+    b"Town hall on Teams: https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc\n"
+    b"Benefits portal: https://nam02.safelinks.protection.outlook.com/"
+    b"?url=https%3A%2F%2Facme.sharepoint.com%2Fsites%2Fhr&data=05\n"
+    b"Survey: https://bit.ly/acme-october\n"
+    b"Follow us: https://www.linkedin.com/company/acme\n"
+)
+
+
+def test_an_internal_newsletter_with_ordinary_links_stays_quiet() -> None:
+    """Unproven, as all colleague mail on IMAP is, with payment and sign-in words, a
+    short link and links to the brands Acme runs on. Even with acme.com on the shared
+    graph (other tenants confirming forgeries of it), nothing fires."""
+    poisoned = frozenset({"acme.com"})
+    assert _findings(_NEWSLETTER, SourceMechanism.IMAP_IDLE, malicious=poisoned) == []
+
+
+def test_a_forged_colleague_naming_a_known_fraud_account_is_critical() -> None:
+    raw = _ceo(reply_to=None, body=f"Please pay invoice 4471 to IBAN {_MULE} this week.")
+    fraud = {_MULE: {"scheme": "iban", "other_tenants": 2, "own": False}}
+    assessment = assess(_findings(raw, SourceMechanism.IMAP_IDLE, fraud=fraud))
+    assert assessment is not None and assessment.services == ("A15",)
+    assert assessment.tier is AlertTier.CRITICAL
 
 
 def test_our_own_sent_mail_is_never_a_spoof() -> None:
@@ -178,6 +296,66 @@ async def test_authenticated_internal_mail_is_quiet_and_teaches_nothing(session,
     await session.commit()
 
     assert not result.alerted and result.findings == []
+    await _learned_nothing(session, tenant_id)
+
+
+async def test_a_forged_colleagues_links_are_looked_up_but_never_our_own(  # noqa: ANN001
+    session, tenant_id, monkeypatch
+) -> None:
+    """build_context runs link reputation on unproven internal mail, so B1 sees the
+    feed hit. It never looks up the own domain, and nothing on vouched mail."""
+    from envelock.channels.external import reputation
+    from envelock.config import get_settings
+
+    looked_up: list[str] = []
+
+    async def fake_check(domain: str) -> reputation.ReputationResult:
+        looked_up.append(domain)
+        return reputation.ReputationResult(domain=domain, listed=domain == _LISTED)
+
+    monkeypatch.setattr(reputation, "check_sender_domain", fake_check)
+    monkeypatch.setenv("ENVELOCK_DOMAIN_REPUTATION_ENABLED", "true")
+    get_settings.cache_clear()
+    mailbox = await _mailbox(session, tenant_id, sources=[SourceMechanism.IMAP_IDLE])
+    lure = f"https://{_LISTED}/owa/login (help: https://acme.com/it)"
+
+    forged = parse_message(
+        _it_desk(lure), tenant_id=tenant_id, mailbox_id=mailbox.id, source=SourceMechanism.IMAP_IDLE
+    )
+    result = await analyse_event(session, forged, tenant_id=tenant_id, owned_domains=OWNED)
+    assert looked_up == [_LISTED]
+    assert result.alerted and result.assessment is not None
+    assert result.assessment.services == ("B1",) and result.assessment.tier is AlertTier.HIGH
+
+    looked_up.clear()
+    vouched = parse_message(
+        _it_desk(lure, stamp=_gmail("pass")),
+        tenant_id=tenant_id, mailbox_id=mailbox.id, source=SourceMechanism.GMAIL_API,
+    )
+    result = await analyse_event(session, vouched, tenant_id=tenant_id, owned_domains=OWNED)
+    await session.commit()
+    assert looked_up == [] and result.findings == []
+    await _learned_nothing(session, tenant_id)
+
+
+async def test_a_known_fraud_account_from_a_forged_colleague_is_critical(  # noqa: ANN001
+    session, tenant_id
+) -> None:
+    """End to end: another customer confirmed the account, the pipeline finds it."""
+    mailbox = await _mailbox(session, tenant_id, sources=[SourceMechanism.FORWARD_INGEST])
+    await fraud_accounts.report(
+        session, tenant_id=uuid4(), identifiers=[{"scheme": "iban", "identifier": _MULE}]
+    )
+    event = parse_message(
+        _ceo(reply_to=None, body=f"Please pay invoice 4471 to IBAN {_MULE} this week."),
+        tenant_id=tenant_id, mailbox_id=mailbox.id, source=SourceMechanism.FORWARD_INGEST,
+    )
+    result = await analyse_event(session, event, tenant_id=tenant_id, owned_domains=OWNED)
+    await session.commit()
+
+    assert result.alerted and result.assessment is not None
+    assert result.assessment.services == ("A15",)
+    assert result.assessment.tier is AlertTier.CRITICAL
     await _learned_nothing(session, tenant_id)
 
 
