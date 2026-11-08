@@ -74,12 +74,15 @@ import {
   enablePush,
   getPushState,
   needsHomeScreenForPush,
+  notificationHint,
+  renewPush,
   type PushState,
 } from "../lib/push";
 
 interface Me {
   email: string;
   mfa_enabled: boolean;
+  out_of_band_email: string | null;
 }
 
 /* Icons are chosen from the detection id so the queue stays readable at a
@@ -3072,21 +3075,39 @@ export function PushAlerts() {
       setBusy(false);
     }
   }
-  // Proves the whole path in one click. "Sent" with nothing on screen means the
-  // device is hiding it — the one cause no code here can fix.
+  // Proves the whole path in one click. `delivered` only says one of this user's
+  // browsers took it — "Test sent" with nothing on screen could not tell a
+  // device hiding it from a test that went to another browser. The service
+  // worker reports each push it receives, so this one can say which it was.
   async function sendTest() {
     setBusy(true);
+    const received = new Set<string>();
+    const onPush = (e: MessageEvent) => {
+      if (e.data?.type === "envelock:alert" && e.data.alert_id) received.add(e.data.alert_id);
+    };
+    const sw = "serviceWorker" in navigator ? navigator.serviceWorker : null;
+    sw?.addEventListener("message", onPush);
     try {
       const r = await api.pushTest();
-      if (r.delivered)
-        toast.success(
-          "Test sent. Nothing on screen? Allow notifications for your browser in your " +
-            "computer's settings (macOS: System Settings → Notifications) and turn off Focus.",
+      if (!r.delivered) {
+        toast.error(`Your browser's push service refused it: ${r.detail}`);
+        return;
+      }
+      for (let i = 0; i < 40 && !received.has(r.test_id); i++)
+        await new Promise((done) => setTimeout(done, 250));
+      if (received.has(r.test_id)) {
+        toast.success(`This browser received the test. Nothing on screen? ${notificationHint()}`);
+      } else {
+        setState(await renewPush());
+        toast.error(
+          "The test went to another of your browsers, not this one. This browser is " +
+            "registered again — send another test.",
         );
-      else toast.error(`Your browser's push service refused it: ${r.detail}`);
+      }
     } catch (e) {
       toast.error(e instanceof ApiError ? e.message : "Couldn't send a test — try again.");
     } finally {
+      sw?.removeEventListener("message", onPush);
       setBusy(false);
     }
   }
@@ -3679,6 +3700,18 @@ export default function Dashboard() {
       id: "unconnected",
       text: `${unconnected.length} mailbox${unconnected.length === 1 ? " is" : "es are"} added but not connected.`,
       action: { label: "Connect", onClick: () => showTab("mailboxes") },
+    });
+  // An alert is never emailed into the mailbox it is about, so with no second
+  // address, alerts about your own mailbox reach you by browser push or not at all.
+  if (
+    me &&
+    !me.out_of_band_email &&
+    mailboxes.some((m) => m.address.toLowerCase() === me.email.toLowerCase())
+  )
+    issues.push({
+      id: "alert-email",
+      text: `Alerts about ${me.email} can't be emailed to you: an alert never goes into the mailbox it is about.`,
+      action: { label: "Add an alert email", onClick: () => navigate("/profile") },
     });
   if (me && !me.mfa_enabled)
     issues.push({

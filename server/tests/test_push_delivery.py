@@ -104,6 +104,9 @@ def test_a_test_push_is_delivered_encrypted_and_urgent(client, vapid) -> None:  
             http_ece.decrypt(body, private_key=browser, auth_secret=secret, version="aes128gcm")
         )
         assert payload["body"].startswith("Test notification")
+        # The page asked which browser it reached: the service worker reports
+        # this id back, so it must travel inside the push.
+        assert payload["data"]["alert_id"] == r.json()["test_id"]
     finally:
         service.httpd.shutdown()
 

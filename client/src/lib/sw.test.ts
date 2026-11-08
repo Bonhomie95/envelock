@@ -38,12 +38,20 @@ function loadWorker(caches: ReturnType<typeof fakeCaches>) {
   };
   const subscribe = vi.fn(async () => fresh);
   const fetch = vi.fn(async () => ({ ok: true }));
+  const posted: unknown[] = [];
+  const shown: string[] = [];
+  const matchAll = vi.fn(async () => [{ postMessage: (m: unknown) => posted.push(m) }]);
   const self = {
     addEventListener: (type: string, fn: Listener) => {
       listeners[type] = fn;
     },
-    registration: { pushManager: { subscribe } },
-    clients: { claim: async () => undefined, matchAll: async () => [] },
+    registration: {
+      pushManager: { subscribe },
+      showNotification: async (title: string) => {
+        shown.push(title);
+      },
+    },
+    clients: { claim: async () => undefined, matchAll },
     skipWaiting: () => undefined,
   };
   new Function("self", "caches", "fetch", "Response", "atob", swSource)(
@@ -53,7 +61,7 @@ function loadWorker(caches: ReturnType<typeof fakeCaches>) {
     Response,
     atob,
   );
-  return { listeners, subscribe, fetch };
+  return { listeners, subscribe, fetch, matchAll, posted, shown };
 }
 
 async function change(listener: Listener, event: Record<string, unknown>) {
@@ -106,5 +114,21 @@ describe("pushsubscriptionchange", () => {
     const body = JSON.parse((fetch.mock.calls[0] as unknown as [string, { body: string }])[1].body);
     expect(body.old_endpoint).toBe("https://push.example/firefox-old");
     expect(body.old_auth).toBe("firefox-old-auth");
+  });
+});
+
+describe("push", () => {
+  it("shows the alert and tells every open window which one arrived", async () => {
+    const { listeners, matchAll, posted, shown } = loadWorker(fakeCaches());
+    const payload = { title: "LOW: Envelock", body: "Test", data: { url: "/", alert_id: "t-1" } };
+
+    await change(listeners.push, { data: { json: () => payload } });
+
+    expect(shown).toEqual(["LOW: Envelock"]);
+    // The page's "Send test" waits for this id: it is how it knows the push
+    // reached this browser and not another one. Uncontrolled windows too, or a
+    // dashboard opened before the worker took over never hears it.
+    expect(matchAll).toHaveBeenCalledWith({ type: "window", includeUncontrolled: true });
+    expect(posted).toEqual([{ type: "envelock:alert", alert_id: "t-1" }]);
   });
 });

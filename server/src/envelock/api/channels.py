@@ -1023,7 +1023,10 @@ async def push_test(principal: ActiveUser, session: Session) -> dict:
     )
     result = await _push_to_all(session, dispatcher, note, principal.user_id)
     await session.commit()  # keep any dead subscription it pruned
-    return {"delivered": result.delivered, "detail": result.reason}
+    # `delivered` means one of the user's browsers took it, not which one. The
+    # service worker reports this id to the page that asked, so the page can say
+    # whether THIS browser received it.
+    return {"delivered": result.delivered, "detail": result.reason, "test_id": str(note.alert_id)}
 
 
 @router.get("/sensor/config")

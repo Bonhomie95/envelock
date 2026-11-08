@@ -1006,7 +1006,15 @@ export const api = {
       phone: string | null;
       phone_verified: boolean;
       recovery_codes_remaining: number;
+      out_of_band_email: string | null;
     }>("/api/v1/auth/me"),
+
+  // Where High/Critical alerts are emailed; null falls back to the login email.
+  setAlertEmail: (email: string | null, reauth: ReauthCreds) =>
+    request<{ out_of_band_email: string | null }>("/api/v1/auth/alert-email", {
+      method: "POST",
+      body: JSON.stringify({ email, ...reauth }),
+    }),
 
   // First-login password set for an owner-provisioned account (no MFA needed).
   setInitialPassword: (new_password: string) =>
@@ -1120,9 +1128,10 @@ export const api = {
     }),
 
   /** Push a test notification to this user's browsers now; `delivered` is what
-   *  the push service answered. */
+   *  the push service answered, and the service worker reports `test_id` back
+   *  if it reached this browser. */
   pushTest: () =>
-    request<{ delivered: boolean; detail: string }>("/api/v1/push/test", {
+    request<{ delivered: boolean; detail: string; test_id: string }>("/api/v1/push/test", {
       method: "POST",
     }),
 

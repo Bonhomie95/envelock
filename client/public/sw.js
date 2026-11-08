@@ -29,13 +29,19 @@ self.addEventListener("push", (event) => {
     requireInteraction: data.requireInteraction === true,
     data: { url: (data.data && data.data.url) || "/dashboard" },
   };
+  const alertId = (data.data && data.data.alert_id) || null;
   event.waitUntil(
     Promise.all([
       self.registration.showNotification(title, options),
-      // An open dashboard refreshes now, not on its next timed poll.
+      // An open dashboard refreshes now, not on its next timed poll, and a test
+      // learns that it reached THIS browser: the push service accepting it does
+      // not say which of the user's browsers it went to. Uncontrolled windows
+      // too, or a dashboard opened before this worker took over hears nothing.
       self.clients
-        .matchAll({ type: "window" })
-        .then((wins) => wins.forEach((w) => w.postMessage({ type: "envelock:alert" }))),
+        .matchAll({ type: "window", includeUncontrolled: true })
+        .then((wins) =>
+          wins.forEach((w) => w.postMessage({ type: "envelock:alert", alert_id: alertId })),
+        ),
     ]),
   );
 });

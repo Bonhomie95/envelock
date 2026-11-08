@@ -11,10 +11,11 @@ import {
   ShieldCheck,
   Trash2,
 } from "lucide-react";
-import { ApiError, api, auth, type TenantInfo } from "../lib/api";
+import { ApiError, api, auth, type ReauthCreds, type TenantInfo } from "../lib/api";
 import { checkPassphrase } from "../lib/passphrase";
 import { Button } from "../components/primitives";
 import MfaEnroll from "../components/MfaEnroll";
+import ReAuthDialog from "../components/ReAuthDialog";
 
 interface Me {
   email: string;
@@ -25,6 +26,77 @@ interface Me {
   phone: string | null;
   phone_verified: boolean;
   recovery_codes_remaining: number;
+  out_of_band_email: string | null;
+}
+
+/* Where High and Critical alerts are emailed. An alert is never emailed into
+   the mailbox it is about (if that mailbox is compromised, the attacker reads
+   it), so an owner whose login is a protected mailbox got no alert email at all,
+   and nothing here let them say where else to send it. */
+function AlertEmail({ me, onChanged }: { me: Me; onChanged: () => Promise<void> }) {
+  const [email, setEmail] = useState(me.out_of_band_email ?? "");
+  const [asking, setAsking] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(creds: ReauthCreds) {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.setAlertEmail(email.trim() || null, creds);
+      setAsking(false);
+      await onChanged();
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : "Could not save the alert email.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <form
+        className="flex w-full flex-wrap items-center gap-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          setAsking(true);
+        }}
+      >
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder={`an address outside ${me.email.split("@")[1]}`}
+          aria-label="Alert email"
+          className="field w-64 text-sm"
+        />
+        <Button
+          size="sm"
+          variant="line"
+          type="submit"
+          disabled={email.trim().toLowerCase() === (me.out_of_band_email ?? "")}
+        >
+          SAVE
+        </Button>
+        {!me.out_of_band_email && (
+          <p className="fg-3 w-full text-xs leading-relaxed">
+            Alerts about {me.email} are never emailed to it. Add a second address so they
+            reach you anyway.
+          </p>
+        )}
+      </form>
+      <ReAuthDialog
+        open={asking}
+        title="Change where alerts are emailed"
+        body="High and Critical alerts will be emailed to this address. Confirm it's you first."
+        confirmLabel="SAVE"
+        busy={busy}
+        error={error}
+        onConfirm={save}
+        onCancel={() => setAsking(false)}
+      />
+    </>
+  );
 }
 
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
@@ -578,6 +650,9 @@ export default function Profile() {
           {/* Account */}
           <section className="panel mt-8 px-6 py-2">
             <Row label="Email">{me.email}</Row>
+            <Row label="Alert email">
+              <AlertEmail me={me} onChanged={load} />
+            </Row>
             <Row label="Role">
               <span className="font-mono text-xs uppercase">{me.role}</span>
             </Row>

@@ -19,7 +19,7 @@ vi.mock("./api", () => ({
 }));
 
 import { api } from "./api";
-import { disablePush, getPushState } from "./push";
+import { disablePush, getPushState, notificationHint } from "./push";
 
 const KEY = "BHtNJC1InWkPCbHF8JuKGrdv9MRC1kkpi5SIfDP5AbrVk27d80j4OGqPIyRiUlx3z6N3q66rrxv2u1A-JaaWN4E";
 const OTHER_KEY = "BAAAAC1InWkPCbHF8JuKGrdv9MRC1kkpi5SIfDP5AbrVk27d80j4OGqPIyRiUlx3z6N3q66rrxv2u1A-JaaWN4E";
@@ -120,5 +120,29 @@ describe("getPushState", () => {
     vi.stubGlobal("Notification", { permission: "default" });
     expect(await getPushState()).toBe("off");
     expect(subscribe).not.toHaveBeenCalled();
+  });
+});
+
+describe("notificationHint", () => {
+  function device(userAgent: string, brands: string[]) {
+    Object.defineProperty(navigator, "userAgent", { configurable: true, value: userAgent });
+    Object.defineProperty(navigator, "userAgentData", {
+      configurable: true,
+      value: { brands: brands.map((brand) => ({ brand })) },
+    });
+  }
+
+  it("names the setting where the device hides this browser's notifications", () => {
+    device("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Chrome/142.0", [
+      "Chromium",
+      "Google Chrome",
+    ]);
+    expect(notificationHint()).toContain("System Settings → Notifications → Google Chrome");
+
+    device("Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/142.0 Edg/142.0", [
+      "Chromium",
+      "Microsoft Edge",
+    ]);
+    expect(notificationHint()).toContain("Settings → System → Notifications → Microsoft Edge");
   });
 });

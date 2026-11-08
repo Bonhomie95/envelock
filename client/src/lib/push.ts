@@ -202,6 +202,36 @@ export async function enablePush(): Promise<PushState> {
   return "on";
 }
 
+/** A fresh subscription for this browser, registered with the server: for a test
+ *  push the service accepted that never reached this browser. */
+export async function renewPush(): Promise<PushState> {
+  await disablePush();
+  return getPushState();
+}
+
+/** Where this device hides the browser's notifications, by name: the one cause
+ *  of "it arrived and nothing showed" that no code here can fix. */
+export function notificationHint(): string {
+  const ua = navigator.userAgent || "";
+  const brands =
+    (navigator as Navigator & { userAgentData?: { brands?: { brand: string }[] } })
+      .userAgentData?.brands?.map((b) => b.brand) ?? [];
+  const browser =
+    ["Google Chrome", "Microsoft Edge", "Brave", "Opera", "Chromium"].find((b) =>
+      brands.includes(b),
+    ) ??
+    (/Firefox\//.test(ua)
+      ? "Firefox"
+      : /Safari\//.test(ua) && !/Chrome\//.test(ua)
+        ? "Safari"
+        : "your browser");
+  if (/Mac OS X|Macintosh/.test(ua))
+    return `macOS is hiding it: System Settings → Notifications → ${browser} → Allow notifications, and turn off Focus.`;
+  if (/Windows/.test(ua))
+    return `Windows is hiding it: Settings → System → Notifications → ${browser} → On, and turn off Do not disturb.`;
+  return `This device is hiding it: allow notifications for ${browser} in its settings.`;
+}
+
 /** Unsubscribe this browser and tell the server to stop sending to it.
  *  `optOut` is the user's own "Turn off": remembered, so it is not undone on
  *  the next visit. Sign-out passes nothing — alerts resume at the next sign-in. */
