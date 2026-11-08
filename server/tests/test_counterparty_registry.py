@@ -425,3 +425,104 @@ def test_an_account_can_be_added_again_and_a_retired_one_restored(client: TestCl
     rows = client.get(url, headers=h).json()
     rows = rows.get("records") or rows.get("bank_records") or rows
     assert len(rows) == 1 and rows[0].get("is_active", rows[0].get("active", True)) is True
+
+
+# ── Who counts as a supplier ─────────────────────────────────────────────────
+# Every sender becomes a counterparty the moment it emails. A local end-to-end
+# run (2026-11-08) put the attacker's look-alike, a phishing sender and a
+# newsletter on the Suppliers page as suppliers "needing attention", counted in
+# the coverage ratio, one click from a "verified" number for the attacker.
+_TO = "finance@northwind.example"
+_JANE = '"Jane Okafor" <jane@acme-supplies.example>'
+
+
+def _mail(sender: str, subject: str, body: str) -> str:
+    return f"From: {sender}\nTo: {_TO}\nSubject: {subject}\nContent-Type: text/plain\n\n{body}\n"
+
+
+_INVOICE = _mail(
+    _JANE,
+    "Invoice INV-1001 for October",
+    "Please find invoice INV-1001 for GBP 4,250.00. Payment to our usual account: "
+    "IBAN GB29 NWBK 6016 1331 9268 19.",
+)
+_LOOKALIKE = _mail(
+    '"Jane Okafor" <jane@acme-suppiies.example>',
+    "Overdue: INV-1001",
+    "INV-1001 is now overdue. Please wire GBP 4,250.00 today to IBAN DE89 3704 0044 0532 0130 00.",
+)
+_NEWSLETTER = _mail(
+    '"Notion" <team@makenotion.example>',
+    "What's new in Notion this month",
+    "Here's a roundup of this month's product updates. Read more at https://www.notion.so/releases",
+)
+
+
+def _mailroom(client: TestClient) -> dict[str, str]:
+    """An owner with a mailbox that mail can be ingested into."""
+    h = _admin(client, "owner@northwind.example")
+    client.post(
+        "/api/v1/tenants/bootstrap",
+        json={"name": "Northwind", "domain": "northwind.example"},
+        headers=h,
+    )
+    client.post(
+        "/api/v1/mailboxes", json={"address": _TO, "mailbox_class": "protected"}, headers=h
+    )
+    return h
+
+
+def _ingest(client: TestClient, h: dict, raw: str) -> dict:
+    r = client.post(
+        "/api/v1/ingest", json={"raw_message": raw, "mailbox_address": _TO}, headers=h
+    )
+    assert r.status_code == 202, r.text
+    return r.json()
+
+
+def test_only_senders_you_pay_are_listed_as_suppliers(client: TestClient) -> None:
+    h = _mailroom(client)
+    _ingest(client, h, _INVOICE)
+    assert "A3" in [f["service"] for f in _ingest(client, h, _LOOKALIKE)["findings"]]
+    _ingest(client, h, _NEWSLETTER)
+    # The real supplier's next invoice is not "a near-copy of" the attacker: an
+    # impostor never becomes a correspondent the look-alike check protects.
+    after = _ingest(client, h, _INVOICE.replace("INV-1001", "INV-1002"))
+    assert "A3" not in [f["service"] for f in after["findings"]], after
+
+    listed = client.get("/api/v1/counterparties", headers=h).json()
+    # The supplier stays; the newsletter is nobody you pay; the look-alike is
+    # shown apart, named for what it imitates, and never counted as a supplier.
+    assert [c["domain"] for c in listed["counterparties"]] == ["acme-supplies.example"]
+    assert listed["flagged"] == [
+        {
+            "domain": "acme-suppiies.example",
+            "display_name": "Jane Okafor",
+            "reason": "Look-alike of acme-supplies.example",
+        }
+    ]
+
+
+def test_dismissing_a_false_alarm_puts_the_sender_back(client: TestClient) -> None:
+    """A wrongly flagged real supplier must have a way back: dismissing the alert."""
+    h = _mailroom(client)
+    _ingest(client, h, _INVOICE)
+    alert_id = _ingest(client, h, _LOOKALIKE)["alert_id"]
+    r = client.post(f"/api/v1/alerts/{alert_id}/resolve?dismiss=true", headers=h)
+    assert r.status_code == 200, r.text
+
+    listed = client.get("/api/v1/counterparties", headers=h).json()
+    assert listed["flagged"] == []
+    assert "acme-suppiies.example" in [c["domain"] for c in listed["counterparties"]]
+
+
+def test_a_supplier_you_added_stays_listed_whatever_it_emails(client: TestClient) -> None:
+    """Named by the customer, it stays, even if its mail never mentions a payment."""
+    h = _mailroom(client)
+    _ingest(client, h, _NEWSLETTER)
+    assert client.get("/api/v1/counterparties", headers=h).json()["counterparties"] == []
+
+    client.post("/api/v1/counterparties", json={"domain": "makenotion.example"}, headers=h)
+    _ingest(client, h, _NEWSLETTER.replace("this month", "this week"))
+    listed = client.get("/api/v1/counterparties", headers=h).json()["counterparties"]
+    assert [c["domain"] for c in listed] == ["makenotion.example"]

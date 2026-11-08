@@ -126,6 +126,46 @@ describe("coverage", () => {
   });
 });
 
+describe("flagged senders", () => {
+  it("keeps impostors apart: out of the list, out of the ratio, nothing to record", async () => {
+    // A local end-to-end run listed the attacker's look-alike as a supplier
+    // "needing attention", counted it in the ratio, and offered to record a
+    // verified number for it.
+    vi.spyOn(api, "counterparties").mockResolvedValue({
+      counterparties: [
+        supplier(),
+        supplier({
+          domain: "globex.example",
+          display_name: "Globex",
+          verified_phone: null,
+          needs: ["callback_number"],
+        }),
+      ],
+      flagged: [
+        {
+          domain: "acme-suppiies.example",
+          display_name: "Jane Okafor",
+          reason: "Look-alike of acme.example",
+        },
+      ],
+    });
+    render(<Suppliers />);
+
+    // Two suppliers, not three: the impostor is in neither half of the ratio.
+    expect(await screen.findByText("1/2")).toBeVisible();
+    expect(screen.getByText("2 suppliers")).toBeVisible();
+    expect(screen.getByText("1/2 have a number to ring")).toBeVisible();
+
+    const section = screen.getByRole("region", { name: /Flagged senders/ });
+    expect(within(section).getByText("acme-suppiies.example")).toBeVisible();
+    expect(within(section).getByText(/Look-alike of acme\.example/)).toBeVisible();
+    // Not a supplier row: nothing to expand, so no form to put a number in.
+    expect(
+      screen.queryByRole("button", { name: /acme-suppiies/ }),
+    ).not.toBeInTheDocument();
+  });
+});
+
 describe("supplier detail", () => {
   it("shows the account in full so it can be compared against an invoice", async () => {
     // Masking would make the one comparison this screen exists for impossible.

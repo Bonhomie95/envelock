@@ -393,6 +393,13 @@ async def build_context(
                 if verdict.verdict is Verdict.MALICIOUS:
                     malicious_domains.add(reg)
 
+    # A sender an alert already called an impostor is not a correspondent to
+    # protect. Left in, the look-alike `acme-suppiies.com` became "a company you
+    # exchange email with", and the REAL supplier's next invoice raised A3
+    # CRITICAL as a near-copy of the attacker: the alert pointed at the victim.
+    from envelock.services.suppliers import impostors
+
+    impostor_keys = await impostors(session, tenant_id=tenant_id)
     known = {
         row
         for (row,) in (
@@ -404,7 +411,7 @@ async def build_context(
         ).all()
         # Free-mail counterparties are keyed by full address; they are not domains
         # and must not enter the A3/A5 lookalike comparison set.
-        if row and "@" not in row
+        if row and "@" not in row and row not in impostor_keys
     }
 
     # The tenant's own people's names — so we can catch a sender using a

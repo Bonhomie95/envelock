@@ -494,6 +494,13 @@ class Counterparty(Base, UUIDMixin, TimestampMixin):
     known_dkim_domains: Mapped[list[str]] = mapped_column(StringList, default=list)
     known_mail_clients: Mapped[list[str]] = mapped_column(StringList, default=list)
     is_trusted: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: The customer named this a supplier: added it by hand, imported it from the
+    #: vendor master or their accounting system, or recorded a number or an
+    #: account for it. Keeps it on the Suppliers page when its mail never mentions
+    #: a payment; a sender that only emails has to show a payment trail instead.
+    added_by_customer: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=false()
+    )
 
     __table_args__ = (UniqueConstraint("tenant_id", "registrable_domain"),)
 

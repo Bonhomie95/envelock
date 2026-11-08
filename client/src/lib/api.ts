@@ -266,6 +266,16 @@ export interface Counterparty {
   needs: ("bank_details" | "callback_number")[];
 }
 
+/** A sender an alert called an impostor (a look-alike, a borrowed name, a
+ *  network-confirmed fraud). Kept off the supplier list, so nobody records a
+ *  "verified" number or account for it. */
+export interface FlaggedSender {
+  domain: string;
+  display_name: string | null;
+  /** "Look-alike of acme.com", "Uses the name of acme.com", … */
+  reason: string;
+}
+
 export interface BankRecord {
   id: string;
   scheme: "iban" | "swift" | "ach" | "sortcode" | "account" | "crypto";
@@ -1135,9 +1145,11 @@ export const api = {
       method: "POST",
     }),
 
-  // E10 — per-counterparty risk profiles.
+  // E10 — per-counterparty risk profiles. Suppliers only; impostors come apart.
   counterparties: () =>
-    request<{ counterparties: Counterparty[] }>("/api/v1/counterparties"),
+    request<{ counterparties: Counterparty[]; flagged?: FlaggedSender[] }>(
+      "/api/v1/counterparties",
+    ),
 
   /** ── The supplier registry ──────────────────────────────────────────────
    *  The whole product thesis: hold the account a supplier is really paid into
