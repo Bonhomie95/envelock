@@ -254,7 +254,54 @@ _add(
     )
 )
 
+_add(
+    Case(
+        id="brand-credential-phish",
+        label="fraud",
+        messages=[
+            msg(
+                "<p>Your password for pay@acme.com expires in 2 hours.</p>"
+                '<p><a href="https://microsoft365-verify-login.com/owa/auth?u=pay">'
+                "Keep my current password</a></p>",
+                sender="no-reply@microsoft365-verify-login.com",
+                display='"Microsoft 365 Security"',
+                subject="Action required: your mailbox password expires today",
+                content_type="text/html; charset=utf-8",
+            )
+        ],
+        why=(
+            "A Microsoft display name from a domain that only wears the name, a "
+            "password lure, and a link to that same domain. Rated MEDIUM in the "
+            "2026-11-08 end-to-end run, on a bare-IP link the attacker can drop."
+        ),
+        tags=("A5", "B1", "phishing"),
+    )
+)
+
 # ── Benign: the half that decides whether anyone keeps the product ───────────
+_add(
+    Case(
+        id="partner-newsletter-names-microsoft",
+        label="benign",
+        messages=[
+            msg(
+                "Sign in to the Microsoft 365 admin center and turn on MFA: "
+                "https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2F"
+                "admin.microsoft.com%2F&data=05",
+                sender="news@contoso-it.example",
+                display='"Contoso IT | Microsoft 365 News"',
+                subject="Turn on MFA this month",
+            )
+        ],
+        why=(
+            "An IT partner names Microsoft, asks readers to sign in, and links to "
+            "the real admin center through a Safe Links rewrite on outlook.com. "
+            "No link is dressed as Microsoft, so this is not a credential phish."
+        ),
+        tags=("precision", "A5", "B1"),
+    )
+)
+
 _add(
     Case(
         id="routine-invoice-known-vendor",

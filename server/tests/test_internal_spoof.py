@@ -76,6 +76,7 @@ def _findings(
     malicious: frozenset[str] = frozenset(),
     fraud: dict[str, dict] | None = None,
     attachments: tuple[AttachmentRef, ...] = (),
+    owned: frozenset[str] = OWNED,
 ) -> list[FindingResult]:
     event = parse_message(raw, tenant_id=uuid4(), mailbox_id=uuid4(), source=source)
     assert event.direction is MailDirection.INBOUND
@@ -86,7 +87,7 @@ def _findings(
             event=event,
             tenant_id="t",
             capabilities=capabilities_for(frozenset({source})),
-            owned_domains=OWNED,
+            owned_domains=owned,
             malicious_domains=malicious,
             fraud_accounts=fraud or {},
         )
@@ -195,6 +196,23 @@ def test_the_same_links_from_a_colleague_the_provider_vouches_for_stay_quiet(
     for domain in (_LISTED, _DRESSED):
         raw = _it_desk(f"https://{domain}/owa/login", stamp=stamp)
         assert _findings(raw, source, malicious=frozenset({_LISTED})) == []
+
+
+def test_a_forged_it_desk_link_to_a_copy_of_our_domain_raises_b1() -> None:
+    """The sender-copy check (brand-phishing branch) judges forged colleagues too."""
+    raw = _it_desk("https://acme-sso-login.com/owa")
+    assessment = assess(_findings(raw, SourceMechanism.IMAP_IDLE))
+    assert assessment is not None and assessment.services == ("B1",)
+    assert "acme-sso-login.com" in assessment.title
+
+
+def test_links_to_our_other_domains_are_never_a_copy_or_a_lure() -> None:
+    """A sister domain resembles the sender's, and a Microsoft partner may wear the
+    brand in a domain of its own. Neither is a lure when the tenant owns it."""
+    owned = frozenset({"acme.com", "acme-group.com", "acme-office365.com"})
+    for link in ("https://acme-group.com/intranet", "https://acme-office365.com/portal"):
+        raw = _it_desk(link)
+        assert _findings(raw, SourceMechanism.IMAP_IDLE, owned=owned) == [], link
 
 
 def test_a_forged_qr_code_raises_b3_but_a_colleagues_screenshot_does_not() -> None:

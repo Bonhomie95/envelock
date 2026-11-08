@@ -12,9 +12,16 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from envelock.core.capabilities import Capability
-from envelock.core.enums import AlertTier, MailDirection
+from envelock.core.enums import AlertTier, AuthResult, MailDirection
+from envelock.core.events import MailEvent
 from envelock.detections.base import DetectionContext, FindingResult, register, unproven_internal
-from envelock.util.domains import display_skeleton, is_free_mail, label, registrable_domain
+from envelock.util.domains import (
+    classify_lookalike,
+    display_skeleton,
+    is_free_mail,
+    label,
+    registrable_domain,
+)
 from envelock.util.payments import extract_bank_identifiers, has_payment_context
 
 _INBOUND = frozenset({Capability.READ_INBOUND})
@@ -211,7 +218,42 @@ class _A5DisplayNameSpoof:
                         },
                     )
                 ]
-        return []
+
+        # A well-known brand on the From line ("Microsoft 365 Security") from a
+        # domain that is not the brand's. Alone that is routine: partners and
+        # resellers put Microsoft in their names. With a request to sign in or
+        # pay, and a link that is dangerous or dressed up as a brand, it is the
+        # credential phish, so it takes all three.
+        claim = _BRAND_BAIT.search(display) or _BRAND_BAIT.search(mail.sender.display)
+        # Anyone can write from outlook.com, so free mail is never the brand itself.
+        if claim is None or (_is_brand_domain(sender) and not is_free_mail(sender)):
+            return []
+        # score_url's reasons include the destination behind a Safe Links wrapper.
+        bad_link = any(
+            _is_hard_reason(r) or _DRESSED in r
+            for u in _followable(mail)
+            for r in score_url(u, sender=sender, ctx=ctx)
+        )
+        if not bad_link or not _asks_to_sign_in_or_pay(ctx, mail.urls):
+            return []
+        return [
+            FindingResult(
+                service="A5",
+                tier=AlertTier.HIGH,
+                score=80,
+                summary=(
+                    f'The sender name says "{mail.sender.display}", but this came from '
+                    f"{sender}, which isn't theirs, and its link isn't theirs either. "
+                    f"Don't sign in or pay through this email."
+                ),
+                evidence={
+                    "display_name": mail.sender.display,
+                    "claims": claim.group(0),
+                    "actual_domain": sender,
+                    "free_mail": is_free_mail(sender),
+                },
+            )
+        ]
 
 
 @dataclass(frozen=True)
@@ -437,13 +479,75 @@ _LOGIN_INTENT = re.compile(
     re.I,
 )
 
+#: The same brands as they are spelled inside a registered domain name, where a
+#: digit or a hyphen ends the word: microsoft365-verify-login.com wears the name,
+#: while microsoftonline.com (Microsoft's own sign-in domain) does not match.
+_BRAND_IN_NAME = re.compile(
+    r"(?<![a-z])(microsoft(?:365)?|office365|outlook|onedrive|sharepoint|docusign|"
+    r"dropbox|paypal|netflix|appleid|amazon|linkedin|whatsapp)(?![a-z])"
+)
+
+
+def _is_brand_domain(domain: str) -> bool:
+    """The brand's own name is the whole domain name: microsoft.com, paypal.co.uk,
+    and outlook.com, which every Safe Links rewrite in a Microsoft 365 mailbox uses."""
+    # ponytail: any TLD counts (paypal.<new TLD> passes); a per-brand domain list if that is abused.
+    return bool(_BRAND_IN_NAME.fullmatch(label(domain)))
+
 
 def _dressed_as_brand(host: str) -> bool:
-    """A domain that wears a brand's name without being the brand's own:
-    microsoft-mailbox-verify.com, not microsoft.com or sharepoint.com."""
-    name = label(host)
-    hit = _BRAND_BAIT.search(name)
-    return hit is not None and hit.group(0).lower() != name
+    """A domain that wears a brand's name without being the brand's own."""
+    return bool(_BRAND_IN_NAME.search(label(host))) and not _is_brand_domain(host)
+
+
+def _asks_to_sign_in_or_pay(ctx: DetectionContext, urls: tuple[str, ...]) -> bool:
+    """Payment or sign-in language in the prose, not the links: a URL like
+    login.microsoftonline.com contains "login" and would otherwise make every
+    brandish link self-justify as a sign-in request."""
+    prose = _body(ctx)
+    for u in urls:
+        prose = prose.replace(u, " ")
+    return has_payment_context(prose) or bool(_LOGIN_INTENT.search(prose))
+
+
+def _copies_sender(reg: str, sender: str, *, stamped: bool) -> bool:
+    """`reg` wears the sender's own name: gemini-statement-portal.com for gemini.com.
+
+    With no host stamp at all nothing is known, and a brand's real mail looks
+    unverified too, so there only a hyphenated copy counts: not the brand's own
+    run-together family (raw.githubusercontent.com, microsoft365.com)."""
+    if not sender or is_free_mail(sender):
+        return False  # gmail.com is the provider's name, not the sender's
+    hit = classify_lookalike(reg, sender)
+    if hit is None or hit[0] not in ("cousin", "homoglyph"):
+        return False
+    return stamped or hit[0] == "homoglyph" or bool(
+        re.search(rf"(?:^|-){re.escape(label(sender))}(?:-|$)", label(reg))
+    )
+
+
+def _followable(mail: MailEvent) -> set[str]:
+    """Links a reader can follow: hrefs, URLs in the text part or attachments, QR
+    targets. Not an <img src>, which is how a brand's own CDN domain
+    (avatars.githubusercontent.com on github.com mail) reaches `mail.urls`."""
+    from envelock.channels.mail.parser import href_urls
+
+    texts = " ".join(filter(None, [mail.body_text, *(a.extracted_text for a in mail.attachments)]))
+    return {
+        *href_urls(mail.body_html),
+        *(u for a in mail.attachments for u in a.qr_urls),
+        *(u for u in mail.urls if u in texts),
+    }
+
+
+def _sender_verified(mail: MailEvent) -> bool:
+    """The receiving host verified the From domain itself: a DMARC pass, or a
+    passing DKIM signature aligned with it."""
+    auth = mail.authentication
+    return auth.dmarc is AuthResult.PASS or (
+        auth.dkim is AuthResult.PASS
+        and registrable_domain(auth.dkim_domain or "") == registrable_domain(mail.sender.domain)
+    )
 
 
 #: Query parameters a redirector hides its real destination in. Covers Gmail's
@@ -480,26 +584,48 @@ def unwrap_redirect(url: str, *, _depth: int = 0) -> str | None:
     return None
 
 
-def score_url(url: str, *, sender: str, ctx: DetectionContext) -> list[str]:
+def score_url(
+    url: str, *, sender: str, ctx: DetectionContext, followable: bool = True
+) -> list[str]:
     """Reasons a single URL looks like phishing. Shared by B1 and B3 (quishing) so
     a link is judged identically whether it arrived in the body or inside a QR
     code. `ctx.malicious_domains` carries the merged free-feed + cross-tenant
-    reputation set."""
+    reputation set. `followable` is False for an image or other resource the
+    reader never clicks."""
     host = _host_of(url)
     reg = registrable_domain(host)
     # Colleagues share short links and link to the brands the company runs on
     # (SharePoint, Teams, DocuSign). On unproven own-domain mail, of the soft
     # reasons only a domain dressed up as a brand counts.
     internal = unproven_internal(ctx.mail, ctx.owned_domains)
+    # The tenant's own domains are never the threat. Other tenants confirming
+    # forgeries of them must not turn the links in every colleague's signature
+    # into threat-feed hits, and neither a brand in their name nor a sister domain
+    # that resembles the sender's (acme-group.com on acme.com mail) is a lure.
+    own = reg in ctx.owned_domains
     reasons: list[str] = []
     if reg in _SHORTENERS and not internal:
         reasons.append("link shortener hides the destination")
-    # Other tenants confirming forgeries of this tenant's domain must not turn
-    # its own links, in every colleague's signature, into threat-feed hits.
-    if reg in ctx.malicious_domains and reg not in ctx.owned_domains:
+    if reg in ctx.malicious_domains and not own:
         reasons.append("on a threat feed")
-    if _BRAND_BAIT.search(url) and reg != sender and (not internal or _dressed_as_brand(reg)):
+    # A domain wearing a brand's name counts even when it is the sender's own:
+    # that is the phisher writing from microsoft365-verify-login.com and linking to it.
+    if _dressed_as_brand(host) and not own:
+        reasons.append(f"{reg} {_DRESSED}")
+    elif _BRAND_BAIT.search(url) and reg != sender and not internal:
         reasons.append("brand name in a URL not owned by that brand")
+    # Real brands link to their own family of domains (microsoft.com mail to
+    # microsoft365.com), so this counts only where the host could not verify the sender.
+    # ponytail: a vendor's compromised real mailbox passes DMARC, so its look-alike link passes too.
+    mail = ctx.mail
+    if (
+        followable
+        and not own
+        and mail is not None
+        and not _sender_verified(mail)
+        and _copies_sender(reg, sender, stamped=mail.authentication.stamped)
+    ):
+        reasons.append(f"goes to {reg}, made to look like {_SENDER_COPY}, {sender}")
     if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host):
         reasons.append("bare IP address instead of a hostname")
     if "@" in url.split("//", 1)[-1].split("/", 1)[0]:
@@ -510,7 +636,7 @@ def score_url(url: str, *, sender: str, ctx: DetectionContext) -> list[str]:
     # behind google.com/url, SafeLinks or any ?url= redirect scored clean.
     inner = unwrap_redirect(url)
     if inner is not None:
-        inner_reasons = score_url(inner, sender=sender, ctx=ctx)
+        inner_reasons = score_url(inner, sender=sender, ctx=ctx, followable=followable)
         if inner_reasons:
             dest = _host_of(inner)
             reasons.append(f"redirects to {dest}")
@@ -536,10 +662,11 @@ class _B1PhishingUrls:
         if not all_urls:
             return []
 
+        links = _followable(mail)
         sender = registrable_domain(mail.sender.domain)
         suspicious: list[dict] = []
         for url in all_urls:
-            reasons = score_url(url, sender=sender, ctx=ctx)
+            reasons = score_url(url, sender=sender, ctx=ctx, followable=url in links)
             if reasons:
                 if url in qr_urls:
                     reasons.append("decoded from a QR code")
@@ -549,7 +676,8 @@ class _B1PhishingUrls:
             return []
 
         # A "hard" reason means the link itself is dangerous — a threat-feed hit, a
-        # bare IP, embedded credentials, or a redirector pointing at any of those.
+        # bare IP, embedded credentials, a copy of the unverified sender's own
+        # domain, or a redirector pointing at any of those.
         # A "soft" reason (a brand name in the URL, a link shortener) is routine on
         # legitimate marketing and welcome mail: a newsletter with a dozen
         # "microsoft.com" links would otherwise alert MEDIUM every send, which is
@@ -558,26 +686,22 @@ class _B1PhishingUrls:
         # the context in which a brandish link actually matters.
         hard = any(_is_hard_reason(r) for s in suspicious for r in s["reasons"])
         feed_hit = any("threat feed" in r for s in suspicious for r in s["reasons"])
-        if not hard:
-            # Judge intent on the prose, not the links: a URL like
-            # login.microsoftonline.com contains "login" and would otherwise make
-            # every brandish link self-justify as a sign-in request.
-            prose = _body(ctx)
-            for u in all_urls:
-                prose = prose.replace(u, " ")
-            context = has_payment_context(prose) or bool(_LOGIN_INTENT.search(prose))
-            if not context:
-                return []
+        if not hard and not _asks_to_sign_in_or_pay(ctx, all_urls):
+            return []
+        # Named from the reason, which names the destination behind any redirector.
+        copy = next((r for s in suspicious for r in s["reasons"] if _SENDER_COPY in r), None)
+        if copy is not None:
+            summary = f"A link in this message {copy}. Don't open it."
+        elif len(suspicious) == 1:
+            summary = "1 suspicious link in this message."
+        else:
+            summary = f"{len(suspicious)} suspicious links in this message."
         return [
             FindingResult(
                 service="B1",
                 tier=AlertTier.HIGH if feed_hit else AlertTier.MEDIUM,
                 score=80 if feed_hit else 45,
-                summary=(
-                    "1 suspicious link in this message."
-                    if len(suspicious) == 1
-                    else f"{len(suspicious)} suspicious links in this message."
-                ),
+                summary=summary,
                 evidence={"urls": suspicious[:10]},
             )
         ]
@@ -587,7 +711,10 @@ class _B1PhishingUrls:
 #: surrounding message. Everything else score_url can say ("brand name in a URL",
 #: "link shortener") is routine on legitimate mail and only matters in a payment
 #: or sign-in context — see _B1PhishingUrls.
-_HARD_REASON_MARKERS = ("threat feed", "bare IP address", "credentials embedded")
+_SENDER_COPY = "the sender's own domain"
+#: A soft reason: the brand-dressed domain needs sign-in or payment wording to alert.
+_DRESSED = "borrows a brand's name"
+_HARD_REASON_MARKERS = ("threat feed", "bare IP address", "credentials embedded", _SENDER_COPY)
 
 
 def _is_hard_reason(reason: str) -> bool:
