@@ -103,8 +103,11 @@ dev = [
     # runners see little gain and the contention made a timing test flaky; CI
     # parallelises across jobs instead (see .github/workflows/server.yml).
     "pytest-xdist>=3.6",
-    "ruff>=0.8",
-    "mypy>=1.13",
+    # Pinned, because CI fails on what they report and each release changes
+    # that: ruff 0.17.4 failed CI on imap_fetch.py, untouched since 0.17.3
+    # passed it. Bump them on purpose, fixing what the new version finds.
+    "ruff==0.17.3",
+    "mypy==2.4.1",
 ]
 
 [build-system]
