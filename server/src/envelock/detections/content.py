@@ -595,9 +595,14 @@ def score_url(
         reasons.append("on a threat feed")
     # A domain wearing a brand's name counts even when it is the sender's own:
     # that is the phisher writing from microsoft365-verify-login.com and linking to it.
-    if _dressed_as_brand(host):
+    # Links only: Amazon's own mail shows its pictures from m.media-amazon.com.
+    if followable and _dressed_as_brand(host):
         reasons.append(f"{reg} {_DRESSED}")
-    elif _BRAND_BAIT.search(url) and reg != sender:
+    # A link onto the brand's own domain is not "not owned by that brand": Safe Links
+    # puts every link on outlook.com, and the link inside is judged on its own below.
+    # ponytail: any brand's domain counts, so a page about one brand shared on another's
+    # platform (dropbox.com/s/…/paypal.pdf) passes; a per-brand owner map if that is abused.
+    elif followable and _BRAND_BAIT.search(url) and reg != sender and not _is_brand_domain(reg):
         reasons.append("brand name in a URL not owned by that brand")
     # Real brands link to their own family of domains (microsoft.com mail to
     # microsoft365.com), so this counts only where the host could not verify the sender.
@@ -663,8 +668,8 @@ class _B1PhishingUrls:
         # bare IP, embedded credentials, a copy of the unverified sender's own
         # domain, or a redirector pointing at any of those.
         # A "soft" reason (a brand name in the URL, a link shortener) is routine on
-        # legitimate marketing and welcome mail: a newsletter with a dozen
-        # "microsoft.com" links would otherwise alert MEDIUM every send, which is
+        # legitimate marketing and welcome mail: a newsletter with a dozen links
+        # naming Microsoft would otherwise alert MEDIUM every send, which is
         # exactly the noise P5 says trains people to ignore us. So soft-only
         # findings alert ONLY alongside payment or sign-in language in the body —
         # the context in which a brandish link actually matters.

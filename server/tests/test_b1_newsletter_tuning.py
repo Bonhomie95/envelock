@@ -1,6 +1,6 @@
 """B1 link-phishing noise control (pure).
 
-A legitimate newsletter linking to big-brand domains trips only "soft" reasons
+A legitimate newsletter naming big brands in its links trips only "soft" reasons
 (a brand name in a URL, a shortener). Alerting MEDIUM on those every send is the
 false-positive treadmill P5 forbids, so soft-only findings must stay quiet
 UNLESS the message is actually about payment or sign-in. A "hard" reason (bare
@@ -46,6 +46,7 @@ Content-Type: text/plain
 Here is what's new this month. Read more at
 https://www.microsoft.com/en/whats-new and sign up at
 https://login.microsoftonline.com/signup — thanks for reading!
+Our Ignite recap: https://events.example.org/microsoft-ignite
 """
 
 NEWSLETTER_BUT_PAYMENT = """\
@@ -55,7 +56,7 @@ Subject: Your invoice is ready
 Message-ID: <n2@news.example.com>
 Content-Type: text/plain
 
-Please pay the attached invoice via https://www.microsoft.com/pay today.
+Please pay the attached invoice via https://pay.example/microsoft/invoice today.
 """
 
 BARE_IP = """\

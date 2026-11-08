@@ -10,14 +10,17 @@ Two messages from that run, forwarded in exactly as sent:
   spoofed sender.
 
 The controls are the mail these checks must leave alone: a brand's real mail
-linking to its own family of domains, images on a brand's CDN, and a partner
-newsletter that names Microsoft and links to the real microsoft.com.
+linking to its own family of domains, images on a brand's CDN, a partner
+newsletter that names Microsoft and links to the real microsoft.com, and a
+known vendor's invoice or an Amazon order in a Microsoft 365 mailbox, where
+Safe Links has moved every link onto outlook.com.
 """
 
 from __future__ import annotations
 
 import re
 from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from urllib.parse import quote
 from uuid import uuid4
 
@@ -26,7 +29,7 @@ import pytest
 from envelock.channels.mail.parser import parse_message
 from envelock.core.capabilities import capabilities_for
 from envelock.core.enums import AlertTier, SourceMechanism
-from envelock.detections.base import DetectionContext, run_all
+from envelock.detections.base import CounterpartyState, DetectionContext, run_all
 from envelock.risk.engine import RiskAssessment, assess
 
 OWNED = frozenset({"northwind-e2e.com"})
@@ -70,7 +73,9 @@ _GMAIL = (
 
 
 def _assess(
-    raw: bytes, source: SourceMechanism = SourceMechanism.FORWARD_INGEST
+    raw: bytes,
+    source: SourceMechanism = SourceMechanism.FORWARD_INGEST,
+    counterparty: CounterpartyState | None = None,
 ) -> RiskAssessment | None:
     # No owned_domains: every sender here is outside, and claude/sad-easley-46e85c
     # drops that parameter (direction comes from the channel there).
@@ -83,6 +88,7 @@ def _assess(
         capabilities=capabilities_for(frozenset({source})),
         owned_domains=OWNED,
         known_counterparties=frozenset({"acme-supplies.com"}),
+        counterparty=counterparty,
     )
     return assess(run_all(ctx))
 
@@ -269,3 +275,92 @@ Content-Type: text/plain; charset=utf-8
 Here's a roundup of this month's product updates. Read more at https://www.notion.so/releases
 """
     assert _assess(raw) is None
+
+
+#: How Exchange Online stamps mail it verified, above everything the sender wrote.
+_EXCHANGE = (
+    "Authentication-Results: spf=pass (sender IP is 203.0.113.5) smtp.mailfrom={d}; "
+    "dkim=pass (signature was verified) header.d={d};dmarc=pass action=none "
+    "header.from={d};compauth=pass reason=100\n"
+)
+
+
+def _known_vendor(domain: str) -> CounterpartyState:
+    """A year of history: 30 messages, the last a week ago."""
+    now = datetime.now(UTC)
+    return CounterpartyState(
+        registrable_domain=domain,
+        first_seen_at=now - timedelta(days=365),
+        last_seen_at=now - timedelta(days=7),
+        message_count=30,
+        known_dkim_domains=frozenset({domain}),
+    )
+
+
+def _vendor_invoice(link: str, prose: str, subject: str = "Invoice 4471") -> bytes:
+    return (
+        _EXCHANGE.format(d="acme-supplies.com")
+        + 'From: "Acme Supplies Billing" <billing@acme-supplies.com>\n'
+        + f"To: finance@northwind-e2e.com\nSubject: {subject}\n"
+        "Message-ID: <inv-4471@acme-supplies.com>\nContent-Type: text/html; charset=utf-8\n\n"
+        f'<p>{prose}</p><p><a href="{link}">View invoice 4471</a></p>\n'
+    ).encode()
+
+
+def _on_microsoft_365(raw: bytes, vendor: str) -> RiskAssessment | None:
+    return _assess(raw, SourceMechanism.GRAPH_API, _known_vendor(vendor))
+
+
+@_DELIVERED
+def test_a_known_vendors_invoice_on_microsoft_365_is_quiet(
+    delivered: Callable[[bytes], bytes],
+) -> None:
+    """Safe Links moves the vendor's portal link onto outlook.com. That is
+    Microsoft's own domain, not one "not owned by" Outlook, and the portal link
+    inside it is the vendor's own."""
+    raw = _vendor_invoice(
+        "https://portal.acme-supplies.com/invoices/4471",
+        "Invoice 4471 is attached; payment due in 30 days.",
+    )
+    assessment = _on_microsoft_365(delivered(raw), "acme-supplies.com")
+    assert assessment is None or "B1" not in assessment.services, assessment
+
+
+@_DELIVERED
+def test_an_amazon_order_confirmation_is_quiet(delivered: Callable[[bytes], bytes]) -> None:
+    """Amazon shows its pictures from m.media-amazon.com, a name that reads as
+    dressed up as Amazon. A picture is not a link, and the order link is amazon.com."""
+    raw = _EXCHANGE.format(d="amazon.com").encode() + b"""\
+From: "Amazon.com" <auto-confirm@amazon.com>
+To: finance@northwind-e2e.com
+Subject: Your Amazon.com order #112-4471-0000001
+Message-ID: <o-4471@amazon.com>
+Content-Type: text/html; charset=utf-8
+
+<img src="https://m.media-amazon.com/images/G/01/x-locale/cs/te/logo.png" alt="amazon">
+<p>Thanks for your order. Order total: $42.17. Payment method: Visa ending in 4471.</p>
+<a href="https://www.amazon.com/gp/css/order-details?orderID=112-4471-0000001">View order</a>
+<img src="https://m.media-amazon.com/images/I/41abc.jpg" alt="USB-C cable">
+"""
+    assessment = _on_microsoft_365(delivered(raw), "amazon.com")
+    assert assessment is None or "B1" not in assessment.services, assessment
+
+
+@_DELIVERED
+@pytest.mark.parametrize(
+    ("prose", "subject"),
+    [
+        pytest.param("Invoice 4471 is attached; payment due in 30 days.", "Invoice 4471",
+                     id="payment"),
+        pytest.param("Sign in to view your statement.", "Your account", id="sign-in"),
+    ],
+)
+def test_a_brand_name_on_someone_elses_domain_still_alerts(
+    delivered: Callable[[bytes], bytes], prose: str, subject: str
+) -> None:
+    """The same vendor and wording, linking to a page that names Microsoft on a
+    domain that is neither Microsoft's nor the vendor's."""
+    raw = _vendor_invoice("https://pay.example/microsoft/invoice", prose, subject)
+    assessment = _on_microsoft_365(delivered(raw), "acme-supplies.com")
+    assert assessment is not None and "B1" in assessment.services, assessment
+    assert assessment.tier is AlertTier.MEDIUM, assessment
