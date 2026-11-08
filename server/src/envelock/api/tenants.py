@@ -2415,6 +2415,18 @@ class CounterpartyRequest(BaseModel):
 
 @router.get("/counterparties")
 async def list_counterparties(principal: ActiveUser, session: Session) -> dict:
+    """The Suppliers page: who this tenant pays, and the impostors kept off it.
+
+    Every sender becomes a counterparty the moment it emails (`pipeline.learn`),
+    and listing them all put a look-alike attacker, a phishing sender and a
+    newsletter on the payment-safety page as suppliers "needing attention":
+    counted in the coverage ratio, one click from a "verified" callback number
+    for the attacker. A supplier is now a sender with a payment trail (an account
+    on file, an invoice, a payment request) or one the customer named. A sender an
+    alert called an impostor is listed apart under `flagged`, whatever else it has.
+    """
+    from envelock.services import suppliers as supplier_svc
+
     rows = (
         (
             await session.execute(
@@ -2428,20 +2440,41 @@ async def list_counterparties(principal: ActiveUser, session: Session) -> dict:
     # which is not a cosmetic bug: `bank_records` feeds the risk score, so a
     # supplier whose details finance had confirmed scored identically to a
     # stranger, and the registry could not affect the number it exists to move.
+    # Retired records count as a payment trail, not as an account on file.
     count_rows = (
         await session.execute(
-            select(BankRecord.counterparty_id, func.count(BankRecord.id))
-            .where(
-                BankRecord.tenant_id == principal.tenant_id,
-                BankRecord.is_active.is_(True),
+            select(
+                BankRecord.counterparty_id,
+                func.count(BankRecord.id).filter(BankRecord.is_active.is_(True)),
             )
+            .where(BankRecord.tenant_id == principal.tenant_id)
             .group_by(BankRecord.counterparty_id)
         )
     ).all()
     counts: dict[UUID, int] = {row[0]: int(row[1]) for row in count_rows}
+    impostors = await supplier_svc.impostors(session, tenant_id=principal.tenant_id)
+    paying = await supplier_svc.payment_senders(session, tenant_id=principal.tenant_id)
+    # The bar the pipeline acts on (≥2 independent confirmations), not any one
+    # report: confirming a bank-change fraud reports the real supplier's own
+    # domain, and that must not take the supplier off the page.
+    known_bad = GRAPH.known_bad()
 
     out = []
+    flagged = []
     for c in rows:
+        key = c.registrable_domain
+        reason = impostors.get(key) or (
+            "Confirmed as fraud by more than one Envelock customer"
+            if key in known_bad
+            else None
+        )
+        if reason:
+            flagged.append({"domain": key, "display_name": c.display_name, "reason": reason})
+            continue
+        named = c.added_by_customer or c.verified_phone or c.message_count == 0
+        bills = c.id in counts or bool(c.seen_invoice_numbers) or key in paying
+        if not (named or bills):
+            continue  # a newsletter, a notification, a stranger: nobody you pay
         entry = GRAPH.lookup(c.registrable_domain)
         record_count = int(counts.get(c.id, 0))
         profile = RiskProfile(
@@ -2475,7 +2508,10 @@ async def list_counterparties(principal: ActiveUser, session: Session) -> dict:
                 ],
             }
         )
-    return {"counterparties": sorted(out, key=lambda c: -c["risk_score"])}
+    return {
+        "counterparties": sorted(out, key=lambda c: -c["risk_score"]),
+        "flagged": sorted(flagged, key=lambda f: f["domain"]),
+    }
 
 
 @router.post("/counterparties", status_code=201)
@@ -2523,6 +2559,7 @@ async def upsert_counterparty(
             message_count=0,
         )
         session.add(row)
+    row.added_by_customer = True
     if req.display_name is not None:
         row.display_name = req.display_name
     if setting_phone:
@@ -2682,6 +2719,7 @@ async def set_phone(
         )
         session.add(row)
     row.verified_phone = req.phone
+    row.added_by_customer = True
     await alert_svc.record_audit(
         session,
         tenant_id=principal.tenant_id,
@@ -2724,6 +2762,7 @@ async def add_bank_record(
         )
         session.add(row)
         await session.flush()
+    row.added_by_customer = True
 
     identifier = normalise_identifier(req.scheme, req.identifier)
     # The same account again — already imported, or retired and now back (the

@@ -6,6 +6,9 @@ the same thing — "this is who we pay, this is where, this is their number" —
 out of band from any email, which is why their bank records are stored as
 verified and a phone number fills an empty callback slot but never overwrites
 one a person typed in.
+
+Also what tells a supplier apart from everyone else who emails (`impostors`,
+`payment_senders`), for the Suppliers page.
 """
 
 from __future__ import annotations
@@ -16,10 +19,74 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from envelock.models import BankRecord, Counterparty
+from envelock.core.enums import MailDirection
+from envelock.models import Alert, BankRecord, Counterparty, Finding, Message
+from envelock.util.domains import counterparty_key
 from envelock.util.payments import normalise_identifier
 
 SCHEMES = ("iban", "account", "swift", "sortcode", "ach", "crypto")
+
+#: Findings that say the SENDER is not who it claims to be: a near-copy of a
+#: domain you know (A3), a character-swap copy (A4), someone else's name on the
+#: From line (A5). Every other finding is about one message (a changed account, a
+#: hijacked thread, a bad link, even a listed domain) and can land on a real
+#: supplier, so it must not take the supplier off the page; confirming such an
+#: alert as fraud would otherwise bury the supplier for good.
+IMPOSTOR_SERVICES = ("A3", "A4", "A5")
+
+
+def _impostor_reason(service: str, evidence: dict) -> str:
+    if service in ("A3", "A4"):
+        return f"Look-alike of {evidence.get('resembles') or 'a domain you know'}"
+    if claims := evidence.get("claims"):
+        return f"Uses the name of {claims}"
+    return "Uses the name of someone at your company"
+
+
+async def impostors(session: AsyncSession, *, tenant_id: UUID) -> dict[str, str]:
+    """Counterparty key → why an alert said this sender is an impostor.
+
+    Keyed by `counterparty_key` of the sender's address, not the alert's
+    `counterparty_domain`, so an impostor on free mail (keyed by address) is
+    caught too. An alert dismissed as a false alarm no longer counts: dismissing
+    it is how a real supplier wrongly flagged gets back on the list."""
+    rows = (
+        await session.execute(
+            select(Message.sender_address, Finding.service, Finding.evidence)
+            .join(Finding, Finding.message_id == Message.id)
+            .join(Alert, Alert.id == Finding.alert_id)
+            .where(
+                Finding.tenant_id == tenant_id,
+                Finding.service.in_(IMPOSTOR_SERVICES),
+                Alert.state != "dismissed",
+            )
+            .order_by(Finding.service)  # A3/A4 name the real domain: say that first
+        )
+    ).all()
+    out: dict[str, str] = {}
+    for address, service, evidence in rows:
+        out.setdefault(counterparty_key(address), _impostor_reason(service, evidence or {}))
+    return out
+
+
+async def payment_senders(session: AsyncSession, *, tenant_id: UUID) -> set[str]:
+    """Counterparty keys that have sent a payment request with an amount, whether
+    or not it alerted: a real supplier's first invoice usually does (first
+    contact), and that is exactly when finance should record its details."""
+    # ponytail: reads the tenant's inbound messages per call; add a partial index
+    # on (tenant_id) WHERE payment_amount IS NOT NULL if the Suppliers page slows.
+    addresses = (
+        await session.execute(
+            select(Message.sender_address)
+            .where(
+                Message.tenant_id == tenant_id,
+                Message.direction == MailDirection.INBOUND.value,
+                Message.payment_amount.is_not(None),
+            )
+            .distinct()
+        )
+    ).scalars()
+    return {counterparty_key(a) for a in addresses}
 
 
 async def apply_supplier_rows(
@@ -56,6 +123,7 @@ async def apply_supplier_rows(
             else:
                 matched += 1
             seen[reg] = counterparty
+        counterparty.added_by_customer = True
 
         if name := row.get("name"):
             counterparty.display_name = counterparty.display_name or name
@@ -104,4 +172,4 @@ async def apply_supplier_rows(
     }
 
 
-__all__ = ["SCHEMES", "apply_supplier_rows"]
+__all__ = ["IMPOSTOR_SERVICES", "SCHEMES", "apply_supplier_rows", "impostors", "payment_senders"]

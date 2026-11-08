@@ -39,6 +39,7 @@ import {
   auth,
   type BankRecord,
   type Counterparty,
+  type FlaggedSender,
   type ReauthCreds,
   type SupplierDetail,
   type VendorImportResult,
@@ -727,7 +728,12 @@ function SupplierDetailPanel({
 
 /* ── The page ────────────────────────────────────────────────────────────── */
 export default function Suppliers() {
+  // Suppliers only. Every sender used to be listed here — a look-alike
+  // attacker, a phishing sender, a newsletter — counted in the coverage ratio
+  // and one click from a "verified" number for the attacker. The server now
+  // sends senders an alert called impostors separately, in `flagged`.
   const [rows, setRows] = useState<Counterparty[] | null>(null);
+  const [flagged, setFlagged] = useState<FlaggedSender[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const canEdit = auth.role === "owner" || auth.role === "admin";
@@ -736,8 +742,10 @@ export default function Suppliers() {
     try {
       const r = await api.counterparties();
       setRows(r.counterparties);
+      setFlagged(r.flagged ?? []);
     } catch {
       setRows([]);
+      setFlagged([]);
     }
   }, []);
 
@@ -928,9 +936,9 @@ export default function Suppliers() {
         <div className="panel mt-4 p-8 text-center">
           <p className="text-sm font-semibold">No suppliers yet</p>
           <p className="fg-3 mx-auto mt-2 max-w-md text-xs leading-relaxed">
-            Suppliers appear here as they email you. Importing your list from
-            accounting is faster — and it means we can check the very first
-            invoice, not the tenth.
+            Suppliers appear here once they send you an invoice or payment
+            details. Importing your list from accounting is faster — and it
+            means we can check the very first invoice, not the tenth.
           </p>
         </div>
       )}
@@ -954,6 +962,45 @@ export default function Suppliers() {
           <Check size={13} className="accent" aria-hidden />
           Every supplier has an account and a number on file.
         </p>
+      )}
+
+      {/* Impostors, apart from the suppliers and out of the count. Read-only on
+          purpose: no row to expand, so no way to record a "verified" number or
+          account for one. The domain leads because its spelling is the tell. */}
+      {flagged.length > 0 && (
+        <section className="mt-10" aria-labelledby="flagged-senders">
+          <p id="flagged-senders" className="sect-label">
+            Flagged senders — not suppliers
+          </p>
+          <p className="fg-3 mt-2 text-xs leading-relaxed">
+            An alert flagged these as impostors, so they&rsquo;re not counted
+            above. Never record a number or an account for one. If one really is
+            your supplier, dismiss its alert as a false alarm and it moves back
+            to the list.
+          </p>
+          <ul className="mt-3 space-y-2">
+            {flagged.map((f) => (
+              <li
+                key={f.domain}
+                className="flex flex-wrap items-center gap-x-3 gap-y-1 border border-[var(--rule)] px-4 py-3"
+              >
+                <span className="min-w-0 flex-1">
+                  <span className="font-mono block text-sm font-semibold break-all">
+                    {f.domain}
+                  </span>
+                  <span className="fg-3 block text-[11px]">
+                    {f.reason}
+                    {f.display_name && ` · sent as “${f.display_name}”`}
+                  </span>
+                </span>
+                <span className="chip chip-high">
+                  <AlertTriangle size={11} aria-hidden />
+                  Flagged
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
     </main>
   );
