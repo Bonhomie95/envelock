@@ -575,15 +575,15 @@ def poll_settings(monkeypatch):  # noqa: ANN001, ANN201
 async def test_a_cycle_polls_mailboxes_side_by_side(session, poll_settings) -> None:  # noqa: ANN001
     """One at a time, a cycle cost the SUM of every server's round trip, so the
     60-second cadence quietly became minutes once there were a few dozen
-    mailboxes. Eight mailboxes at 0.3 s each: ~2.4 s in series, ~0.6 s at four
-    wide."""
+    mailboxes. Eight mailboxes at 0.5 s each: at least 4 s in series, ~1 s of
+    logins at four wide."""
     import time
 
     poll_settings(imap_poll_concurrency="4", imap_max_connections_per_egress_ip="15")
     await _mailboxes_on_one_server(session, 8)
     await session.commit()
 
-    server = _SlowServer(delay=0.3)
+    server = _SlowServer(delay=0.5)
     started = time.monotonic()
     totals = await run_imap_poll_cycle(client_factory=server.factory())
     elapsed = time.monotonic() - started
@@ -592,7 +592,9 @@ async def test_a_cycle_polls_mailboxes_side_by_side(session, poll_settings) -> N
     assert totals["errors"] == 0
     assert server.peak > 1, "mailboxes were still polled one at a time"
     assert server.peak <= 4, "the overall concurrency limit was exceeded"
-    assert elapsed < 1.8, f"cycle took {elapsed:.2f}s — not running in parallel"
+    # Against what one at a time can never beat, not a fixed figure: the rest of
+    # each poll runs at the machine's speed (a slow CI runner took 1.88 s vs 1.8).
+    assert elapsed < 8 * server.delay, f"cycle took {elapsed:.2f}s — no faster than one at a time"
 
 
 async def test_one_mail_server_never_gets_more_than_its_cap(session, poll_settings) -> None:  # noqa: ANN001
