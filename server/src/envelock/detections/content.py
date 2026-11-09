@@ -598,10 +598,10 @@ def score_url(
     # (SharePoint, Teams, DocuSign). On unproven own-domain mail, of the soft
     # reasons only a domain dressed up as a brand counts.
     internal = unproven_internal(ctx.mail, ctx.owned_domains)
-    # The tenant's own domains are never the threat. Other tenants confirming
-    # forgeries of them must not turn the links in every colleague's signature
-    # into threat-feed hits, and neither a brand in their name nor a sister domain
-    # that resembles the sender's (acme-group.com on acme.com mail) is a lure.
+    # The tenant's own domains are never the threat: not a threat-feed hit (other
+    # tenants confirming forgeries of them must not flag every colleague's
+    # signature), not a domain dressed as a brand, and not a copy of the sender's
+    # domain (a sister domain, acme-group.com on acme.com mail).
     own = reg in ctx.owned_domains
     reasons: list[str] = []
     if reg in _SHORTENERS and not internal:
@@ -610,9 +610,20 @@ def score_url(
         reasons.append("on a threat feed")
     # A domain wearing a brand's name counts even when it is the sender's own:
     # that is the phisher writing from microsoft365-verify-login.com and linking to it.
-    if _dressed_as_brand(host) and not own:
+    # Links only: Amazon's own mail shows its pictures from m.media-amazon.com.
+    if followable and not own and _dressed_as_brand(host):
         reasons.append(f"{reg} {_DRESSED}")
-    elif _BRAND_BAIT.search(url) and reg != sender and not internal:
+    # A link onto the brand's own domain is not "not owned by that brand": Safe Links
+    # puts every link on outlook.com, and the link inside is judged on its own below.
+    # ponytail: any brand's domain counts, so a page about one brand shared on another's
+    # platform (dropbox.com/s/…/paypal.pdf) passes; a per-brand owner map if that is abused.
+    elif (
+        followable
+        and not internal
+        and _BRAND_BAIT.search(url)
+        and reg != sender
+        and not _is_brand_domain(reg)
+    ):
         reasons.append("brand name in a URL not owned by that brand")
     # Real brands link to their own family of domains (microsoft.com mail to
     # microsoft365.com), so this counts only where the host could not verify the sender.
@@ -679,8 +690,8 @@ class _B1PhishingUrls:
         # bare IP, embedded credentials, a copy of the unverified sender's own
         # domain, or a redirector pointing at any of those.
         # A "soft" reason (a brand name in the URL, a link shortener) is routine on
-        # legitimate marketing and welcome mail: a newsletter with a dozen
-        # "microsoft.com" links would otherwise alert MEDIUM every send, which is
+        # legitimate marketing and welcome mail: a newsletter with a dozen links
+        # naming Microsoft would otherwise alert MEDIUM every send, which is
         # exactly the noise P5 says trains people to ignore us. So soft-only
         # findings alert ONLY alongside payment or sign-in language in the body —
         # the context in which a brandish link actually matters.
