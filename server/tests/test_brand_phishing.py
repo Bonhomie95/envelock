@@ -12,8 +12,9 @@ Two messages from that run, forwarded in exactly as sent:
 The controls are the mail these checks must leave alone: a brand's real mail
 linking to its own family of domains, images on a brand's CDN, a partner
 newsletter that names Microsoft and links to the real microsoft.com, and a
-known vendor's invoice or an Amazon order in a Microsoft 365 mailbox, where
-Safe Links has moved every link onto outlook.com.
+known vendor's invoice or an Amazon order as a mail gateway stores it. Safe
+Links moves every link onto outlook.com. Proofpoint, Mimecast and Google's
+wrapper carry the link, and the brand it names, inside their own URL.
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 from uuid import uuid4
 
 import pytest
@@ -101,18 +102,47 @@ def _tier(assessment: RiskAssessment | None) -> AlertTier | None:
 _SAFELINKS = "https://eur01.safelinks.protection.outlook.com/?url={}&data=05"
 
 
-def _safelinked(raw: bytes) -> bytes:
-    """`raw` as a Microsoft 365 mailbox with Safe Links stores it."""
-    return re.sub(
-        rb'href="([^"]+)"',
-        lambda m: b'href="%s"' % _SAFELINKS.format(quote(m[1].decode(), safe="")).encode(),
-        raw,
+def _proofpoint_v2(url: str) -> str:
+    """Proofpoint v2 spells `%` as `-` and `/` as `_`, so it escapes those two first."""
+    spelled = quote(url, safe="/").replace("-", "%2D").replace("_", "%5F")
+    return (
+        "https://urldefense.proofpoint.com/v2/url?u="
+        + spelled.translate(str.maketrans("%/", "-_"))
+        + "&d=DwMFaQ&c=AbC&r=DeF&m=GhI&s=JkL&e="
     )
 
 
-_DELIVERED = pytest.mark.parametrize(
-    "delivered", [lambda raw: raw, _safelinked], ids=["as-sent", "safe-links"]
-)
+#: How each mail gateway rewrites a link in the mailbox it protects. Mimecast keeps
+#: only the destination's domain; the others keep the whole link. Google's is the
+#: shape Calendar gives the links in an invitation.
+_GATEWAYS: dict[str, Callable[[str], str]] = {
+    "safe-links": lambda u: _SAFELINKS.format(quote(u, safe="")),
+    "proofpoint-v2": _proofpoint_v2,
+    "proofpoint-v3": lambda u: f"https://urldefense.com/v3/__{u}__;!!AbCdEf!GhIjKl$",
+    "mimecast": lambda u: (
+        f"https://url.us.m.mimecastprotect.com/s/AbCdEfGh?domain={urlsplit(u).hostname}"
+    ),
+    "google": lambda u: f"https://www.google.com/url?q={quote(u, safe=':/')}&sa=D&source=calendar",
+}
+
+
+def _through(gateway: str) -> Callable[[bytes], bytes]:
+    """`raw` as a mailbox behind `gateway` stores it: every href rewritten."""
+    wrap = _GATEWAYS[gateway]
+    return lambda raw: re.sub(
+        rb'href="([^"]+)"', lambda m: b'href="%s"' % wrap(m[1].decode()).encode(), raw
+    )
+
+
+def _delivered(*gateways: str) -> pytest.MarkDecorator:
+    return pytest.mark.parametrize(
+        "delivered", [lambda raw: raw, *map(_through, gateways)], ids=["as-sent", *gateways]
+    )
+
+
+_DELIVERED = _delivered(*_GATEWAYS)
+#: Mimecast keeps only the domain, so a brand name in the path is out of sight behind it.
+_WHOLE_LINK = _delivered(*(g for g in _GATEWAYS if g != "mimecast"))
 
 
 @_DELIVERED
@@ -304,6 +334,7 @@ def _vendor_invoice(link: str, prose: str, subject: str = "Invoice 4471") -> byt
         + f"To: finance@northwind-e2e.com\nSubject: {subject}\n"
         "Message-ID: <inv-4471@acme-supplies.com>\nContent-Type: text/html; charset=utf-8\n\n"
         f'<p>{prose}</p><p><a href="{link}">View invoice 4471</a></p>\n'
+        '<p><a href="https://www.linkedin.com/company/acme-supplies">Follow us</a></p>\n'
     ).encode()
 
 
@@ -315,9 +346,10 @@ def _on_microsoft_365(raw: bytes, vendor: str) -> RiskAssessment | None:
 def test_a_known_vendors_invoice_on_microsoft_365_is_quiet(
     delivered: Callable[[bytes], bytes],
 ) -> None:
-    """Safe Links moves the vendor's portal link onto outlook.com. That is
-    Microsoft's own domain, not one "not owned by" Outlook, and the portal link
-    inside it is the vendor's own."""
+    """Safe Links moves the vendor's links onto outlook.com. That is Microsoft's own
+    domain, not one "not owned by" Outlook, and the links inside it go to the
+    vendor's portal and its LinkedIn page. Behind any gateway, the brand a wrapped
+    link names is its destination's, and LinkedIn's page is LinkedIn's own."""
     raw = _vendor_invoice(
         "https://portal.acme-supplies.com/invoices/4471",
         "Invoice 4471 is attached; payment due in 30 days.",
@@ -346,7 +378,7 @@ Content-Type: text/html; charset=utf-8
     assert assessment is None or "B1" not in assessment.services, assessment
 
 
-@_DELIVERED
+@_WHOLE_LINK
 @pytest.mark.parametrize(
     ("prose", "subject"),
     [

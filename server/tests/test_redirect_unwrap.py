@@ -9,6 +9,8 @@ real connected inbox in testing.
 
 from __future__ import annotations
 
+import pytest
+
 from envelock.detections.content import score_url, unwrap_redirect
 
 
@@ -50,3 +52,47 @@ def test_a_redirect_chain_cannot_loop() -> None:
     # It stops after a bounded number of hops without raising; may or may not
     # reach the IP, but it must return cleanly.
     assert isinstance(reasons, list)
+
+
+@pytest.mark.parametrize(
+    ("wrapped", "destination"),
+    [
+        pytest.param(
+            "https://urldefense.proofpoint.com/v1/url?u=http%3A%2F%2Fmy-site.example%2Fa_b&k=x",
+            "http://my-site.example/a_b",
+            id="proofpoint-v1",
+        ),
+        pytest.param(
+            "https://urldefense.proofpoint.com/v2/url?u=https-3A__my-2Dsite.example_a-5Fb-3Fc-3D1"
+            "&d=DwMFaQ&c=x&e=",
+            "https://my-site.example/a_b?c=1",
+            id="proofpoint-v2",
+        ),
+        pytest.param(
+            "https://urldefense.com/v3/__https://my-site.example/a_b?c=1__;!!AbC!DeF$",
+            "https://my-site.example/a_b?c=1",
+            id="proofpoint-v3",
+        ),
+        pytest.param(
+            "https://urldefense.com/v3/__https:/my-site.example/a__;!!AbC!DeF$",
+            "https://my-site.example/a",
+            id="proofpoint-v3-one-slash",
+        ),
+        pytest.param(
+            "https://protect-us.mimecast.com/s/AbCdEf?domain=my-site.example",
+            "https://my-site.example/",
+            id="mimecast",
+        ),
+        pytest.param(
+            "https://url.us.m.mimecastprotect.com/s/AbCdEf?domain=my-site.example",
+            "https://my-site.example/",
+            id="mimecast-since-2023",
+        ),
+        pytest.param("https://protect-us.mimecast.com/s/AbCdEf", None, id="mimecast-no-domain"),
+        pytest.param("https://example.com/x?domain=my-site.example", None, id="not-mimecast"),
+    ],
+)
+def test_mail_gateway_rewrites_are_unwrapped(wrapped: str, destination: str | None) -> None:
+    """Proofpoint v2 spells `%` as `-` and `/` as `_`, v3 keeps the link in its
+    path, and Mimecast keeps only the destination's domain, when it keeps any."""
+    assert unwrap_redirect(wrapped) == destination
