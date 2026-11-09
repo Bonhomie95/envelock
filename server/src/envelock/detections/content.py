@@ -545,9 +545,15 @@ def _sender_verified(mail: MailEvent) -> bool:
 
 
 #: Query parameters a redirector hides its real destination in. Covers Gmail's
-#: `google.com/url?q=`, Microsoft SafeLinks (`?url=`), Proofpoint and the generic
+#: `google.com/url?q=`, Microsoft SafeLinks (`?url=`), Proofpoint v1 and the generic
 #: open-redirect shapes (`?u=`, `?redirect=`, `?target=`, `?dest=`, `?r=`).
 _REDIRECT_PARAMS = ("q", "url", "u", "redirect", "redirect_uri", "target", "dest", "r", "to")
+#: Proofpoint v3 keeps the link in its path: urldefense.com/v3/__<link>__;<moved>!…$
+_PROOFPOINT_V3 = re.compile(r"^https?://urldefense\.(?:com|us)/v3/__(.+?)__;", re.IGNORECASE)
+#: Proofpoint v2 spells `%` as `-` and `/` as `_`.
+_PROOFPOINT_V2 = str.maketrans("-_", "%/")
+#: Where a wrapper carries its link: the query, or Proofpoint v3's path.
+_CARRIED = re.compile(r"\?|/v3/__")
 
 
 def unwrap_redirect(url: str, *, _depth: int = 0) -> str | None:
@@ -558,23 +564,35 @@ def unwrap_redirect(url: str, *, _depth: int = 0) -> str | None:
     it by host alone misses exactly the phishing that arrives through Gmail's
     wrapper, Microsoft SafeLinks, or any open redirect. Follows one nested wrap
     (safelinks-over-shortener is real) and stops, so a crafted chain can't loop.
+
+    Mail gateways have shapes of their own: Proofpoint v2 (`?u=`) and v3 (the
+    path), and Mimecast, which keeps only the destination's domain (`?domain=`,
+    when the tenant shows it). That domain is judged as `https://<domain>/`.
     """
     from urllib.parse import parse_qs, unquote, urlsplit
 
     if _depth > 2:
         return None
     try:
-        query = urlsplit(url).query
+        parts = urlsplit(url)
     except ValueError:
         return None
-    if not query:
-        return None
-    params = parse_qs(query)
-    for name in _REDIRECT_PARAMS:
-        for raw in params.get(name, []):
-            inner = unquote(raw).strip()
-            if re.match(r"^https?://", inner, re.IGNORECASE):
-                return unwrap_redirect(inner, _depth=_depth + 1) or inner
+    params = parse_qs(parts.query)
+    host = _host_of(url)
+    found = [unquote(raw) for name in _REDIRECT_PARAMS for raw in params.get(name, [])]
+    if v3 := _PROOFPOINT_V3.match(url):
+        # It can drop a slash after the scheme.
+        # ponytail: its `*` placeholders (characters it moved after `__;`) stay in;
+        # decode that base64 run if a host ever needs one.
+        found = [re.sub(r"^(https?:/)(?!/)", r"\1/", unquote(v3[1]), flags=re.IGNORECASE)]
+    elif host == "urldefense.proofpoint.com" and parts.path.startswith("/v2/"):
+        found = [unquote(raw.translate(_PROOFPOINT_V2)) for raw in params.get("u", [])]
+    elif "domain" in params and registrable_domain(host) in ("mimecast.com", "mimecastprotect.com"):
+        found += [f"https://{domain.strip()}/" for domain in params.get("domain", [])]
+    for raw in found:
+        inner = raw.strip()
+        if re.match(r"^https?://", inner, re.IGNORECASE):
+            return unwrap_redirect(inner, _depth=_depth + 1) or inner
     return None
 
 
@@ -588,6 +606,7 @@ def score_url(
     reader never clicks."""
     host = _host_of(url)
     reg = registrable_domain(host)
+    inner = unwrap_redirect(url)
     reasons: list[str] = []
     if reg in _SHORTENERS:
         reasons.append("link shortener hides the destination")
@@ -599,10 +618,16 @@ def score_url(
     if followable and _dressed_as_brand(host):
         reasons.append(f"{reg} {_DRESSED}")
     # A link onto the brand's own domain is not "not owned by that brand": Safe Links
-    # puts every link on outlook.com, and the link inside is judged on its own below.
+    # puts every link on outlook.com. A wrapper is read without the link it carries
+    # (google.com/url?q=…, Mimecast's ?domain=), which is judged on its own below.
     # ponytail: any brand's domain counts, so a page about one brand shared on another's
     # platform (dropbox.com/s/…/paypal.pdf) passes; a per-brand owner map if that is abused.
-    elif followable and _BRAND_BAIT.search(url) and reg != sender and not _is_brand_domain(reg):
+    elif (
+        followable
+        and _BRAND_BAIT.search(url if inner is None else _CARRIED.split(url, maxsplit=1)[0])
+        and reg != sender
+        and not _is_brand_domain(reg)
+    ):
         reasons.append("brand name in a URL not owned by that brand")
     # Real brands link to their own family of domains (microsoft.com mail to
     # microsoft365.com), so this counts only where the host could not verify the sender.
@@ -623,7 +648,6 @@ def score_url(
     # Judge the TRUE destination of a redirector-wrapped link, not the safe
     # wrapper host. Without this, a bare-IP or threat-feed destination hidden
     # behind google.com/url, SafeLinks or any ?url= redirect scored clean.
-    inner = unwrap_redirect(url)
     if inner is not None:
         inner_reasons = score_url(inner, sender=sender, ctx=ctx, followable=followable)
         if inner_reasons:
