@@ -198,12 +198,36 @@ def test_the_same_links_from_a_colleague_the_provider_vouches_for_stay_quiet(
         assert _findings(raw, source, malicious=frozenset({_LISTED})) == []
 
 
-def test_a_forged_it_desk_link_to_a_copy_of_our_domain_raises_b1() -> None:
-    """The sender-copy check (brand-phishing branch) judges forged colleagues too."""
-    raw = _it_desk("https://acme-sso-login.com/owa")
-    assessment = assess(_findings(raw, SourceMechanism.IMAP_IDLE))
+#: Gmail's own verdict on a forgery: no signature, SPF and DMARC fail.
+_GMAIL_FORGED = (
+    "mx.google.com; spf=fail smtp.mailfrom=acme.com; "
+    "dmarc=fail (p=NONE sp=NONE dis=NONE) header.from=acme.com"
+)
+
+
+@pytest.mark.parametrize(
+    ("source", "stamp", "domain"),
+    [
+        (SourceMechanism.IMAP_IDLE, None, "acme-sso-login.com"),
+        # Written by the forger: on IMAP nothing proves the host stamped it.
+        (
+            SourceMechanism.IMAP_POLL,
+            "mx.acme.com; dmarc=pass header.from=acme.com",
+            "acme-sso-login.com",
+        ),
+        # Gmail's own verdict says it is not acme.com's, so a run-together copy counts too.
+        (SourceMechanism.GMAIL_API, _GMAIL_FORGED, "acmelogin.com"),
+    ],
+)
+def test_a_forged_it_desk_link_to_a_copy_of_our_domain_raises_b1(
+    source: SourceMechanism, stamp: str | None, domain: str
+) -> None:
+    """The sender-copy check (brand-phishing branch) judges forged colleagues too,
+    and like A16 believes only the provider's verdict on an own-domain From."""
+    raw = _it_desk(f"https://{domain}/owa", stamp=stamp)
+    assessment = assess(_findings(raw, source))
     assert assessment is not None and assessment.services == ("B1",)
-    assert "acme-sso-login.com" in assessment.title
+    assert domain in assessment.title
 
 
 def test_links_to_our_other_domains_are_never_a_copy_or_a_lure() -> None:

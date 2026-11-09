@@ -649,14 +649,14 @@ def score_url(
     # microsoft365.com), so this counts only where the host could not verify the sender.
     # ponytail: a vendor's compromised real mailbox passes DMARC, so its look-alike link passes too.
     mail = ctx.mail
-    if (
-        followable
-        and not own
-        and mail is not None
-        and not _sender_verified(mail)
-        and _copies_sender(reg, sender, stamped=mail.authentication.stamped)
-    ):
-        reasons.append(f"goes to {reg}, made to look like {_SENDER_COPY}, {sender}")
+    if followable and not own and mail is not None:
+        auth = mail.authentication
+        # Own-domain mail is believed only on the provider's verdict, as for A16: on
+        # IMAP and forwarding the top Authentication-Results can be the forger's own.
+        verified = False if internal else _sender_verified(mail)
+        stamped = auth.provider_dmarc is not AuthResult.NONE if internal else auth.stamped
+        if not verified and _copies_sender(reg, sender, stamped=stamped):
+            reasons.append(f"goes to {reg}, made to look like {_SENDER_COPY}, {sender}")
     if re.match(r"^\d{1,3}(\.\d{1,3}){3}$", host):
         reasons.append("bare IP address instead of a hostname")
     if "@" in url.split("//", 1)[-1].split("/", 1)[0]:
