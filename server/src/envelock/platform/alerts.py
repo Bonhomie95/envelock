@@ -191,6 +191,32 @@ async def acknowledge(
 #: graph. Resolving a Medium/Low as "handled" is not a fraud confirmation.
 _GRAPH_FEED_TIERS = frozenset({AlertTier.CRITICAL.value, AlertTier.HIGH.value})
 
+#: Findings that are evidence about the sender's DOMAIN, not only this message:
+#: a near-copy of a known name (A3, A4, and D4 from the certificate watcher), a
+#: borrowed brand or staff name (A5), a threat-feed listing (B7), a domain
+#: registered days ago (B9). The rest (A1 bank change, A6 reply-to, A8 thread
+#: hijack, A14 urgency...) fire just as well on a real supplier whose mailbox
+#: was taken over, and reporting that would brand the victim's domain for every
+#: tenant. The account such a mail asks for goes to `fraud_accounts` instead.
+_DOMAIN_EVIDENCE = ("A3", "A4", "A5", "B7", "B9", "D4")
+
+
+async def _domain_evidence(session: AsyncSession, alert_id: UUID, domain: str) -> str | None:
+    """The finding that makes this alert's domain fit for the E8 graph, or None."""
+    from envelock.util.domains import is_free_mail, is_platform_domain
+
+    # gmail.com for a CEO impersonation, google.com for a Docs phish: a shared
+    # provider names nobody, and on the graph every link to it reads malicious.
+    if is_free_mail(domain) or is_platform_domain(domain):
+        return None
+    return (
+        await session.execute(
+            select(Finding.service)
+            .where(Finding.alert_id == alert_id, Finding.service.in_(_DOMAIN_EVIDENCE))
+            .limit(1)
+        )
+    ).scalar()
+
 
 async def _tenant_may_feed_graph(session: AsyncSession, tenant_id: UUID) -> bool:
     """Cross-tenant influence requires skin in the game: a DNS-verified domain."""
@@ -277,6 +303,7 @@ async def resolve(
         not dismissed
         and alert.counterparty_domain
         and alert.tier in _GRAPH_FEED_TIERS
+        and (evidence := await _domain_evidence(session, alert.id, alert.counterparty_domain))
         # Only a tenant that has PROVEN control of a domain may feed the shared
         # graph. A free signup that never verifies costs nothing to create in
         # pairs — and two colluding throwaway tenants self-mailing spoofed
@@ -290,6 +317,8 @@ async def resolve(
             domain=alert.counterparty_domain,
             verdict=Verdict.FRAUDULENT,
             tenant_id=tenant_id,
+            # Kept on the row so a later audit can tell what a verdict rests on.
+            technique=evidence,
         )
         await graph_store.persist_report(
             session, entry, GRAPH.reporters_of(alert.counterparty_domain)
