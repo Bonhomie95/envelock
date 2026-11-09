@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from envelock.models import GraphVerdict
 from envelock.platform.graph import GRAPH, CounterpartyGraph, GraphEntry, Verdict
+from envelock.util.domains import is_free_mail, is_platform_domain
 
 
 async def persist_report(
@@ -35,10 +36,18 @@ async def persist_report(
 
 
 async def hydrate(session: AsyncSession, graph: CounterpartyGraph = GRAPH) -> int:
-    """Load every persisted verdict into the projection. Returns the count."""
+    """Load every persisted verdict into the projection. Returns the count loaded.
+
+    A free-mail or platform domain is skipped: it names a provider, not an
+    attacker (`alerts.resolve` used to report them), and loaded it would mark
+    every link to gmail.com or google.com malicious for every tenant. Skipped,
+    not deleted, so the row stays for audit.
+    """
     rows = (await session.execute(select(GraphVerdict))).scalars().all()
     graph.clear()
     for row in rows:
+        if is_free_mail(row.registrable_domain) or is_platform_domain(row.registrable_domain):
+            continue
         graph.load(
             GraphEntry(
                 registrable_domain=row.registrable_domain,
@@ -50,4 +59,4 @@ async def hydrate(session: AsyncSession, graph: CounterpartyGraph = GRAPH) -> in
             ),
             set(row.reporter_tenant_ids or []),
         )
-    return len(rows)
+    return len(graph)

@@ -12,6 +12,7 @@ import pytest
 import pytest_asyncio
 
 from envelock.core.enums import AlertTier
+from envelock.detections.base import FindingResult
 from envelock.models import Alert, Tenant, User
 from envelock.notify.dispatch import deliver_pending, run_escalation_cycle
 from envelock.notify.senders import Dispatcher
@@ -170,6 +171,13 @@ async def test_push_reaches_every_device_and_prunes_the_dead_one(session) -> Non
     assert left == ["https://live.example/ok"]
 
 
+def _findings(*services: str) -> list[FindingResult]:
+    return [
+        FindingResult(service=s, tier=AlertTier.HIGH, score=90, summary="", evidence={})
+        for s in services
+    ]
+
+
 @pytest.mark.asyncio
 async def test_resolving_a_critical_feeds_the_e8_graph(session) -> None:
     GRAPH.clear()
@@ -179,7 +187,7 @@ async def test_resolving_a_critical_feeds_the_e8_graph(session) -> None:
         tenant_id=tenant.id,
         mailbox_id=None,
         assessment=_assessment(AlertTier.CRITICAL),
-        findings=[],
+        findings=_findings("A3", "A1"),
         counterparty_domain="fraudster.com",
     )
     await session.flush()
@@ -196,6 +204,80 @@ async def test_resolving_a_critical_feeds_the_e8_graph(session) -> None:
     assert entry is not None
     assert entry.verdict is Verdict.FRAUDULENT
     assert entry.actionable  # now protects every other tenant
+
+
+async def _two_tenants_confirm(session, *, domain: str, services: tuple[str, ...]) -> None:
+    """Two verified tenants confirm the same kind of alert: enough to make the
+    domain actionable network-wide if it slipped through."""
+    for _ in range(2):
+        tenant, admin = await _tenant_with_admin(session, email=f"{uuid4().hex[:8]}@acme.com")
+        alert = await alert_svc.raise_alert(
+            session,
+            tenant_id=tenant.id,
+            mailbox_id=None,
+            assessment=_assessment(AlertTier.CRITICAL),
+            findings=_findings(*services),
+            counterparty_domain=domain,
+        )
+        await session.flush()
+        await alert_svc.resolve(
+            session, alert_id=alert.id, tenant_id=tenant.id, actor_id=admin.id
+        )
+    await session.flush()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("domain", "services"),
+    [
+        # CEO impersonation from someone@gmail.com: names Google's mail, not the thief.
+        ("gmail.com", ("A5", "A14")),
+        # A Docs share whose sender name borrows a colleague's: sent by Google.
+        ("google.com", ("A5",)),
+        # Bank change from a real supplier's hijacked mailbox: the domain is the victim.
+        ("real-supplier.com", ("A1", "A6", "A8", "A14")),
+    ],
+)
+async def test_resolving_never_reports_a_domain_that_is_not_the_attackers(
+    session, domain: str, services: tuple[str, ...]
+) -> None:
+    from envelock.models import GraphVerdict
+
+    GRAPH.clear()
+    await _two_tenants_confirm(session, domain=domain, services=services)
+
+    assert GRAPH.lookup(domain) is None
+    assert domain not in GRAPH.known_bad()
+    assert await session.get(GraphVerdict, domain) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("service", ["A3", "D4"])
+async def test_resolving_a_lookalike_still_reports_it(session, service: str) -> None:
+    GRAPH.clear()
+    await _two_tenants_confirm(session, domain="acme-suppiies.com", services=(service,))
+
+    entry = GRAPH.lookup("acme-suppiies.com")
+    assert entry is not None and entry.actionable
+    assert entry.techniques == frozenset({service})  # what the verdict rests on
+
+
+@pytest.mark.asyncio
+async def test_hydration_skips_old_free_mail_and_platform_verdicts(session) -> None:
+    """Rows written before resolve refused them stay in the table, unloaded."""
+    from envelock.platform import graph_store
+    from envelock.platform.graph import CounterpartyGraph
+
+    live = CounterpartyGraph()
+    for domain in ("gmail.com", "google.com", "acme-suppiies.com"):
+        for _ in range(2):
+            entry = live.report(domain=domain, verdict=Verdict.FRAUDULENT, tenant_id=uuid4())
+        await graph_store.persist_report(session, entry, live.reporters_of(domain))
+    await session.flush()
+
+    restarted = CounterpartyGraph()
+    assert await graph_store.hydrate(session, restarted) == 1
+    assert restarted.known_bad() == {"acme-suppiies.com"}
 
 
 @pytest.mark.asyncio
