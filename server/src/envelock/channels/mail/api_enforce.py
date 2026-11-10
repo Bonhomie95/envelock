@@ -138,8 +138,10 @@ async def gmail_replace(
     message_id: str,
     new_raw: bytes,
     transport: WriteTransport | None = None,
+    junk: bool = False,
 ) -> bool:
     """Insert the protected copy where the original was, then trash the original.
+    With `junk`, the copy goes in under Spam instead of the inbox.
 
     Insert first: if it fails, the original is still there and nothing is lost.
     """
@@ -150,6 +152,8 @@ async def gmail_replace(
             "GET", f"{GMAIL_API}/messages/{mid}?format=minimal", headers=_h(access_token)
         )
         labels = [lbl for lbl in original.get("labelIds", []) or [] if lbl != "DRAFT"]
+        if junk:
+            labels = [lbl for lbl in labels if lbl != "INBOX"] + ["SPAM"]
         body: dict[str, Any] = {
             "raw": base64.urlsafe_b64encode(new_raw).decode().rstrip("="),
             "labelIds": labels or ["INBOX"],
@@ -279,9 +283,11 @@ async def graph_replace(
     mailbox_id: object = None,
     mailbox_address: str | None = None,
     transport: WriteTransport | None = None,
+    junk: bool = False,
 ) -> bool:
-    """Replace a received message with its protected copy. False (and the
-    original untouched) whenever the copy could not be made faithfully."""
+    """Replace a received message with its protected copy, made in Junk Email with
+    `junk`. False (and the original untouched) whenever the copy could not be
+    made faithfully."""
     t = _t(transport)
     base = graph_base(mailbox_address)
     mid = quote(message_id, safe="")
@@ -340,7 +346,7 @@ async def graph_replace(
             copy["internetMessageId"] = internet_id
         if attachments:
             copy["attachments"] = attachments
-        folder = msg.get("parentFolderId") or "inbox"
+        folder = "junkemail" if junk else msg.get("parentFolderId") or "inbox"
         created = await t.request(
             "POST", f"{base}/mailFolders/{quote(folder, safe='')}/messages", headers=h, json=copy
         )

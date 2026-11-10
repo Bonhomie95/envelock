@@ -820,6 +820,13 @@ async def system_status(actor: PlatformReader) -> dict:
         detail=", ".join(provs) if provs else "none configured (IMAP still works)",
     )
 
+    # 7b. Spam blocklists: a list that refuses this server says so nowhere else.
+    #     Spamhaus refuses queries through public DNS resolvers; a DQS key fixes it.
+    from envelock.channels.external.reputation import probe_blocklists
+
+    ok, detail = await _timed_check(probe_blocklists(), timeout=4.0)
+    add("spam_blocklists", ok, critical=False, detail=detail)
+
     # 8. Allowed-but-dangerous production settings (Stripe test keys, …).
     warnings = settings.production_warnings()
     add(

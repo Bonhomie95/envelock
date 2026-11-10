@@ -120,6 +120,30 @@ async def mark_junked(session: AsyncSession, message_id: UUID | None) -> None:
         stored.junked_at = datetime.now(UTC)
 
 
+async def _rescued(session: AsyncSession, *, mailbox_id: UUID, rfc_message_id: str | None) -> None:
+    """Our protected copy of a message we put in Junk, seen in the inbox: only the
+    customer moves it there, so it is their "not spam" (see `_back_from_junk`)."""
+    if not rfc_message_id:
+        return
+    await session.execute(
+        update(Message)
+        .where(
+            Message.mailbox_id == mailbox_id,
+            Message.rfc_message_id == rfc_message_id,
+            Message.junked_at.is_not(None),
+            Message.spam_rescued_at.is_(None),
+        )
+        .values(spam_rescued_at=datetime.now(UTC))
+    )
+
+
+async def note_copy_in_inbox(session: AsyncSession, *, mailbox_id: UUID, raw: bytes) -> None:
+    """`_rescued` for a worker that skips its own copies before parsing them."""
+    from envelock.channels.mail.parser import message_id_of
+
+    await _rescued(session, mailbox_id=mailbox_id, rfc_message_id=message_id_of(raw))
+
+
 async def _counterparty_state(
     session: AsyncSession, *, tenant_id: UUID, domain: str
 ) -> CounterpartyState | None:
@@ -885,6 +909,10 @@ async def analyse_event(
     # does not (and its rewritten body would otherwise look like "new content"
     # under the same Message-ID and re-alert).
     if persist and isinstance(event, MailEvent) and event.protected_copy:
+        if event.source in _INBOX_SOURCES:
+            await _rescued(
+                session, mailbox_id=event.mailbox_id, rfc_message_id=event.rfc_message_id
+            )
         return _as_duplicate()
 
     # Idempotency: the same message reaches us twice whenever a mailbox is on both

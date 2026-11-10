@@ -46,7 +46,7 @@ from envelock.db import get_sessionmaker
 from envelock.models import Domain, Mailbox, MailboxCredential, Message
 from envelock.notify.dispatch import deliver_pending
 from envelock.platform.alerts import AuditAction, record_audit
-from envelock.platform.pipeline import analyse_event, mark_junked
+from envelock.platform.pipeline import analyse_event, mark_junked, note_copy_in_inbox
 from envelock.workers.enforcement import plan_protected_copy
 from envelock.workers.outbound import process_outbound
 
@@ -80,9 +80,11 @@ async def _write_back(
     owned: frozenset[str],
     banner_allowed: bool,
     transport=None,  # noqa: ANN001 — api_enforce.WriteTransport, injected in tests
+    junk: bool = False,
 ) -> bool:
     """Replace the message with its protected copy, if this provider's copy
-    write-back is switched on and there is anything to write."""
+    write-back is switched on and there is anything to write. With `junk`, the
+    copy goes to Spam / Junk Email."""
     settings = get_settings()
     enabled = (
         settings.gmail_rewrite_enabled if provider == "google" else settings.graph_rewrite_enabled
@@ -102,7 +104,8 @@ async def _write_back(
         if new_raw is None:
             return False
         return await api_enforce.gmail_replace(
-            access_token=access_token, message_id=ref, new_raw=new_raw, transport=transport
+            access_token=access_token, message_id=ref, new_raw=new_raw, transport=transport,
+            junk=junk,
         )
     return await api_enforce.graph_replace(
         access_token=access_token,
@@ -113,6 +116,7 @@ async def _write_back(
         mailbox_id=mailbox.id,
         # Delegated token → /me (see the fetch note); /users/{label} 403s.
         transport=transport,
+        junk=junk,
     )
 
 
@@ -528,8 +532,10 @@ async def _handle_inbound(
 ) -> dict:
     """Analyse one inbound message, notify, then enforce. Returns its counts."""
     counts = {"alerted": 0, "quarantined": 0, "rewritten": 0, "junked": 0}
-    # Our own protected copy — never re-analyse or re-rewrite it.
+    # Our own protected copy — never re-analyse or re-rewrite it. If it is the
+    # one we put in Spam / Junk Email, the customer moved it back: "not spam".
     if enforce.is_processed(item.raw, mailbox.id):
+        await note_copy_in_inbox(session, mailbox_id=mailbox.id, raw=item.raw)
         return counts
     event = await parse_message_async(
         item.raw,
@@ -550,15 +556,22 @@ async def _handle_inbound(
         "provider": provider, "access_token": access_token, "mailbox": mailbox,
         "ref": item.ref,
     }
+    async def to_junk() -> bool:
+        """Spam to Spam / Junk Email: as its protected copy when it has links to
+        rewrite, else moved as it came."""
+        return await _write_back(
+            session, **common, raw=item.raw, event=event, pr=pr, owned=owned,
+            banner_allowed=False, transport=write_transport, junk=True,
+        ) or await _junk(**common, transport=write_transport)
+
     if pr.duplicate:
         # The same spam a second time follows the first copy to Junk.
-        if pr.junk and await _junk(**common, transport=write_transport):
+        if pr.junk and await to_junk():
             counts["junked"] += 1
         return counts
     if pr.alert_id is None:
-        if pr.junk and await _junk(**common, transport=write_transport):
-            # Spam goes to the mailbox's own Junk, links as they came: nothing
-            # is left in the inbox to protect.
+        if pr.junk and await to_junk():
+            # Spam goes to the mailbox's own Junk, links protected.
             counts["junked"] += 1
             await mark_junked(session, pr.message_id)
         elif protected and event.urls and await _write_back(
@@ -591,7 +604,7 @@ async def _handle_inbound(
             banner_allowed=True, transport=write_transport,
         ):
             counts["rewritten"] += 1
-    elif pr.junk and await _junk(**common, transport=write_transport):
+    elif pr.junk and await to_junk():
         # MEDIUM or LOW, and spam: alerted, and out of the inbox.
         counts["junked"] += 1
         await mark_junked(session, pr.message_id)

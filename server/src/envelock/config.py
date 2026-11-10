@@ -445,6 +445,11 @@ class Settings(BaseSettings):
     #: The same, for the IP of the server that handed the message to the
     #: mailbox's host — the spam filter's strongest sign. Same terms note.
     dnsbl_ip_zones: str = "zen.spamhaus.org,bl.spamcop.net"
+    #: A Spamhaus Data Query Service key. Set, the Spamhaus zones above are asked
+    #: of DQS instead of the public mirrors: it answers through any DNS resolver
+    #: (the mirrors refuse public ones) and under the account's own terms, which
+    #: is the licensed route for commercial use.
+    spamhaus_dqs_key: SecretStr = SecretStr("")
     reputation_cache_seconds: int = 3600
     #: Move mail the spam filter calls spam to the mailbox's Junk folder (Protected
     #: mailboxes on a direct connection). A kill-switch: off, spam is only scored.

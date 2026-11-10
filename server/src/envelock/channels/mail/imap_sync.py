@@ -840,8 +840,11 @@ def replace_message(
     timeout: float = 30.0,
     client_factory: ClientFactory | None = None,
     pin_sha256: str | None = None,
+    junk: bool = False,
 ) -> bool:
     """Swap a delivered message for our protected copy (banner + rewritten links).
+    With `junk`, the copy goes to the server's Junk folder (`junk_folder`) instead,
+    so spam moved there keeps protected links.
 
     IMAP has no in-place edit, so this is APPEND-then-delete: the modified copy
     is APPENDed with the original's flags and INTERNALDATE (read/unread state and
@@ -879,7 +882,11 @@ def replace_message(
             )
             internaldate = entry.get(b"INTERNALDATE") or entry.get("INTERNALDATE")
 
-        client.append(folder, raw, flags, internaldate)
+        target = junk_folder(client) if junk else folder
+        if junk and not client.folder_exists(target):
+            with contextlib.suppress(Exception):
+                client.create_folder(target)
+        client.append(target, raw, flags, internaldate)
         client.delete_messages([uid])
         client.expunge([uid])
         return True

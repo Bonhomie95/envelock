@@ -43,7 +43,12 @@ from envelock.db import get_sessionmaker
 from envelock.models import Domain, Mailbox, MailboxCredential, Message
 from envelock.notify.dispatch import deliver_pending
 from envelock.obs.metrics import observe_poll_cycle, set_worker_up
-from envelock.platform.pipeline import PipelineResult, analyse_event, mark_junked
+from envelock.platform.pipeline import (
+    PipelineResult,
+    analyse_event,
+    mark_junked,
+    note_copy_in_inbox,
+)
 from envelock.security.crypto import CryptoError, SealedSecret, open_secret
 
 logger = logging.getLogger("envelock.imap")
@@ -121,10 +126,12 @@ async def _enforce_copy(
     client_factory=None,  # noqa: ANN001
     pin_sha256: str | None = None,
     banner_allowed: bool = True,
+    junk: bool = False,
 ) -> bool:
     """Write the protected copy back: rewritten links, plus a banner when the
     message was flagged (and the tier warrants one — MEDIUM gets protected
-    links without a banner). Returns True only when the swap happened."""
+    links without a banner). With `junk`, into the Junk folder. Returns True
+    only when the swap happened."""
     settings = get_settings()
     from envelock.workers.enforcement import plan_protected_copy
 
@@ -153,6 +160,7 @@ async def _enforce_copy(
         raw=new_raw,
         client_factory=client_factory,
         pin_sha256=pin_sha256,
+        junk=junk,
     )
 
 
@@ -425,6 +433,18 @@ async def sync_mailbox(
             client_factory=client_factory, pin_sha256=pin,
         )
 
+    async def _to_junk(event, pr: PipelineResult, msg) -> bool:  # noqa: ANN001
+        """Spam into the server's Junk folder: as its protected copy when it has
+        links to rewrite, else moved as it came."""
+        return await _enforce_copy(
+            session, event, pr,
+            raw=msg.raw, uid=msg.uid, owned=owned,
+            host=host, port=port, security=security,
+            username=username, password=password,
+            access_token=access_token, client_factory=client_factory,
+            pin_sha256=pin, banner_allowed=False, junk=True,
+        ) or await asyncio.to_thread(_junk, msg.uid)
+
     # The lowest UID that failed and gets another poll: the cursor stops below it.
     retry_uid: int | None = None
     # The poll's own bookkeeping stands before any message can fail.
@@ -434,6 +454,10 @@ async def sync_mailbox(
             # A copy we already wrote back (banner/rewritten links). Never re-analyse
             # or re-rewrite our own work — that way lies an APPEND loop.
             if enforce.is_processed(msg.raw, mailbox.id):
+                # Ours. If it is the copy we put in Junk, the customer moved it
+                # back: their "not spam".
+                await note_copy_in_inbox(session, mailbox_id=mailbox.id, raw=msg.raw)
+                await session.commit()
                 continue
             event = await parse_message_async(
                 msg.raw,
@@ -454,7 +478,7 @@ async def sync_mailbox(
                 # The same spam a second time follows the first copy to Junk. The
                 # commit keeps a "not spam" analyse_event recorded for a copy the
                 # customer moved back.
-                if pr.junk and await asyncio.to_thread(_junk, msg.uid):
+                if pr.junk and await _to_junk(event, pr, msg):
                     junked += 1
                 await session.commit()
                 continue
@@ -527,7 +551,7 @@ async def sync_mailbox(
                         pin_sha256=pin,
                     ):
                         rewritten += 1
-                elif pr.junk and await asyncio.to_thread(_junk, msg.uid):
+                elif pr.junk and await _to_junk(event, pr, msg):
                     # MEDIUM or LOW, and spam: alerted, and out of the inbox.
                     junked += 1
                     await mark_junked(session, pr.message_id)
@@ -548,9 +572,8 @@ async def sync_mailbox(
                         banner_allowed=tier is AlertTier.HIGH,
                     ):
                         rewritten += 1
-            elif pr.junk and await asyncio.to_thread(_junk, msg.uid):
-                # Spam goes to the mailbox's own Junk folder, links as they came:
-                # nothing is left in the inbox to protect.
+            elif pr.junk and await _to_junk(event, pr, msg):
+                # Spam goes to the mailbox's own Junk folder, links protected.
                 junked += 1
                 await mark_junked(session, pr.message_id)
             elif protected and settings.link_rewrite_enabled and event.urls:

@@ -35,6 +35,7 @@ const LABELS: Record<string, string> = {
   ai_cascade: "AI fraud cascade",
   credential_custody: "Credential key custody",
   oauth_providers: "OAuth providers",
+  spam_blocklists: "Spam blocklists (Spamhaus, SpamCop)",
 };
 
 function Row({ check }: { check: SystemCheck }) {

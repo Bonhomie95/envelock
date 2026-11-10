@@ -592,6 +592,15 @@ def parse_message(
     )
 
 
+def message_id_of(raw: bytes) -> str | None:
+    """The Message-ID as `parse_message` stores it, from the headers alone."""
+    from email.parser import BytesHeaderParser
+
+    from envelock.channels.mail.enforce import _header_block
+
+    return _clip(BytesHeaderParser(policy=POLICY).parsebytes(_header_block(raw)).get("Message-ID"))
+
+
 async def parse_message_async(raw: bytes, **kwargs) -> MailEvent:  # noqa: ANN003
     """`parse_message` on a worker thread.
 

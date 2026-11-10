@@ -433,3 +433,157 @@ async def test_graph_spam_moves_to_junk_email(session, oauth_token) -> None:  # 
     )
     assert summary["junked"] == 1
     assert graph.folder_of["o1"] == "junkemail"
+
+
+# ── Junked spam keeps protected links, and moving its copy back is "not spam" ──
+def _pharma_link(mid: str) -> bytes:
+    return _raw(
+        "Cheap Viagra and Cialis from our online pharmacy: https://pills-direct.biz/order",
+        sender="sales@pills-direct.biz", subject="Best prices", mid=mid,
+    )
+
+
+class _AppendingImap(_SpecialUseImap):
+    def __init__(self, **kw) -> None:  # noqa: ANN003
+        super().__init__(**kw)
+        self.appended: list[tuple[str, bytes]] = []
+
+    def append(self, folder: str, msg: bytes, flags=(), msg_time=None) -> None:  # noqa: ANN001
+        self.appended.append((folder, msg))
+
+
+async def test_imap_spam_goes_to_junk_as_its_protected_copy(session) -> None:  # noqa: ANN001
+    from envelock.config import get_settings
+
+    mailbox = await _connected_mailbox(session)
+    client = _AppendingImap(messages={201: _pharma_link("j1")})
+    summary = await sync_mailbox(session, mailbox, client_factory=_factory_for(client))
+    assert summary["junked"] == 1 and client.moved == []
+    [(folder, copy)] = client.appended
+    assert folder == "INBOX.Junk" and 201 not in client.messages
+    assert get_settings().redirect_base.encode() in copy
+
+    # The customer drags the copy back to the inbox.
+    client.messages[202] = copy
+    again = await sync_mailbox(session, mailbox, client_factory=_factory_for(client))
+    assert again["junked"] == 0
+    stored = (await session.execute(
+        select(Message).where(Message.mailbox_id == mailbox.id)
+    )).scalars().one()
+    await session.refresh(stored)
+    assert stored.junked_at is not None and stored.spam_rescued_at is not None
+
+
+async def test_gmail_spam_copy_goes_in_under_spam_and_back_counts(
+    session, oauth_token  # noqa: ANN001
+) -> None:
+    oauth_token("google")
+    mailbox = await _oauth_mailbox(session, "google")
+    gmail = FakeGmail({"g2": _pharma_link("g2")})
+    summary = await oauth_fetch.sync_oauth_mailbox(
+        session, mailbox, transport=gmail, write_transport=gmail
+    )
+    assert summary["junked"] == 1 and gmail.trashed == ["g2"]
+    [copy_id] = [m for m in gmail.msgs if m != "g2"]
+    assert "SPAM" in gmail.msgs[copy_id]["labelIds"]
+    assert "INBOX" not in gmail.msgs[copy_id]["labelIds"]
+
+    gmail.msgs[copy_id]["labelIds"] = ["INBOX"]  # "Not spam"
+    await oauth_fetch.sync_oauth_mailbox(session, mailbox, transport=gmail, write_transport=gmail)
+    stored = (await session.execute(
+        select(Message).where(Message.mailbox_id == mailbox.id)
+    )).scalars().one()
+    await session.refresh(stored)
+    assert stored.spam_rescued_at is not None
+
+
+class _GraphFolders(FakeGraph):
+    created_in: str | None = None
+
+    async def request(self, method: str, url: str, *, headers: dict, json=None):  # noqa: A002, ANN001, ANN201
+        if "/mailFolders/" in url and url.endswith("/messages") and method == "POST":
+            self.created_in = url.split("/mailFolders/")[1].split("/")[0]
+        return await super().request(method, url, headers=headers, json=json)
+
+
+async def test_graph_spam_copy_is_made_in_junk_email(session, oauth_token) -> None:  # noqa: ANN001
+    oauth_token("microsoft")
+    mailbox = await _oauth_mailbox(session, "microsoft")
+    graph = _GraphFolders({"o2": _pharma_link("o2")})
+    summary = await oauth_fetch.sync_oauth_mailbox(
+        session, mailbox, transport=graph, write_transport=graph
+    )
+    assert summary["junked"] == 1
+    assert graph.created_in == "junkemail" and graph.deleted == ["o2"]
+
+
+# ── Blocklists: IPv6, the Spamhaus DQS key, and lists that refuse ────────────
+@pytest.fixture
+def dnsbl(monkeypatch: pytest.MonkeyPatch):  # noqa: ANN201
+    """Answer DNSBL queries from `table` (zone suffix → codes); record each name asked."""
+    from envelock.channels.external import reputation
+    from envelock.config import get_settings
+
+    asked: list[str] = []
+    table: dict[str, list[str]] = {}
+
+    def answers(name: str, *, lifetime: float = 5.0) -> list[str]:  # noqa: ARG001
+        asked.append(name)
+        return next((codes for suffix, codes in table.items() if name.endswith(suffix)), [])
+
+    monkeypatch.setattr(reputation, "_answers", answers)
+    monkeypatch.setenv("ENVELOCK_DOMAIN_REPUTATION_ENABLED", "true")
+    get_settings.cache_clear()
+    yield asked, table
+    get_settings.cache_clear()
+
+
+def test_a_list_that_refuses_is_never_a_listing(dnsbl) -> None:  # noqa: ANN001
+    from envelock.channels.external.reputation import DomainReputation
+
+    _, table = dnsbl
+    table.update({
+        ".zen.spamhaus.org": ["127.255.255.254"], ".bl.spamcop.net": ["127.0.0.1"],
+        ".dbl.spamhaus.org": ["127.255.255.255"], ".multi.surbl.org": ["127.0.0.1"],
+    })
+    assert not DomainReputation().check_ip("185.220.101.4").listed
+    assert not DomainReputation().check("random-sender.com").listed
+    table[".bl.spamcop.net"] = ["127.0.0.2"]
+    listed = DomainReputation().check_ip("185.220.101.4")
+    assert listed.listed and listed.sources == ("bl.spamcop.net",)
+
+
+def test_ipv6_senders_are_looked_up(dnsbl) -> None:  # noqa: ANN001
+    import ipaddress
+
+    from envelock.channels.external.reputation import DomainReputation
+
+    asked, table = dnsbl
+    nibbles = ipaddress.ip_address("2a01:111:f400::1").reverse_pointer.removesuffix(".ip6.arpa")
+    table[f"{nibbles}.zen.spamhaus.org"] = ["127.0.0.3"]
+    assert DomainReputation().check_ip("2a01:111:f400::1").listed
+    assert f"{nibbles}.zen.spamhaus.org" in asked
+
+
+def test_a_dqs_key_asks_spamhaus_privately(dnsbl, monkeypatch) -> None:  # noqa: ANN001
+    from envelock.channels.external.reputation import DomainReputation
+    from envelock.config import get_settings
+
+    asked, table = dnsbl
+    monkeypatch.setenv("ENVELOCK_SPAMHAUS_DQS_KEY", "k3y")
+    get_settings.cache_clear()
+    table[".k3y.zen.dq.spamhaus.net"] = ["127.0.0.4"]
+    result = DomainReputation().check_ip("185.220.101.4")
+    assert result.listed and result.sources == ("zen.spamhaus.org",)  # the key stays private
+    assert asked == ["4.101.220.185.k3y.zen.dq.spamhaus.net", "4.101.220.185.bl.spamcop.net"]
+
+
+def test_the_status_page_says_which_list_refuses(dnsbl) -> None:  # noqa: ANN001
+    from envelock.channels.external.reputation import probe
+
+    _, table = dnsbl
+    table.update({".zen.spamhaus.org": ["127.255.255.254"], ".bl.spamcop.net": ["127.0.0.2"]})
+    ok, detail = probe()
+    assert not ok
+    assert "zen.spamhaus.org: refuses queries sent through a public DNS resolver" in detail
+    assert "bl.spamcop.net: answering" in detail and "no Spamhaus DQS key" in detail
