@@ -126,14 +126,46 @@ PAYMENT_CONTEXT = re.compile(
     # bank identifier at all — without this vocabulary, A2/A7/A14 all gated on
     # has_payment_context and the entire scam class fired NOTHING.
     r"gift\s?cards?|itunes|google\s?play|steam\s?card|voucher|prepaid\s?card|"
-    r"zelle|venmo|cash\s?app|paypal|western\s?union|moneygram|crypto|bitcoin|usdt)\b",
+    r"zelle|venmo|cash\s?app|paypal|western\s?union|moneygram|ach|"
+    r"crypto(?:currenc(?:y|ies))?|bitcoins?|btc|eth|ethereum|usdt|usdc|tether|"
+    r"wallet\s+address(?:es)?)\b",
+    re.IGNORECASE,
+)
+
+#: A request for money in plain words, with no banking vocabulary at all: "kindly
+#: pay me $500", "send me the money today", "I need $2,000". PAYMENT_CONTEXT never
+#: matched these, so a scam worded like a text message raised nothing. The verb
+#: needs money in the same sentence, so "pay attention" and "send the file" stay out.
+PAYMENT_ASK = re.compile(
+    r"\b(?:pay|paid|send|transfer|wire|remit|deposit|lend|loan|need)\b[^.!?\n]{0,40}?"
+    r"(?:\b(?:money|funds|cash)\b|[$€£₦]\s?\d|"
+    r"\b\d[\d,.]*\s?(?:usd|eur|gbp|ngn|dollars?|euros?|pounds?|naira)\b)"
+    r"|\bpay\s+(?:me|us)\b",
+    re.IGNORECASE,
+)
+
+#: Ways to pay that no supplier bills in. A stranger asking for them is the scam.
+SCAM_RAILS = re.compile(
+    r"\b(?:(?:apple|itunes|google\s?play|steam|amazon)\s?(?:gift\s?)?cards?|gift\s?cards?|"
+    r"prepaid\s?cards?|crypto(?:currenc(?:y|ies))?|bitcoins?|btc|eth|ethereum|usdt|usdc|"
+    r"tether|wallet\s+address(?:es)?|western\s?union|moneygram)\b",
     re.IGNORECASE,
 )
 
 #: A14 — urgency and pressure. Weak alone, strong as a multiplier on A1.
+#: Inflected and everyday forms count: "urgently", "as soon as possible", "before
+#: end of day" and "between you and me" matched nothing, so a first-contact demand
+#: worded that way never reached the urgency combinations in risk/engine.py.
 URGENCY = re.compile(
-    r"\b(urgent|immediately|asap|today|right away|expedite|"
-    r"confidential|do not (?:tell|inform|discuss)|keep this between|"
+    r"\b(urgent(?:ly)?|urgency|immediate(?:ly)?|asap|as soon as possible|today|tonight|"
+    r"right (?:away|now)|expedited?|time[- ]sensitive|eod|"
+    r"(?:by|before) (?:the )?end of (?:the )?day|"
+    r"within (?:the )?(?:next )?(?:hour|\d+\s*(?:hours?|hrs?|minutes?|mins?))|"
+    r"overdue|past due|final (?:notice|reminder|warning)|last (?:chance|warning)|"
+    r"(?:avoid|prevent) (?:a |any )?(?:late fees?|penalt(?:y|ies)|suspension|legal action)|"
+    r"confidential|(?:do not|don['’]?t) (?:tell|inform|discuss|share|mention)|"
+    r"keep (?:this|it) (?:between us|quiet|confidential|private|secret|to yourself)|"
+    r"keep this between|between (?:you and me|us)|discreet(?:ly)?|"
     r"new account|updated? (?:bank|account|payment)|changed? our bank)\b",
     re.IGNORECASE,
 )
@@ -282,7 +314,10 @@ def extract_bank_identifiers(text: str) -> list[BankIdentifier]:
 
 
 def has_payment_context(text: str) -> bool:
-    return bool(text) and bool(PAYMENT_CONTEXT.search(normalise_text(text)))
+    if not text:
+        return False
+    norm = normalise_text(text)
+    return bool(PAYMENT_CONTEXT.search(norm) or PAYMENT_ASK.search(norm))
 
 
 def urgency_score(text: str) -> int:

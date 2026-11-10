@@ -18,7 +18,7 @@ from envelock.core.enums import SourceMechanism
 from envelock.detections.base import DetectionContext, run_all
 from envelock.llm.gate import should_escalate
 from envelock.risk.engine import RiskAssessment, assess
-from envelock.util.payments import extract_bank_identifiers, has_payment_context
+from envelock.util.payments import extract_bank_identifiers, has_payment_context, urgency_score
 
 IBAN = "GB29NWBK60161331926819"
 #: Its token happens to contain DE89370400440532013000, a valid IBAN.
@@ -84,6 +84,23 @@ def test_account_alone_is_not_payment_language() -> None:
         "Account No. 31926819",
     ):
         assert has_payment_context(text), text
+
+
+def test_a_money_request_in_plain_words_is_payment_language() -> None:
+    """A scam worded like a text message used no banking word at all and raised nothing."""
+    for text in (
+        "Hello, kindly pay me $500 for the work I did",
+        "I need you to send me the money today",
+        "Can you transfer 2,000 dollars to me",
+        "Send 0.5 BTC to the wallet below",
+        "Please send the ACH for the balance",
+    ):
+        assert has_payment_context(text), text
+    for text in ("Please pay attention to the new policy", "Send the file when you can"):
+        assert not has_payment_context(text), text
+    # Inflected and everyday pressure counts too; A14 needs two markers.
+    assert urgency_score("I need it urgently, before end of day") == 2
+    assert urgency_score("Keep it between you and me, it is time-sensitive") == 2
 
 
 def test_first_contact_notices_raise_no_payment_finding() -> None:

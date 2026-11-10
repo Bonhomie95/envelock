@@ -475,6 +475,22 @@ def _sniff(payload: bytes) -> str | None:
     return None
 
 
+#: Spam verdicts other filters stamp: SpamAssassin, rspamd and Barracuda say
+#: "Yes ..."; Exchange gives a spam confidence level (5+ is spam) or SFV:SPM.
+_SPAM_YES = ("X-Spam-Flag", "X-Spam-Status", "X-Spam", "X-Barracuda-Spam-Status")
+
+
+def _upstream_spam(msg: EmailMessage) -> bool:
+    def values(name: str) -> list[str]:
+        return [str(v).strip().lower() for v in msg.get_all(name, [])]
+
+    if any(v.startswith("yes") for name in _SPAM_YES for v in values(name)):
+        return True
+    if any(v.isdigit() and int(v) >= 5 for v in values("X-MS-Exchange-Organization-SCL")):
+        return True
+    return any("sfv:spm" in v.replace(" ", "") for v in values("X-Forefront-Antispam-Report"))
+
+
 def parse_message(
     raw: bytes,
     *,
@@ -565,6 +581,9 @@ def parse_message(
         urls=urls,
         authentication=_parse_auth_results(msg, source=source, sender_domain=sender.domain),
         received_headers=tuple(msg.get_all("Received", [])),
+        bulk=bool(msg.get("List-Unsubscribe") or msg.get("List-Id"))
+        or str(msg.get("Precedence") or "").strip().lower() in ("bulk", "list"),
+        upstream_spam=_upstream_spam(msg),
         # Forwarding arrives post-delivery: nothing can be quarantined no matter
         # what we detect (PRD §4 fn.3).
         remediable=remediable

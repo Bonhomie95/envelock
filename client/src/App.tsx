@@ -25,6 +25,7 @@ import {
   X,
 } from "lucide-react";
 import { api, auth } from "./lib/api";
+import { playAlertTone, primeAlertTone } from "./lib/alertTone";
 import { Button, cn } from "./components/primitives";
 import ConsoleShell from "./components/ConsoleShell";
 import ErrorBoundary from "./components/ErrorBoundary";
@@ -621,6 +622,19 @@ function AppLayout() {
     void import("./lib/push")
       .then(({ getPushState }) => getPushState())
       .catch(() => {});
+  }, [signedIn]);
+
+  /* The alert chime, on every signed-in page: the service worker tells one
+     open tab to ring when a push arrives (public/sw.js). */
+  useEffect(() => {
+    const sw = signedIn && "serviceWorker" in navigator ? navigator.serviceWorker : null;
+    if (!sw) return;
+    primeAlertTone();
+    const onPush = (e: MessageEvent) => {
+      if (e.data?.type === "envelock:alert" && e.data.ring) void playAlertTone();
+    };
+    sw.addEventListener("message", onPush);
+    return () => sw.removeEventListener("message", onPush);
   }, [signedIn]);
 
   async function signOut() {

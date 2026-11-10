@@ -2274,6 +2274,14 @@ async def oversight(principal: AdminUser, session: Session) -> dict:
             )
         )
     ).scalar_one()
+    spam_junked = (
+        await session.execute(
+            select(func.count()).select_from(Message).where(
+                Message.tenant_id == principal.tenant_id,
+                Message.junked_at >= since,
+            )
+        )
+    ).scalar_one()
     confirmed = (
         await session.execute(
             select(func.count()).select_from(Alert).where(
@@ -2289,6 +2297,7 @@ async def oversight(principal: AdminUser, session: Session) -> dict:
             "payment_requests": requests,
             "payments_checked_by_currency": checked,
             "quarantined": int(quarantined),
+            "spam_junked": int(spam_junked),
             "confirmed_fraud": int(confirmed),
         },
         "mailboxes": len(mailboxes),

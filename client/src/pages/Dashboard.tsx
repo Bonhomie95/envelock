@@ -22,6 +22,8 @@ import {
   ShieldCheck,
   Sparkles,
   Trash2,
+  Volume2,
+  VolumeX,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -67,6 +69,7 @@ import SimulationPanel from "../components/SimulationPanel";
 import TodayPanel, { type HealthIssue } from "../components/TodayPanel";
 import { mailboxIssues } from "../lib/health";
 import VerifyPanel from "../components/VerifyPanel";
+import { alertToneOn, playAlertTone, setAlertTone } from "../lib/alertTone";
 import { PLAN_RANK, PLAN_TIERS } from "../lib/plans";
 import { toast } from "../lib/toast";
 import {
@@ -1014,6 +1017,7 @@ function MailboxRow({
           : `Synced ${r.fetched} message${r.fetched === 1 ? "" : "s"}` +
             (r.alerted ? `, ${r.alerted} flagged` : "") +
             (r.quarantined ? `, ${r.quarantined} quarantined` : "") +
+            (r.junked ? `, ${r.junked} moved to Junk` : "") +
             ".";
       setNote(summary);
       if (r.alerted) toast.error(`${m.address}: ${summary}`);
@@ -3024,6 +3028,7 @@ export function PushAlerts() {
   // "rendered more hooks than during the previous render" crash, which took the
   // whole dashboard down with it the moment the push state resolved.
   const [pushError, setPushError] = useState<string | null>(null);
+  const [tone, setTone] = useState(alertToneOn);
 
   useEffect(() => {
     let live = true;
@@ -3144,6 +3149,19 @@ export function PushAlerts() {
                     <Bell size={12} aria-hidden />
                   )}
                   Send test
+                </Button>
+                <Button
+                  size="sm"
+                  variant="quiet"
+                  aria-pressed={tone}
+                  onClick={() => {
+                    setAlertTone(!tone);
+                    setTone(!tone);
+                    if (!tone) void playAlertTone();
+                  }}
+                >
+                  {tone ? <Volume2 size={12} aria-hidden /> : <VolumeX size={12} aria-hidden />}
+                  Sound {tone ? "on" : "off"}
                 </Button>
                 <Button size="sm" variant="quiet" onClick={disable} disabled={busy}>
                   Turn off

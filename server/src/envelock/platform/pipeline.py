@@ -8,11 +8,13 @@ unit-testable and the pipeline the only place that needs integration tests.
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import ColumnElement, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from envelock.core.capabilities import capabilities_for, protection_level
@@ -25,9 +27,11 @@ from envelock.detections.base import (
     FindingResult,
     PreviousSession,
     inactive_for,
+    is_platform_notice,
     run_all,
     unproven_internal,
 )
+from envelock.detections.spam import JUNK_AT, SpamVerdict, connecting_ip, score_spam
 from envelock.models import (
     BankRecord,
     Counterparty,
@@ -101,9 +105,19 @@ class PipelineResult:
     #: non-persisted runs) — enforcement links its rewritten URLs to it.
     message_id: UUID | None = None
 
+    #: Spam to move to the mailbox's Junk folder (see `analyse_event`). The
+    #: worker that holds the connection does it, then calls `mark_junked`.
+    junk: bool = False
+
     @property
     def alerted(self) -> bool:
         return self.alert_id is not None
+
+
+async def mark_junked(session: AsyncSession, message_id: UUID | None) -> None:
+    """Stamp the stored row once the message is in Junk."""
+    if message_id is not None and (stored := await session.get(Message, message_id)) is not None:
+        stored.junked_at = datetime.now(UTC)
 
 
 async def _counterparty_state(
@@ -144,7 +158,132 @@ async def _counterparty_state(
         median_reply_seconds=row.median_reply_seconds,
         verified_phone=row.verified_phone,
         is_trusted=row.is_trusted,
+        added_by_customer=row.added_by_customer,
+        has_payment_trail=bool(
+            banks
+            or row.seen_invoice_numbers
+            or row.typical_amount is not None
+            or row.added_by_customer
+            or row.is_trusted
+            or row.verified_phone
+        )
+        or await _sent_a_payment_mail(session, tenant_id=tenant_id, key=domain),
     )
+
+
+def _sent_by(key: str) -> ColumnElement[bool]:
+    """Messages from this counterparty key: that address, or that domain and its
+    subdomains (see `counterparty_key`)."""
+    addr = func.lower(Message.sender_address)
+    if "@" in key:
+        return addr == key
+    return or_(addr.endswith(f"@{key}", autoescape=True), addr.endswith(f".{key}", autoescape=True))
+
+
+async def _sent_a_payment_mail(session: AsyncSession, *, tenant_id: UUID, key: str) -> bool:
+    """An inbound payment mail with an amount from this sender, alerted or not: the
+    Suppliers page's payment trail. The baselines above learn nothing from mail
+    flagged HIGH or CRITICAL, so they alone would call every later request the first."""
+    hit = await session.execute(
+        select(Message.id)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.direction == MailDirection.INBOUND.value,
+            Message.payment_amount.is_not(None),
+            _sent_by(key),
+        )
+        .limit(1)
+    )
+    return hit.first() is not None
+
+
+def _spam_scored(event: MailEvent, owned_domains: frozenset[str]) -> bool:
+    """Inbound mail from outside, except a provider's own notice: a junked "new
+    sign-in to your account" would hide the one mail that matters."""
+    return (
+        event.direction is MailDirection.INBOUND
+        and registrable_domain(event.sender.domain) not in owned_domains
+        and not is_platform_notice(event)
+    )
+
+
+async def _known_correspondent(
+    session: AsyncSession,
+    ctx: DetectionContext,
+    *,
+    tenant_id: UUID,
+    owned_domains: frozenset[str],
+) -> bool:
+    """Someone the customer deals with: their mail is never junked, whatever it scores.
+
+    A thread the customer wrote in; a sender they named a supplier, trust or hold a
+    callback number for; one who answers their mail; one they moved back out of
+    Junk; one whose earlier mail was let through. The last spares everyone who
+    wrote before the filter existed, whose mail has no score."""
+    mail = ctx.mail
+    if mail is None:
+        return False
+    if any(registrable_domain(m.sender_address) in owned_domains for m in ctx.thread_history):
+        return True
+    cp = ctx.counterparty
+    if cp is not None and (
+        cp.is_trusted
+        or cp.added_by_customer
+        or cp.verified_phone
+        or cp.median_reply_seconds is not None
+    ):
+        return True
+    hit = await session.execute(
+        select(Message.id)
+        .where(
+            Message.tenant_id == tenant_id,
+            Message.direction == MailDirection.INBOUND.value,
+            _sent_by(counterparty_key(mail.sender.address)),
+            or_(
+                Message.spam_rescued_at.is_not(None),
+                Message.spam_score.is_(None),
+                Message.spam_score < JUNK_AT,
+            ),
+        )
+        .limit(1)
+    )
+    return hit.first() is not None
+
+
+#: Where inbox mail is read from: the only place a copy we moved to Junk can
+#: turn up again, because the customer moved it back.
+_INBOX_SOURCES = frozenset(
+    {
+        SourceMechanism.IMAP_IDLE,
+        SourceMechanism.IMAP_POLL,
+        SourceMechanism.GMAIL_API,
+        SourceMechanism.GRAPH_API,
+    }
+)
+#: The same spam delivered twice (an alias, a list) lands within seconds. A copy
+#: we junked that is back in the inbox later than this, the customer put there.
+_SECOND_COPY = timedelta(minutes=2)
+
+
+async def _back_from_junk(session: AsyncSession, event: MailEvent, same: Sequence[Any]) -> bool:
+    """A message we moved to Junk, in the inbox again. Returns whether this copy
+    goes to Junk too.
+
+    Within `_SECOND_COPY` it is a second delivery of the same spam and follows
+    the first. Later, the customer moved it back: their "not spam", recorded so
+    the sender stays out of Junk from now on (`_known_correspondent`)."""
+    junked = [p for p in same if p.junked_at is not None and p.spam_rescued_at is None]
+    if not junked or event.source not in _INBOX_SOURCES:
+        return False
+    now = datetime.now(UTC)
+    if now - (_aware(max(p.junked_at for p in junked)) or now) < _SECOND_COPY:
+        from envelock.config import get_settings
+
+        return event.remediable and get_settings().spam_junk_enabled
+    await session.execute(
+        update(Message).where(Message.id.in_([p.id for p in junked])).values(spam_rescued_at=now)
+    )
+    return False
 
 
 def _aware(value: datetime | None) -> datetime | None:
@@ -237,6 +376,7 @@ async def build_context(
     #: The cross-tenant graph plus anything the free reputation feeds flag on this
     #: message's sender domain (user requirement #3).
     malicious_domains: set[str] = set(GRAPH.known_bad())
+    sending_ip_listed: tuple[str, ...] = ()
     # Inbound mail from outside. An own-domain From is inbound too, but it is not
     # a counterparty, so none of this loads for it.
     if (
@@ -283,6 +423,17 @@ async def build_context(
                 )
                 for m in prior
             )
+
+        # The spam filter's strongest sign: the server that handed this message to
+        # the mailbox's host is on a public spam blocklist. Free mail too: a botnet
+        # forging a gmail.com From connects from an address of its own.
+        from envelock.config import get_settings as _ip_settings
+
+        ip = connecting_ip(event.received_headers)
+        if ip and _ip_settings().domain_reputation_enabled:
+            from envelock.channels.external.reputation import check_sending_ip
+
+            sending_ip_listed = (await check_sending_ip(ip)).sources
 
         # Check the FROM domain against free public blocklists. A hit adds it to the
         # malicious set so B1 (URLs) and B7 (sender reputation) fire on it.
@@ -474,6 +625,7 @@ async def build_context(
         malicious_domains=frozenset(malicious_domains),
         attachment_verdicts=attachment_verdicts or {},
         sender_domain_age_days=sender_domain_age_days,
+        sending_ip_listed=sending_ip_listed,
         mfa_enabled=mfa_enabled,
         now=datetime.now(UTC),
     )
@@ -713,7 +865,7 @@ async def analyse_event(
     attachment_verdicts: dict[str, str] | None = None,
     sender_domain_age_days: int | None = None,
 ) -> PipelineResult:
-    def _as_duplicate() -> PipelineResult:
+    def _as_duplicate(junk: bool = False) -> PipelineResult:
         return PipelineResult(
             findings=[],
             assessment=None,
@@ -724,6 +876,7 @@ async def analyse_event(
             inactive_detections=[],
             latency_seconds=0.0,
             duplicate=True,
+            junk=junk,
         )
 
     # A copy we wrote back ourselves (rewritten links, banner), recognised by its
@@ -747,20 +900,23 @@ async def analyse_event(
         and event.rfc_message_id
         and event.mailbox_id is not None
     ):
-        prior_hashes = (
+        prior = (
             await session.execute(
-                select(Message.content_hash).where(
+                select(
+                    Message.id, Message.content_hash, Message.junked_at, Message.spam_rescued_at
+                ).where(
                     Message.mailbox_id == event.mailbox_id,
                     Message.rfc_message_id == event.rfc_message_id,
                 )
             )
-        ).scalars().all()
-        if prior_hashes:
+        ).all()
+        if prior:
             fingerprint = content_fingerprint(event)
             # A stored row from before this column existed has NULL; a matching
             # id with no fingerprint to compare stays a duplicate, as before.
-            if any(h is None or h == fingerprint for h in prior_hashes):
-                return _as_duplicate()
+            same = [p for p in prior if p.content_hash is None or p.content_hash == fingerprint]
+            if same:
+                return _as_duplicate(junk=await _back_from_junk(session, event, same))
 
     # Attachment cascade (B4's real teeth). `analyse_attachments` existed with
     # zero callers, so `ctx.attachment_verdicts` was always empty and the
@@ -801,6 +957,30 @@ async def analyse_event(
             session, event, assessment, tenant_id=tenant_id, context=ctx
         )
 
+    # Spam (detections/spam.py), judged apart from fraud and never alerted on. A
+    # spam verdict buys a move to Junk, and only for an outside sender the
+    # customer does not deal with, on a mailbox we may write to, below the tiers
+    # whose own action (quarantine, a banner in place) already handles the mail.
+    spam: SpamVerdict | None = None
+    is_spam = junk = False
+    if persist and isinstance(event, MailEvent) and _spam_scored(event, owned_domains):
+        spam = score_spam(ctx, findings)
+        if spam.is_spam:
+            if await _known_correspondent(
+                session, ctx, tenant_id=tenant_id, owned_domains=owned_domains
+            ):
+                spam = SpamVerdict(spam.score, (*spam.reasons, "known_sender"))
+            else:
+                is_spam = True
+        from envelock.config import get_settings as _junk_settings
+
+        junk = (
+            is_spam
+            and event.remediable
+            and _junk_settings().spam_junk_enabled
+            and (assessment is None or assessment.tier in (AlertTier.LOW, AlertTier.MEDIUM))
+        )
+
     message_id: UUID | None = None
     if persist and isinstance(event, MailEvent):
         # E13 metadata-only: analyse the subject, then do not keep it. Bodies and
@@ -834,6 +1014,8 @@ async def analyse_event(
             content_hash=content_fingerprint(event),
             risk_score=assessment.score if assessment else 0,
             source_ref=event.source_ref,
+            spam_score=spam.score if spam else None,
+            spam_reasons=list(spam.reasons) if spam else None,
         )
         if event.direction in (MailDirection.INBOUND, MailDirection.OUTBOUND):
             # The amount also tags an OUTBOUND message as part of a payment
@@ -843,7 +1025,9 @@ async def analyse_event(
             from envelock.util.payments import has_payment_context as _is_payment
 
             _text = _mail_text(event)
-            if _is_payment(_text):
+            # Spam's "10.5 million dollars" is nobody's invoice: kept off the
+            # digest's payment total and the Suppliers page's trail.
+            if _is_payment(_text) and not is_spam:
                 _found = largest_amount(f"{event.subject or ''}\n{event.body_text or ''}")
                 if _found is not None:
                     message.payment_amount, message.payment_currency = _found
@@ -1047,8 +1231,10 @@ async def analyse_event(
             AlertTier.HIGH,
             AlertTier.CRITICAL,
         )
+        # Nor does spam teach anything: its "account" and its style are nobody's.
         await learn(
-            session, event, tenant_id=tenant_id, owned_domains=owned_domains, flagged=flagged
+            session, event, tenant_id=tenant_id, owned_domains=owned_domains,
+            flagged=flagged or is_spam,
         )
 
     latency = (datetime.now(UTC) - event.ingested_at).total_seconds()
@@ -1072,6 +1258,7 @@ async def analyse_event(
         inactive_detections=inactive_for(ctx.capabilities),
         latency_seconds=round(max(latency, 0.0), 3),
         message_id=message_id,
+        junk=junk,
     )
 
 

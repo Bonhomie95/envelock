@@ -212,6 +212,16 @@ class MailEvent(EventEnvelope):
     received_headers: tuple[str, ...] = ()
     """Retained for A10 infrastructure-change analysis, not for geolocation."""
 
+    bulk: bool = False
+    """Sent by list or newsletter software (List-Unsubscribe, List-Id,
+    Precedence: bulk). Spares a newsletter's style in the spam filter; never a
+    reason to trust what the mail says or where it came from."""
+
+    upstream_spam: bool = False
+    """A filter on the delivery path (SpamAssassin, rspamd, Exchange) called it
+    spam and delivered it anyway. Only ever adds spam evidence: a sender writing
+    it harms only their own mail, and a "not spam" header is never read."""
+
     remediable: bool = False
     """Whether this message can still be quarantined or rewritten.
 

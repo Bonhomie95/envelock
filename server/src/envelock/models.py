@@ -593,6 +593,16 @@ class Message(Base, UUIDMixin, TimestampMixin):
     #: not about paying anyone, or named no amount.
     payment_amount: Mapped[float | None] = mapped_column(Float)
     payment_currency: Mapped[str | None] = mapped_column(String(8))
+    #: The spam filter's score (detections/spam.py) and why, as codes, never the
+    #: message's words. Null when nothing scored it: internal mail, a provider's
+    #: own notice, mail stored before the filter.
+    spam_score: Mapped[float | None] = mapped_column(Float)
+    spam_reasons: Mapped[list[str] | None] = mapped_column(StringList)
+    #: When we moved it to the mailbox's Junk folder.
+    junked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    #: When the customer moved it back to the inbox: their "not spam", which keeps
+    #: this sender out of Junk from then on.
+    spam_rescued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class LinkToken(Base, UUIDMixin, TimestampMixin):

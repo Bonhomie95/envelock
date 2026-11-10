@@ -463,7 +463,8 @@ def test_the_novel_vendor_combinations_are_reachable() -> None:
     )
 
     a7_source = inspect.getsource(impersonation._A7FirstContact.evaluate)
-    assert "message_count > 0" in a7_source, (
+    # It also fires on a known sender's first payment request (has_payment_trail).
+    assert "message_count == 0" in a7_source, (
         "A7 no longer keys on first contact; re-check that it can still "
         "co-occur with A2"
     )

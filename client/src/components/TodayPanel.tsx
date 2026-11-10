@@ -141,6 +141,12 @@ export default function TodayPanel({
                 month.quarantined > 0 &&
                 ` · ${month.quarantined} dangerous emails removed`}
             </p>
+            {month && (month.spam_junked ?? 0) > 0 && (
+              <p className="fg-3 mt-2 text-xs">
+                {month.spam_junked} spam email{month.spam_junked === 1 ? "" : "s"}{" "}
+                moved to Junk
+              </p>
+            )}
             {month && month.payment_requests > 0 && (
               <p className="fg-3 mt-2 text-xs">
                 {checked ? `${checked} in` : month.payment_requests} payment

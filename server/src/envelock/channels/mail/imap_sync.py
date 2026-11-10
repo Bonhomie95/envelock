@@ -77,6 +77,7 @@ class ImapClientLike(Protocol):
     def search(self, criteria: Any) -> list[int]: ...
     def fetch(self, messages: Any, data: Any) -> dict: ...
     def folder_exists(self, folder: str) -> bool: ...
+    def find_special_folder(self, folder_flag: bytes) -> str | None: ...
     def create_folder(self, folder: str) -> Any: ...
     def append(
         self, folder: str, msg: bytes, flags: Any = (), msg_time: Any = None
@@ -752,8 +753,10 @@ def quarantine_message(
     timeout: float = 30.0,
     client_factory: ClientFactory | None = None,
     pin_sha256: str | None = None,
+    junk: bool = False,
 ) -> bool:
-    """Move a single message out of the inbox into the quarantine folder.
+    """Move a single message out of the inbox into the quarantine folder, or with
+    `junk` into the server's own Junk folder (`junk_folder`).
 
     Uses IMAP MOVE where the server advertises it, else COPY + delete + EXPUNGE —
     the fallback works on servers as old as 1998, which is the whole point of the
@@ -773,9 +776,10 @@ def quarantine_message(
             pin_sha256=pin_sha256,
         )
         client.select_folder(folder, readonly=False)
-        if not client.folder_exists(quarantine_folder):
+        target = junk_folder(client) if junk else quarantine_folder
+        if not client.folder_exists(target):
             with contextlib.suppress(Exception):
-                client.create_folder(quarantine_folder)
+                client.create_folder(target)
 
         caps = ()
         with contextlib.suppress(Exception):
@@ -783,9 +787,9 @@ def quarantine_message(
         has_move = any(_cap_eq(c, "MOVE") for c in caps)
 
         if has_move:
-            client.move([uid], quarantine_folder)
+            client.move([uid], target)
         else:
-            client.copy([uid], quarantine_folder)
+            client.copy([uid], target)
             client.delete_messages([uid])
             client.expunge([uid])
         return True
@@ -795,6 +799,31 @@ def quarantine_message(
         if client is not None:
             with contextlib.suppress(Exception):
                 client.logout()
+
+
+#: Junk folders by name, for a server that marks none `\Junk` and where
+#: imapclient's own guesses ("Junk", "Spam") miss: cPanel's spam box, then
+#: Outlook's and Yahoo's names.
+JUNK_FOLDER_NAMES = ("INBOX.spam", "spam", "Junk E-mail", "Junk Email", "Bulk Mail")
+
+
+def junk_folder(client: ImapClientLike) -> str:
+    """Where this server keeps spam: the folder it marks `\\Junk` (RFC 6154,
+    localised names included), a usual name, or failing those a new "Junk"."""
+    with contextlib.suppress(Exception):
+        found = client.find_special_folder(b"\\Junk")
+        if found:
+            return str(found)
+    for name in JUNK_FOLDER_NAMES:
+        with contextlib.suppress(Exception):
+            if client.folder_exists(name):
+                return name
+    return "Junk"
+
+
+def junk_message(**kwargs: Any) -> bool:  # noqa: ANN401 — quarantine_message's own keywords
+    """Move one message from the inbox to the server's Junk folder."""
+    return quarantine_message(**kwargs, junk=True)
 
 
 def replace_message(

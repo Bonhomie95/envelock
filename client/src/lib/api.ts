@@ -344,6 +344,7 @@ export interface SyncResult {
   fetched: number;
   alerted?: number;
   quarantined?: number;
+  junked?: number;
   alerts?: { uid: number; alert_id: string; tier: string | null; title: string | null }[];
   /** Set when this process could not decrypt the credential and handed the
    *  sync to the worker instead — see the server's split key custody. */
@@ -401,6 +402,8 @@ export interface Oversight {
     payment_requests: number;
     payments_checked_by_currency: { currency: string; amount: number }[];
     quarantined: number;
+    /** Spam the filter moved to a mailbox's Junk folder. */
+    spam_junked?: number;
     confirmed_fraud: number;
   };
   total: number;

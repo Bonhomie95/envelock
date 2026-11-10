@@ -36,6 +36,11 @@ class CounterpartyState:
     median_reply_seconds: int | None = None
     verified_phone: str | None = None
     is_trusted: bool = False
+    added_by_customer: bool = False
+    #: They have asked for money before (an amount in a payment mail, or anything
+    #: the payment baselines learned), or the customer named them a supplier.
+    #: None where nobody looked, as in detections built by hand.
+    has_payment_trail: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -87,6 +92,8 @@ class DetectionContext:
     attachment_verdicts: dict[str, str] = field(default_factory=dict)
     #: Registration age of the sending domain in days, for B9.
     sender_domain_age_days: int | None = None
+    #: Blocklists naming the server that delivered the message, for the spam filter.
+    sending_ip_listed: tuple[str, ...] = ()
     #: Whether the mailbox has MFA enabled, for C13.
     mfa_enabled: bool | None = None
     #: Display names of the tenant's own people (mailbox owners), for exec /

@@ -114,6 +114,24 @@ async def gmail_quarantine(
     return True
 
 
+async def gmail_junk(
+    *, access_token: str, message_id: str, transport: WriteTransport | None = None
+) -> bool:
+    """Out of the inbox under Gmail's own Spam label."""
+    t = _t(transport)
+    try:
+        await t.request(
+            "POST",
+            f"{GMAIL_API}/messages/{quote(message_id, safe='')}/modify",
+            headers=_h(access_token),
+            json={"addLabelIds": ["SPAM"], "removeLabelIds": ["INBOX"]},
+        )
+    except Exception as exc:  # noqa: BLE001 — any provider failure means "not moved"
+        logger.warning("gmail junk failed for %s: %s", message_id, exc)
+        return False
+    return True
+
+
 async def gmail_replace(
     *,
     access_token: str,
@@ -198,6 +216,29 @@ async def graph_quarantine(
         )
     except Exception as exc:  # noqa: BLE001
         logger.warning("graph quarantine failed for %s: %s", message_id, exc)
+        return False
+    return True
+
+
+async def graph_junk(
+    *,
+    access_token: str,
+    message_id: str,
+    mailbox_address: str | None = None,
+    transport: WriteTransport | None = None,
+) -> bool:
+    """Into the mailbox's Junk Email folder (Graph's well-known `junkemail`)."""
+    t = _t(transport)
+    base = graph_base(mailbox_address)
+    try:
+        await t.request(
+            "POST",
+            f"{base}/messages/{quote(message_id, safe='')}/move",
+            headers=_h(access_token),
+            json={"destinationId": "junkemail"},
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("graph junk failed for %s: %s", message_id, exc)
         return False
     return True
 

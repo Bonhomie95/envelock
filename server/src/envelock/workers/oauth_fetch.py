@@ -46,7 +46,7 @@ from envelock.db import get_sessionmaker
 from envelock.models import Domain, Mailbox, MailboxCredential, Message
 from envelock.notify.dispatch import deliver_pending
 from envelock.platform.alerts import AuditAction, record_audit
-from envelock.platform.pipeline import analyse_event
+from envelock.platform.pipeline import analyse_event, mark_junked
 from envelock.workers.enforcement import plan_protected_copy
 from envelock.workers.outbound import process_outbound
 
@@ -128,6 +128,19 @@ async def _quarantine(
         message_id=ref,
         # Delegated token → /me (see the fetch note); /users/{label} 403s.
         transport=transport,
+    )
+
+
+async def _junk(
+    *, provider: str, access_token: str, mailbox: Mailbox, ref: str, transport=None  # noqa: ANN001
+) -> bool:
+    if provider == "google":
+        return await api_enforce.gmail_junk(
+            access_token=access_token, message_id=ref, transport=transport
+        )
+    # Delegated token → /me, as for quarantine.
+    return await api_enforce.graph_junk(
+        access_token=access_token, message_id=ref, transport=transport
     )
 
 
@@ -395,7 +408,7 @@ async def _sync_oauth_mailbox(
         logger.warning("oauth fetch failed for mailbox %s: %s", mailbox.id, exc)
         return {"ok": False, "reason": str(exc), "fetched": 0}
 
-    alerted = quarantined = rewritten = 0
+    alerted = quarantined = rewritten = junked = 0
     # The sync's own bookkeeping stands before any message can fail.
     await session.commit()
     for item in fetched:
@@ -424,11 +437,16 @@ async def _sync_oauth_mailbox(
                 "retried next sync" if retry else "given up",
             )
             continue
-        # Only once it went through: a message that failed is retried.
-        _remember(mailbox.id, item.ref)
+        # Only once it went through: a message that failed is retried. Not one
+        # we junked: if the customer moves it back to the inbox, Gmail lists it
+        # under the same id, and it must be downloaded for that "not spam" to
+        # register.
+        if not outcome["junked"]:
+            _remember(mailbox.id, item.ref)
         alerted += outcome["alerted"]
         quarantined += outcome["quarantined"]
         rewritten += outcome["rewritten"]
+        junked += outcome["junked"]
 
     quarantined += await _run_requested_quarantines(
         session, mailbox, provider=provider, access_token=access_token,
@@ -487,6 +505,7 @@ async def _sync_oauth_mailbox(
         "alerted": alerted,
         "quarantined": quarantined,
         "rewritten": rewritten,
+        "junked": junked,
         "silent_access_alerts": reads["alerted"],
         "outbound_ingested": outbound["outbound_ingested"],
         "signature_alert": outbound["signature_alert"],
@@ -508,7 +527,7 @@ async def _handle_inbound(
     write_transport=None,  # noqa: ANN001 — api_enforce.WriteTransport
 ) -> dict:
     """Analyse one inbound message, notify, then enforce. Returns its counts."""
-    counts = {"alerted": 0, "quarantined": 0, "rewritten": 0}
+    counts = {"alerted": 0, "quarantined": 0, "rewritten": 0, "junked": 0}
     # Our own protected copy — never re-analyse or re-rewrite it.
     if enforce.is_processed(item.raw, mailbox.id):
         return counts
@@ -527,14 +546,22 @@ async def _handle_inbound(
         owned_domains=owned,
         recipients=recipients,
     )
-    if pr.duplicate:
-        return counts
     common: dict[str, Any] = {
         "provider": provider, "access_token": access_token, "mailbox": mailbox,
         "ref": item.ref,
     }
+    if pr.duplicate:
+        # The same spam a second time follows the first copy to Junk.
+        if pr.junk and await _junk(**common, transport=write_transport):
+            counts["junked"] += 1
+        return counts
     if pr.alert_id is None:
-        if protected and event.urls and await _write_back(
+        if pr.junk and await _junk(**common, transport=write_transport):
+            # Spam goes to the mailbox's own Junk, links as they came: nothing
+            # is left in the inbox to protect.
+            counts["junked"] += 1
+            await mark_junked(session, pr.message_id)
+        elif protected and event.urls and await _write_back(
             session, **common, raw=item.raw, event=event, pr=pr, owned=owned,
             banner_allowed=False, transport=write_transport,
         ):
@@ -564,6 +591,10 @@ async def _handle_inbound(
             banner_allowed=True, transport=write_transport,
         ):
             counts["rewritten"] += 1
+    elif pr.junk and await _junk(**common, transport=write_transport):
+        # MEDIUM or LOW, and spam: alerted, and out of the inbox.
+        counts["junked"] += 1
+        await mark_junked(session, pr.message_id)
     elif protected and await _write_back(
         session, **common, raw=item.raw, event=event, pr=pr, owned=owned,
         banner_allowed=tier is AlertTier.HIGH, transport=write_transport,

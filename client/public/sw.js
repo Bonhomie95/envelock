@@ -26,6 +26,12 @@ self.addEventListener("push", (event) => {
   const options = {
     body: data.body || "You have a new security alert.",
     tag: data.tag || undefined,
+    // Ask for the system's alert sound, again for a re-sent tag too (renotify
+    // needs a tag, or Chrome refuses the notification). Whether it plays is the
+    // system's setting, so an open tab also chimes (src/lib/alertTone.ts).
+    silent: false,
+    renotify: Boolean(data.tag),
+    vibrate: [200, 100, 200],
     requireInteraction: data.requireInteraction === true,
     data: { url: (data.data && data.data.url) || "/dashboard" },
   };
@@ -37,11 +43,18 @@ self.addEventListener("push", (event) => {
       // learns that it reached THIS browser: the push service accepting it does
       // not say which of the user's browsers it went to. Uncontrolled windows
       // too, or a dashboard opened before this worker took over hears nothing.
+      // One window rings, the one in use if any: three open tabs chime once.
       self.clients
         .matchAll({ type: "window", includeUncontrolled: true })
-        .then((wins) =>
-          wins.forEach((w) => w.postMessage({ type: "envelock:alert", alert_id: alertId })),
-        ),
+        .then((wins) => {
+          const ringer =
+            wins.find((w) => w.focused) ||
+            wins.find((w) => w.visibilityState === "visible") ||
+            wins[0];
+          wins.forEach((w) =>
+            w.postMessage({ type: "envelock:alert", alert_id: alertId, ring: w === ringer }),
+          );
+        }),
     ]),
   );
 });

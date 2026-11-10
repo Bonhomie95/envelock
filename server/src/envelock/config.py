@@ -442,7 +442,13 @@ class Settings(BaseSettings):
     #: — audit terms before high volume (README licensing note).
     domain_reputation_enabled: bool = True
     dnsbl_domain_zones: str = "dbl.spamhaus.org,multi.surbl.org"
+    #: The same, for the IP of the server that handed the message to the
+    #: mailbox's host — the spam filter's strongest sign. Same terms note.
+    dnsbl_ip_zones: str = "zen.spamhaus.org,bl.spamcop.net"
     reputation_cache_seconds: int = 3600
+    #: Move mail the spam filter calls spam to the mailbox's Junk folder (Protected
+    #: mailboxes on a direct connection). A kill-switch: off, spam is only scored.
+    spam_junk_enabled: bool = True
 
     # ── Tier-4 forwarding ingest authentication (PRD §5.4 / security) ────────
     #: Comma-separated CIDR/IP allowlist of forwarders permitted to submit to the
@@ -631,6 +637,10 @@ class Settings(BaseSettings):
     @property
     def dnsbl_domain_zone_list(self) -> list[str]:
         return [z.strip() for z in self.dnsbl_domain_zones.split(",") if z.strip()]
+
+    @property
+    def dnsbl_ip_zone_list(self) -> list[str]:
+        return [z.strip() for z in self.dnsbl_ip_zones.split(",") if z.strip()]
 
     @property
     def ingest_allowed_ip_list(self) -> list[str]:

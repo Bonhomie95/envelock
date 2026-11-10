@@ -30,7 +30,9 @@ function fakeCaches(record?: object) {
   };
 }
 
-function loadWorker(caches: ReturnType<typeof fakeCaches>) {
+type Win = { focused?: boolean; visibilityState?: string };
+
+function loadWorker(caches: ReturnType<typeof fakeCaches>, windows: Win[] = [{}]) {
   const listeners: Record<string, Listener> = {};
   const fresh: Sub = {
     endpoint: "https://push.example/rotated",
@@ -40,15 +42,19 @@ function loadWorker(caches: ReturnType<typeof fakeCaches>) {
   const fetch = vi.fn(async () => ({ ok: true }));
   const posted: unknown[] = [];
   const shown: string[] = [];
-  const matchAll = vi.fn(async () => [{ postMessage: (m: unknown) => posted.push(m) }]);
+  const options: Record<string, unknown>[] = [];
+  const matchAll = vi.fn(async () =>
+    windows.map((w) => ({ ...w, postMessage: (m: unknown) => posted.push(m) })),
+  );
   const self = {
     addEventListener: (type: string, fn: Listener) => {
       listeners[type] = fn;
     },
     registration: {
       pushManager: { subscribe },
-      showNotification: async (title: string) => {
+      showNotification: async (title: string, opts: Record<string, unknown>) => {
         shown.push(title);
+        options.push(opts);
       },
     },
     clients: { claim: async () => undefined, matchAll },
@@ -61,7 +67,7 @@ function loadWorker(caches: ReturnType<typeof fakeCaches>) {
     Response,
     atob,
   );
-  return { listeners, subscribe, fetch, matchAll, posted, shown };
+  return { listeners, subscribe, fetch, matchAll, posted, shown, options };
 }
 
 async function change(listener: Listener, event: Record<string, unknown>) {
@@ -129,6 +135,28 @@ describe("push", () => {
     // reached this browser and not another one. Uncontrolled windows too, or a
     // dashboard opened before the worker took over never hears it.
     expect(matchAll).toHaveBeenCalledWith({ type: "window", includeUncontrolled: true });
-    expect(posted).toEqual([{ type: "envelock:alert", alert_id: "t-1" }]);
+    expect(posted).toEqual([{ type: "envelock:alert", alert_id: "t-1", ring: true }]);
+  });
+
+  it("asks for the system sound and has exactly one tab chime, the one in use", async () => {
+    const { listeners, posted, options } = loadWorker(fakeCaches(), [
+      { visibilityState: "hidden" },
+      { focused: true, visibilityState: "visible" },
+      { visibilityState: "visible" },
+    ]);
+    const payload = { title: "HIGH: Envelock", tag: "a-1", data: { alert_id: "a-1" } };
+
+    await change(listeners.push, { data: { json: () => payload } });
+
+    expect(options[0]).toMatchObject({ silent: false, renotify: true, tag: "a-1" });
+    expect(posted.map((m) => (m as { ring: boolean }).ring)).toEqual([false, true, false]);
+  });
+
+  it("never sets renotify without a tag, which Chrome refuses", async () => {
+    const { listeners, options } = loadWorker(fakeCaches());
+
+    await change(listeners.push, { data: { json: () => ({ title: "x" }) } });
+
+    expect(options[0]).toMatchObject({ renotify: false, silent: false });
   });
 });

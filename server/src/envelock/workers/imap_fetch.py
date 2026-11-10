@@ -43,7 +43,7 @@ from envelock.db import get_sessionmaker
 from envelock.models import Domain, Mailbox, MailboxCredential, Message
 from envelock.notify.dispatch import deliver_pending
 from envelock.obs.metrics import observe_poll_cycle, set_worker_up
-from envelock.platform.pipeline import PipelineResult, analyse_event
+from envelock.platform.pipeline import PipelineResult, analyse_event, mark_junked
 from envelock.security.crypto import CryptoError, SealedSecret, open_secret
 
 logger = logging.getLogger("envelock.imap")
@@ -416,6 +416,15 @@ async def sync_mailbox(
     alerts: list[dict] = []
     quarantined = 0
     rewritten = 0
+    junked = 0
+
+    def _junk(uid: int) -> bool:
+        return imap_sync.junk_message(
+            host=host, port=port, security=security, username=username,
+            password=password, access_token=access_token, uid=uid,
+            client_factory=client_factory, pin_sha256=pin,
+        )
+
     # The lowest UID that failed and gets another poll: the cursor stops below it.
     retry_uid: int | None = None
     # The poll's own bookkeeping stands before any message can fail.
@@ -442,6 +451,12 @@ async def sync_mailbox(
                 recipients=recipients,
             )
             if pr.duplicate:
+                # The same spam a second time follows the first copy to Junk. The
+                # commit keeps a "not spam" analyse_event recorded for a copy the
+                # customer moved back.
+                if pr.junk and await asyncio.to_thread(_junk, msg.uid):
+                    junked += 1
+                await session.commit()
                 continue
             if pr.alert_id is not None:
                 alerts.append(
@@ -512,6 +527,10 @@ async def sync_mailbox(
                         pin_sha256=pin,
                     ):
                         rewritten += 1
+                elif pr.junk and await asyncio.to_thread(_junk, msg.uid):
+                    # MEDIUM or LOW, and spam: alerted, and out of the inbox.
+                    junked += 1
+                    await mark_junked(session, pr.message_id)
                 elif protected:
                     # HIGH — "flagged in place": banner + rewritten links.
                     # MEDIUM/LOW — protected links WITHOUT a banner: the rewrite
@@ -529,6 +548,11 @@ async def sync_mailbox(
                         banner_allowed=tier is AlertTier.HIGH,
                     ):
                         rewritten += 1
+            elif pr.junk and await asyncio.to_thread(_junk, msg.uid):
+                # Spam goes to the mailbox's own Junk folder, links as they came:
+                # nothing is left in the inbox to protect.
+                junked += 1
+                await mark_junked(session, pr.message_id)
             elif protected and settings.link_rewrite_enabled and event.urls:
                 # Feature 1's core: mail that looks clean NOW is exactly the mail
                 # whose links get weaponised later, so its links are rewritten to
@@ -617,6 +641,7 @@ async def sync_mailbox(
         "alerted": len(alerts),
         "quarantined": quarantined,
         "rewritten": rewritten,
+        "junked": junked,
         "alerts": alerts,
         "reads_observed": reads["observed"],
         "silent_access_alerts": reads["alerted"],

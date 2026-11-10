@@ -469,5 +469,106 @@ _add(
 )
 
 
+# ── First payment requests (2026-11-09: a test "pay me" email raised nothing) ──
+WEBMAIL = "j.doe.payments@gmail.com"
+
+_add(
+    Case(
+        id="first-contact-webmail-pay-me-urgently",
+        label="fraud",
+        messages=[
+            msg(
+                "Hi, kindly pay me $500 for the work I did. I need it urgently, today please.",
+                sender=WEBMAIL,
+                display="John Doe",
+                subject="Quick one",
+            )
+        ],
+        why=(
+            "A stranger on webmail demanding money with pressure. No banking word in "
+            "it, so before this it raised nothing at all."
+        ),
+        tags=("A7", "A14", "first-payment"),
+    )
+)
+
+_add(
+    Case(
+        id="first-contact-gift-cards",
+        label="fraud",
+        messages=[
+            msg(
+                "Are you available? I need you to buy 5 Apple gift cards for a client. "
+                "Keep this between us.",
+                sender=WEBMAIL,
+                display="John Doe",
+                subject="Are you free",
+            )
+        ],
+        why="Gift cards are how scams get paid, never suppliers. Was MEDIUM.",
+        tags=("A7", "first-payment"),
+    )
+)
+
+_add(
+    Case(
+        id="first-contact-crypto",
+        label="fraud",
+        messages=[
+            msg(
+                "Send 0.5 BTC to wallet bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh "
+                "to release the shipment.",
+                sender=WEBMAIL,
+                display="John Doe",
+                subject="Action needed",
+            )
+        ],
+        why="'BTC' was not payment language, so a crypto demand raised nothing.",
+        tags=("A7", "first-payment"),
+    )
+)
+
+_add(
+    Case(
+        id="known-webmail-contact-first-money-request",
+        label="fraud",
+        messages=[
+            msg(
+                "Hi, nice meeting you yesterday.", sender=WEBMAIL, display="John Doe", subject="Hi"
+            ),
+            msg(
+                "Hi, please send $2,000 to my account 0123456789 at GTBank. Thanks",
+                sender=WEBMAIL,
+                display="John Doe",
+                subject="Hello",
+            ),
+        ],
+        why=(
+            "Someone who said hello first, then asks a business to pay a personal "
+            "account from webmail. A7 keyed on the first email only, so this was "
+            "A2's MEDIUM."
+        ),
+        tags=("A7", "A2", "first-payment"),
+    )
+)
+
+_add(
+    Case(
+        id="known-vendor-second-invoice",
+        label="benign",
+        messages=[
+            msg("Thanks for the call today.", subject="Call"),
+            msg("Here is our invoice INV-2001 for $3,000. Payment terms 30 days.", subject="2001"),
+            msg("Here is our invoice INV-2002 for $3,100. Payment terms 30 days.", subject="2002"),
+        ],
+        why=(
+            "The first payment request from a known sender alerts once; the next "
+            "one must not, alerted or not, or every new vendor alerts forever."
+        ),
+        tags=("precision", "A7", "first-payment"),
+    )
+)
+
+
 def by_label(label: str) -> list[Case]:
     return [c for c in CASES if c.label == label]

@@ -8,6 +8,8 @@ has seen it. Everything here is free and needs no API key:
   `<domain>.dbl.spamhaus.org` resolving to `127.0.1.x` means listed. (Spamhaus DBL
   is free for low-volume/non-commercial use — audit the terms before high volume,
   per the README licensing note.)
+* **DNSBL IP lists** — Spamhaus ZEN and SpamCop, for the server that handed the
+  message to the mailbox's host (`detections/spam.py`). Same terms note.
 * **Google Safe Browsing** — used for URLs elsewhere; if a key is set we also check
   the domain's root URL here.
 
@@ -18,6 +20,7 @@ rather than raising.
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import time
 from dataclasses import dataclass, field
@@ -80,27 +83,34 @@ class DomainReputation:
         reg = registrable_domain(domain)
         if not reg:
             return ReputationResult(domain=domain, listed=False)
-        cached = self._cached(reg)
+        return self._lookup(reg, reg, reg, get_settings().dnsbl_domain_zone_list)
+
+    def check_ip(self, ip: str) -> ReputationResult:
+        """The same for a sending server: `4.3.2.1.zen.spamhaus.org` for 1.2.3.4."""
+        # ponytail: IPv4 only; ZEN's IPv6 nibble query once v6 spam shows up.
+        try:
+            addr = str(ipaddress.IPv4Address(ip))
+        except ValueError:
+            return ReputationResult(domain=ip, listed=False)
+        query = ".".join(reversed(addr.split(".")))
+        return self._lookup(f"ip:{addr}", addr, query, get_settings().dnsbl_ip_zone_list)
+
+    def _lookup(self, key: str, label: str, query: str, zones: list[str]) -> ReputationResult:
+        cached = self._cached(key)
         if cached is not None:
             return cached
-
-        settings = get_settings()
         sources: list[str] = []
         codes: list[str] = []
-        if settings.domain_reputation_enabled:
-            for zone in settings.dnsbl_domain_zone_list:
-                code = self._dnsbl_listed(reg, zone)
+        if get_settings().domain_reputation_enabled:
+            for zone in zones:
+                code = self._dnsbl_listed(query, zone)
                 if code:
                     sources.append(zone)
                     codes.append(code)
-
         result = ReputationResult(
-            domain=reg,
-            listed=bool(sources),
-            sources=tuple(sources),
-            codes=tuple(codes),
+            domain=label, listed=bool(sources), sources=tuple(sources), codes=tuple(codes)
         )
-        self._cache[reg] = _CacheEntry(result=result, at=time.monotonic())
+        self._cache[key] = _CacheEntry(result=result, at=time.monotonic())
         return result
 
 
@@ -115,4 +125,17 @@ async def check_sender_domain(domain: str) -> ReputationResult:
     return await asyncio.to_thread(REPUTATION.check, domain)
 
 
-__all__ = ["DomainReputation", "REPUTATION", "ReputationResult", "check_sender_domain"]
+async def check_sending_ip(ip: str) -> ReputationResult:
+    """`check_sender_domain` for the server that delivered the message."""
+    import asyncio
+
+    return await asyncio.to_thread(REPUTATION.check_ip, ip)
+
+
+__all__ = [
+    "DomainReputation",
+    "REPUTATION",
+    "ReputationResult",
+    "check_sender_domain",
+    "check_sending_ip",
+]

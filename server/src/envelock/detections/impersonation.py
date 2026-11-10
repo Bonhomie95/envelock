@@ -26,6 +26,7 @@ from envelock.util.domains import (
     registrable_domain,
 )
 from envelock.util.payments import (
+    SCAM_RAILS,
     extract_bank_identifiers,
     has_payment_context,
     urgency_score,
@@ -312,7 +313,13 @@ class _A7FirstContact:
         mail = ctx.mail
         if mail is None or not _is_external(ctx):
             return []
-        if ctx.counterparty is not None and ctx.counterparty.message_count > 0:
+        cp = ctx.counterparty
+        first_contact = cp is None or cp.message_count == 0
+        # A sender who has mailed before but never asked for money makes a first
+        # payment request all the same: a known contact whose mailbox was taken
+        # over, or a stranger who said hello first. Unknown history (None) counts
+        # only first contact.
+        if not first_contact and (cp is None or cp.has_payment_trail is not False):
             return []
 
         text = _body(ctx)
@@ -322,22 +329,35 @@ class _A7FirstContact:
             return []
 
         dom = registrable_domain(mail.sender.domain)
+        # A Gmail stranger is not "gmail.com": first contact is per address there.
+        free_mail = is_free_mail(dom)
+        who = mail.sender.address.lower() if free_mail else dom
+        rail = SCAM_RAILS.search(text)
         # If the domain is also newly registered, say so — a brand-new domain
         # emailing you for the first time about money is the classic setup.
         age = ctx.sender_domain_age_days
-        new_domain = age is not None and age <= 45
+        new_domain = first_contact and age is not None and age <= 45
         if new_domain:
             summary = (
-                f"This is the first email you've ever had from {dom}, it's about "
+                f"This is the first email you've ever had from {who}, it's about "
                 f"payment, and the domain was only registered recently. Treat any "
                 f"request to pay or share details with caution."
             )
-        else:
+        elif first_contact:
             summary = (
-                f"This is the first email you've ever had from {dom}, and it's about "
+                f"This is the first email you've ever had from {who}, and it's about "
                 f"payment. Confirm who they are before acting."
             )
-        # HIGH only for a *newly registered* domain — a brand-new domain emailing
+        else:
+            summary = (
+                f"{who} has emailed you before, but this is the first time they've "
+                f"asked you for money. Confirm it with them by phone before paying."
+            )
+        if rail:
+            summary += f" It asks for {rail.group(0).lower()}, which no supplier bills in."
+        elif free_mail and has_bank:
+            summary += " It comes from a personal webmail address and gives an account to pay."
+        # HIGH for a *newly registered* domain — a brand-new domain emailing
         # you for the first time about money is the classic setup, and it is a
         # signal about the sender rather than about the message.
         #
@@ -353,15 +373,23 @@ class _A7FirstContact:
         # combinations force those to CRITICAL from a MEDIUM base. What is lost
         # here is only the alert on an invoice whose sole offence is being the
         # first one.
+        #
+        # Two asks are HIGH whoever sends them. Gift cards, crypto and cash-pickup
+        # wires are how scams get paid, never suppliers. And a personal webmail
+        # address giving an account to pay is how a stranger, or a hijacked
+        # contact, gets paid; a business invoices from its own domain.
+        high = new_domain or rail is not None or (free_mail and has_bank)
         return [
             FindingResult(
                 service="A7",
-                tier=AlertTier.HIGH if new_domain else AlertTier.MEDIUM,
-                score=70 if new_domain else (50 if has_bank else 40),
+                tier=AlertTier.HIGH if high else AlertTier.MEDIUM,
+                score=70 if high else (50 if has_bank else 40),
                 summary=summary,
                 evidence={
                     "sender_domain": dom,
+                    "first_contact": first_contact,
                     "contains_bank_details": has_bank,
+                    "payment_rail": rail.group(0).lower() if rail else None,
                     "domain_age_days": age,
                 },
             )

@@ -94,9 +94,17 @@ _COMBINATIONS: tuple[tuple[frozenset[str], str, AlertTier | None], ...] = (
     ),
     (
         frozenset({"A2", "A7", "A14"}),
-        "First-ever contact, urgent, sending payment instructions to a new payee — "
+        "A first payment request, urgent, sending payment instructions to a new payee — "
         "verify by phone before paying.",
         AlertTier.CRITICAL,
+    ),
+    # The same pressure with no account to check yet: "pay me $500 today, keep this
+    # between us", or gift cards. A7 alone is MEDIUM and A14 alone is LOW, so this
+    # demand never rose above "needs a glance".
+    (
+        frozenset({"A7", "A14"}),
+        "A first payment request pushed with urgency or secrecy.",
+        AlertTier.HIGH,
     ),
 )
 
@@ -131,6 +139,7 @@ def assess(findings: list[FindingResult]) -> RiskAssessment | None:
     tier = base.tier
 
     rationale: list[str] = []
+    matched: list[frozenset[str]] = []
     for combo, explanation, floor in _COMBINATIONS:
         if not (combo <= services):
             continue
@@ -138,7 +147,10 @@ def assess(findings: list[FindingResult]) -> RiskAssessment | None:
             tier = _promote(tier)  # A1 combos: step up (A1 is already Critical)
         elif _ORDER[floor] > _ORDER[tier]:
             tier = floor  # novel-vendor combos: force a floor, never demote
-        rationale.append(explanation)
+        # {A7, A14} inside {A2, A7, A14} would only say the same thing again.
+        if not any(combo < bigger for bigger in matched):
+            rationale.append(explanation)
+        matched.append(combo)
 
     # Diminishing-returns aggregate so ten Low findings never sum to a Critical.
     ordered = sorted((f.score for f in findings), reverse=True)
